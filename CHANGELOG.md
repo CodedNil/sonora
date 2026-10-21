@@ -163,6 +163,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- On Wayland, restoring a saved window size and maximized state no longer depends on whether
+  the saved coordinates fall on a connected monitor. Window position remains compositor-controlled.
 - A Spotify song you skip to, or seek back to the start of, now plays from the start instead of
   sometimes picking up seconds in.
 - YouTube Music songs play to the end again instead of skipping after about a minute. YouTube

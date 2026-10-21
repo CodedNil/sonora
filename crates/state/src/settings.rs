@@ -2470,7 +2470,8 @@ impl AppSettings {
     }
 }
 
-/// The saved window frame and its display, if its centre still lands on a connected display.
+/// Restores size and maximization on Wayland, where window positions are compositor-owned.
+/// Other backends also restore position if its centre still lands on a connected display.
 pub fn window_placement(least: Size<Pixels>, cx: &App) -> Option<(WindowBounds, DisplayId)> {
     let frame = Sonora::global(cx).settings.read(cx).state.window?;
     if !frame.sane() {
@@ -2478,6 +2479,17 @@ pub fn window_placement(least: Size<Pixels>, cx: &App) -> Option<(WindowBounds, 
     }
 
     let placement = frame.placement(least);
+    if cx.compositor_name() == "Wayland" {
+        // GPUI's Wayland origin is not a desktop position. In particular, comparing it with
+        // output coordinates can reject a perfectly valid size on a multi-monitor desktop.
+        let display = cx.primary_display()?;
+        let bounds = Bounds::centered(Some(display.id()), placement.get_bounds().size, cx);
+        let placement = match frame.maximized {
+            true => WindowBounds::Maximized(bounds),
+            false => WindowBounds::Windowed(bounds),
+        };
+        return Some((placement, display.id()));
+    }
     let bounds = placement.get_bounds();
     cx.displays()
         .iter()
