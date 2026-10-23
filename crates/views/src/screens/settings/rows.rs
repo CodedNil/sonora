@@ -2,13 +2,16 @@ use std::rc::Rc;
 
 use gpui::accesskit::Role;
 use gpui::prelude::*;
-use gpui::{AnyElement, App, Div, ElementId, SharedString, Window, div};
+use gpui::{AnyElement, App, Context, Div, ElementId, Entity, SharedString, Window, div};
 use ui::{ActiveTheme as _, Button, Room, TabBar};
 
 use super::SettingsView;
 
 /// What a segmented control does with the option picked in it.
 type Pick<T> = Rc<dyn Fn(&T, &mut Window, &mut App)>;
+
+/// Reads and writes a boolean held by a settings or playback entity.
+type Toggle<T> = (fn(&T) -> bool, fn(&mut T, bool, &mut Context<T>));
 
 /// One row of a group: the label and optional explanation at the start, the control at the end.
 /// It stands at least one list row tall, with no inset, so labels line up with group headings.
@@ -92,6 +95,27 @@ impl RenderOnce for Row {
 }
 
 impl SettingsView {
+    /// The shared label and switch for a plain boolean setting, with its current value read on click.
+    pub(super) fn toggle_row<T: 'static>(
+        &self,
+        key: &'static str,
+        entity: &Entity<T>,
+        (read, write): Toggle<T>,
+        cx: &App,
+    ) -> AnyElement {
+        let on = read(entity.read(cx));
+        let entity = entity.clone();
+        self.row(
+            i18n::lookup(key, None),
+            ui::Switch::new(key, on)
+                .name(i18n::lookup(key, None))
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |value, cx| write(value, !read(value), cx));
+                })
+                .into_any_element(),
+        )
+    }
+
     /// A plain row: the label and the control.
     pub(super) fn row(&self, title: SharedString, control: AnyElement) -> AnyElement {
         Row::new(title, control).into_any_element()

@@ -520,6 +520,7 @@ mod tests {
             duration: Duration::from_secs(180),
             added_at: None,
             added_by: None,
+            year: 0,
             playcount: None,
             popularity: 0,
             explicit: false,

@@ -4,7 +4,6 @@ use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, Focusable as _, Pixels, Render, SharedString,
     Window, div, px,
 };
-use ui::Button;
 use ui::{Dismiss, Input};
 
 const WIDEST: Pixels = px(280.);
@@ -35,8 +34,7 @@ pub(crate) struct Toolbar {
     input: Entity<Input>,
     apply: Option<Apply>,
     tools: Option<Tools>,
-    open: bool,
-    /// Where focus was before the field took it, handed back when the field closes.
+    /// Where focus was before the field took it, handed back when search is dismissed.
     restore: Option<FocusHandle>,
 }
 
@@ -46,6 +44,7 @@ impl Toolbar {
             Input::new("common-search", cx)
                 .icon("icons/search.svg")
                 .compact()
+                .clearable()
         });
 
         cx.observe(&input, |this, input, cx| {
@@ -61,7 +60,6 @@ impl Toolbar {
             input,
             apply: None,
             tools: None,
-            open: false,
             restore: None,
         }
     }
@@ -117,7 +115,6 @@ impl Toolbar {
             return;
         }
 
-        self.open = true;
         let own = self.input.read(cx).focus_handle(cx);
         if !own.is_focused(window) {
             self.restore = window.focused(cx);
@@ -126,17 +123,8 @@ impl Toolbar {
         cx.notify();
     }
 
-    fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.open {
-            true => self.close(window, cx),
-            false => self.focus(window, cx),
-        }
-    }
-
-    /// Empties and hides the field, and hands focus back to where it was before the field took
-    /// it. Focus left on a field that is no longer drawn reaches no handler, shortcuts included.
+    /// Clears the query and returns focus without removing the search field from its header.
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open = false;
         self.input.update(cx, |input, cx| input.set_text("", cx));
         let restore = self.restore.take();
         if self.input.read(cx).focus_handle(cx).is_focused(window) {
@@ -171,30 +159,7 @@ impl Render for Toolbar {
             .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.close(window, cx)))
             .children(tools)
             .when(self.apply.is_some(), |this| {
-                this.when(self.open, |this| {
-                    this.child(
-                        div()
-                            .flex()
-                            .flex_1()
-                            .min_w_0()
-                            .max_w(WIDEST)
-                            .child(self.input.clone()),
-                    )
-                })
-                .child(
-                    Button::new("search-toggle")
-                        .icon(match self.open {
-                            true => "icons/x.svg",
-                            false => "icons/search.svg",
-                        })
-                        .tooltip(match self.open {
-                            true => "common-dismiss",
-                            false => "common-search",
-                        })
-                        .small()
-                        .ghost()
-                        .on_click(cx.listener(|this, _, window, cx| this.toggle(window, cx))),
-                )
+                this.child(div().flex().w(WIDEST).min_w_0().child(self.input.clone()))
             })
     }
 }

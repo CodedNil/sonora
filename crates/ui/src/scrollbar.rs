@@ -4,15 +4,23 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
-    AnyWindowHandle, App, Context, DragMoveEvent, Empty, EntityId, ListState, MouseButton,
-    MouseDownEvent, Pixels, Point, Render, ScrollHandle, SpringConfig, Task, WeakEntity, Window,
-    anchored, deferred, div, img, point, px,
+    AnimationExt as _, AnyWindowHandle, App, Context, DragMoveEvent, Empty, EntityId, ListState,
+    MouseButton, MouseDownEvent, Pixels, Point, Render, ScrollHandle, ScrollWheelEvent,
+    SpringAnimation, SpringConfig, Task, WeakEntity, Window, anchored, deferred, div, img, point,
+    px,
 };
 
 use crate::glide::Glide;
+use crate::motion::Springs;
+use crate::scroller::ScrollAnchors;
 use crate::theme::ActiveTheme as _;
 
+/// Wait for a pause in input; attract nearby headings without crossing long gaps.
+const MAGNET_DELAY: Duration = Duration::from_millis(70);
+const MAGNET_REACH: f32 = 1.5;
+
 const BAR: Pixels = px(6.);
+const CONTENT_MARKER: Pixels = px(12.);
 const REACH: Pixels = px(2.);
 const THUMB_INSET: Pixels = px(4.);
 const REACHED: Pixels = px(0.5);
@@ -20,6 +28,7 @@ const MIN_THUMB: Pixels = px(24.);
 const TRACK_INSET: Pixels = px(4.);
 const LINGER: Duration = Duration::from_secs(2);
 const IDLE: f32 = 0.;
+const TABLE_IDLE: f32 = 0.12;
 const RESTING: f32 = 0.35;
 const ACTIVE: f32 = 0.55;
 const MIDDLE_SCROLL_DEADZONE: Pixels = px(8.);
@@ -149,12 +158,16 @@ pub struct Scrollbar {
     following: bool,
     nudges: u64,
     middle_scroll: Option<MiddleScroll>,
+    anchors: Option<ScrollAnchors>,
+    marks: ScrollAnchors,
+    settling: Option<Task<()>>,
+    magnetizing: bool,
 }
 
 impl Scrollbar {
     pub fn new(scroll: ScrollHandle) -> Self {
         Self {
-            scroll,
+            scroll: scroll.clone(),
             list: None,
             seen: Pixels::ZERO,
             awake: false,
@@ -171,6 +184,10 @@ impl Scrollbar {
             following: false,
             nudges: 0,
             middle_scroll: None,
+            marks: ScrollAnchors::new(scroll.clone()),
+            anchors: None,
+            settling: None,
+            magnetizing: false,
         }
     }
 
@@ -260,6 +277,11 @@ impl Scrollbar {
     /// no smoothing, but it is still theirs, and anything following the view has
     /// to know to stop.
     pub fn stirred(&mut self) {
+        self.settling = None;
+        if self.magnetizing {
+            self.glide.jump(&self.scroll, self.scroll.offset());
+            self.magnetizing = false;
+        }
         if let Some(list) = &self.list {
             self.glide.jump(list, list.scroll_px_offset_for_scrollbar());
             self.following = false;
@@ -270,12 +292,90 @@ impl Scrollbar {
     }
 
     pub fn nudge(&mut self, window: &mut Window) {
+        self.settling = None;
+        self.magnetizing = false;
         self.following = false;
         self.nudges = self.nudges.wrapping_add(1);
         match &self.list {
             Some(list) => self.glide.nudge(list, window),
             None => self.glide.nudge(&self.scroll, window),
         }
+    }
+
+    /// Persistent measurements shared by a scroller and its virtualized tables.
+    pub fn anchors(&self) -> ScrollAnchors {
+        self.marks.clone()
+    }
+
+    /// Shares measured section starts with ordinary wheel handling and forwarded lyric-card input.
+    pub(crate) fn set_anchors(&mut self, anchors: Option<ScrollAnchors>) {
+        if anchors.is_none() {
+            self.settling = None;
+        }
+        self.anchors = anchors;
+    }
+
+    /// Handles both direct and forwarded wheel input through the same glide and magnetic settle.
+    pub(crate) fn wheel(
+        &mut self,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event.delta.precise() {
+            true => self.stirred(),
+            false => self.nudge(window),
+        }
+        let delta = event.delta.pixel_delta(window.line_height());
+        if delta.y.abs() > delta.x.abs()
+            && let Some(anchors) = self.anchors.clone()
+        {
+            self.settle_near(anchors, -delta.y.as_f32().signum(), window, cx);
+        }
+    }
+
+    /// Offers a small animated correction after input stops, cancelled by any new input.
+    pub(crate) fn settle_near(
+        &mut self,
+        anchors: ScrollAnchors,
+        direction: f32,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let handle = window.window_handle();
+        self.settling = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(MAGNET_DELAY).await;
+            cx.update_window(handle, |_, window, cx| {
+                this.update(cx, |this, cx| {
+                    this.settling = None;
+                    if this.hovered || this.middle_scroll.is_some() || cx.has_active_drag() {
+                        return;
+                    }
+                    let goal = -this.goal();
+                    let reach = cx.theme().metrics.row * MAGNET_REACH;
+                    let maximum = this.scroll.max_offset().y;
+                    if (direction > 0. && goal >= maximum - reach)
+                        || (direction < 0. && goal <= reach)
+                    {
+                        return;
+                    }
+                    let Some(at) = anchors.nearest(goal, reach, maximum, direction) else {
+                        return;
+                    };
+                    if (at - goal).abs() <= REACHED {
+                        return;
+                    }
+                    match cx.reduce_motion() {
+                        true => this.place(-at),
+                        false => this.aim(-at, window),
+                    }
+                    this.magnetizing = true;
+                    cx.notify();
+                })
+                .ok();
+            })
+            .ok();
+        }));
     }
 
     pub fn aim(&mut self, to: Pixels, window: &mut Window) {
@@ -583,9 +683,14 @@ impl Render for Scrollbar {
             .max(Pixels::ZERO);
         let thumb = (track * (viewport / content)).max(MIN_THUMB).min(track);
         let travel = track - thumb;
-        let resting = match self.always_visible || self.awake || self.hovered {
-            true => RESTING,
-            false => IDLE,
+        let opacity = if self.hovered {
+            ACTIVE
+        } else if self.always_visible || self.awake {
+            RESTING
+        } else if self.marks.has_table() {
+            TABLE_IDLE
+        } else {
+            IDLE
         };
 
         let jump = target.clone();
@@ -634,6 +739,36 @@ impl Render for Scrollbar {
                     this.moved(offset, cx);
                 }),
             )
+            .when_some(self.marks.marker(), |this, position| {
+                this.child(deferred(
+                    div()
+                        .id("scrollbar-current-row")
+                        .absolute()
+                        .top(
+                            (track * (position / content).clamp(0., 1.) - CONTENT_MARKER / 2.)
+                                .clamp(Pixels::ZERO, (track - CONTENT_MARKER).max(Pixels::ZERO)),
+                        )
+                        .right(THUMB_INSET + REACH - (CONTENT_MARKER - BAR) / 2.)
+                        .size(CONTENT_MARKER)
+                        .rounded(theme.radius.min(CONTENT_MARKER / 3.))
+                        .bg(theme.primary)
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(theme.primary_hover))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                                this.stirred();
+                                this.aim(
+                                    -(position - viewport / 2.).clamp(Pixels::ZERO, hidden),
+                                    window,
+                                );
+                                cx.notify();
+                            }),
+                        ),
+                ))
+            })
             .child(
                 div()
                     .id(("scrollbar-thumb", cx.entity_id()))
@@ -643,8 +778,6 @@ impl Render for Scrollbar {
                     .w(BAR)
                     .h(thumb)
                     .rounded_full()
-                    .bg(theme.muted_foreground.opacity(resting))
-                    .hover(move |style| style.bg(theme.muted_foreground.opacity(ACTIVE)))
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,
@@ -692,6 +825,13 @@ impl Render for Scrollbar {
                             drag.set_offset(clamped);
                             this.moved(clamped, cx);
                         }),
+                    )
+                    .with_spring(
+                        "scrollbar-opacity",
+                        SpringAnimation::new(Springs::RESPONSIVE).to(opacity),
+                        move |thumb, opacity| {
+                            thumb.bg(theme.muted_foreground.opacity(opacity.clamp(0., 1.)))
+                        },
                     ),
             )
             .when_some(anchor, |bar, anchor| {

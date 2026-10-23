@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use router::{Destination, Link, navigate};
+use router::{Destination, Link};
 use std::time::Duration;
 use ui::ActiveTheme as _;
 use ui::Tails as _;
@@ -9,22 +9,22 @@ use ui::Tails as _;
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, Bounds, ClickEvent, Context, Entity, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, Render, ScrollWheelEvent, SharedString,
+    AnyElement, Bounds, ClickEvent, Context, Entity, MouseButton, MouseMoveEvent, MouseUpEvent,
+    Pixels, Render, ScrollWheelEvent, SharedString,
 };
 use gpui::{Window, canvas, div, point, px};
 use i18n::t;
 use input::{ToggleFullscreen, ToggleLyrics, ToggleQueue};
 use state::{AppSettings, Playback, PlayerBarLayout, Queue, SideTab, Sonora};
 use ui::{
-    Artwork, Button, ExplicitBadge, HoverFade, InlineLink, InlineLinks, Motion, Popup, Room,
-    Scrollbar, Scrubber, ScrubberState, clock, tabular,
+    Artwork, Button, ExplicitBadge, HoverFade, Motion, Room, Scrubber, ScrubberState, clock,
+    tabular,
 };
 
 use crate::chrome::devices::DevicePicker;
 use crate::chrome::jam::{self, JamPeople};
 use crate::chrome::{Chrome, SidebarRight};
-use crate::shared::menus::ItemMenu;
+use crate::shared::menus::CardMenu;
 use crate::shared::transport::{NOTCH, fraction, like, moved, percent, transport, volume_icon};
 
 const SEEK_MAX: f32 = 560.;
@@ -32,8 +32,7 @@ const VOLUME_WIDTH: f32 = 110.;
 const VOLUME_TIGHT: f32 = 72.;
 const CLOCK_SHORT: f32 = 3.4;
 const CLOCK_LONG: f32 = 5.4;
-/// The height of the strip above the bar that names the Jam being listened to, or the other
-/// device playback is on.
+/// The height of the strip above the bar that names the Jam being listened to.
 const BANNER: f32 = 32.;
 const BANNER_ICON: f32 = 14.;
 /// The width of a member's picture on the strip, and how many of them it shows before it counts
@@ -47,12 +46,10 @@ const FACES_PAD: f32 = 2.;
 pub(crate) struct PlayerBar {
     playback: Entity<Playback>,
     settings: Entity<AppSettings>,
-    track_menu: ItemMenu,
     devices: Entity<DevicePicker>,
     people: Entity<JamPeople>,
     /// Where the faces on the Jam's strip were last laid out, so the people list opens over them.
     faces_at: Rc<Cell<Option<Bounds<Pixels>>>>,
-    context_menu: Option<(music::Track, Point<Pixels>)>,
     seek: ScrubberState,
     volume: ScrubberState,
     pending: Option<f32>,
@@ -69,23 +66,22 @@ impl PlayerBar {
         let devices = Sonora::global(cx).devices.clone();
         cx.observe(&playback, |_, _, cx| cx.notify()).detach();
         cx.observe(&devices, |_, _, cx| cx.notify()).detach();
+        // The release date comes in with the album, after the song has started.
+        let stage = Sonora::global(cx).stage.clone();
+        cx.observe(&stage, |_, _, cx| cx.notify()).detach();
         cx.observe(&queue, |_, _, cx| cx.notify()).detach();
         cx.observe(&library, |_, _, cx| cx.notify()).detach();
         cx.observe(&settings, |_, _, cx| cx.notify()).detach();
 
-        let me = cx.entity_id();
-        let playlist_scrollbar = cx.new(|_| Scrollbar::inset().watching(me));
         let people = cx.new(JamPeople::new);
         let picker = cx.new(DevicePicker::new);
 
         Self {
             playback,
             settings,
-            track_menu: ItemMenu::new(playlist_scrollbar, cx),
             devices: picker,
             people,
             faces_at: Rc::default(),
-            context_menu: None,
             seek: ScrubberState::new("seek"),
             volume: ScrubberState::new("volume"),
             pending: None,
@@ -94,26 +90,6 @@ impl PlayerBar {
             volume_held: false,
             muted: None,
         }
-    }
-
-    fn open_context_menu(
-        &mut self,
-        track: music::Track,
-        position: Point<Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        self.track_menu.reset(cx);
-        self.context_menu = Some((track, position));
-        cx.notify();
-    }
-
-    /// Opens the track menu on whatever is playing when the click lands, so a render does not
-    /// have to hold a copy of the track for a menu that is rarely asked for.
-    fn open_playing_menu(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        let Some(track) = self.playback.read(cx).shown_track(cx) else {
-            return;
-        };
-        self.open_context_menu(track, position, cx);
     }
 
     fn commit_seek(&mut self, cx: &mut Context<Self>) {
@@ -220,13 +196,13 @@ impl PlayerBar {
 
     fn side_buttons(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = *cx.theme();
-        let (open, tab) = {
+        let (open, cards) = {
             let settings = self.settings.read(cx);
-            (settings.sidebar_right_open(), settings.sidebar_right_tab())
+            (settings.sidebar_right_open(), settings.sidebar_cards())
         };
 
         let button = move |id: &'static str, icon: &'static str, hint: &'static str, side| {
-            let showing = open && tab == side;
+            let showing = open && cards.expanded == Some(side);
 
             Button::new(id)
                 .ghost()
@@ -320,13 +296,7 @@ impl PlayerBar {
                 |this, album| this.link(Destination::Album(album.into())),
             )
             .when(track.is_some(), |this| {
-                this.on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                        window.prevent_default();
-                        this.open_playing_menu(event.position, cx);
-                    }),
-                )
+                this.on_mouse_down(MouseButton::Right, CardMenu::playing)
             })
             .child(Artwork::new(cover).size(artwork))
             .flex_none()
@@ -350,13 +320,7 @@ impl PlayerBar {
                     this.hover(|style| style.underline())
                         .link(Destination::Album(album_id.into()))
                 })
-                .on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                        window.prevent_default();
-                        this.open_playing_menu(event.position, cx);
-                    }),
-                )
+                .on_mouse_down(MouseButton::Right, CardMenu::playing)
                 .child(SharedString::from(track.name.clone()))
                 .min_w_0()
                 .truncate()
@@ -428,20 +392,29 @@ impl PlayerBar {
             .child(headline)
             .when_some(track, |this, track| {
                 this.child(
-                    InlineLinks::new(
-                        "now-playing-artist",
-                        track.artist_refs.iter().map(|artist| {
-                            InlineLink::new(artist.name.clone(), artist.id.clone().map(Into::into))
-                        }),
-                        track.artists.clone(),
-                        muted,
-                    )
-                    .text_size(artists)
-                    .when(centered, |this| this.justify_center())
-                    .truncate()
-                    .on_click(|id, cx| {
-                        navigate(Destination::Artist(id), cx);
-                    }),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .min_w_0()
+                        .when(centered, |this| this.justify_center())
+                        .text_size(artists)
+                        .text_color(muted)
+                        .child(
+                            crate::shared::cells::artist_links(
+                                "now-playing-artist",
+                                track.artist_refs.clone(),
+                                track.artists.clone(),
+                                muted,
+                            )
+                            .text_size(artists)
+                            .when(centered, |this| this.justify_center())
+                            .truncate(),
+                        )
+                        .children(
+                            super::stage::release(cx)
+                                .map(|date| div().flex_none().child(format!("· {date}"))),
+                        ),
                 )
             })
     }
@@ -468,10 +441,10 @@ impl PlayerBar {
     }
 
     /// How much of the content's bottom edge the strip above the bar covers right now, which
-    /// is nothing while no Jam or other device is being shown.
-    pub(crate) fn strip(playback: &Playback, cx: &gpui::App) -> Pixels {
+    /// is nothing while no Jam is being shown.
+    pub(crate) fn strip(cx: &gpui::App) -> Pixels {
         let devices = Sonora::global(cx).devices.read(cx);
-        match (devices.jam().is_some() && devices.available()) || playback.steered(cx).is_some() {
+        match devices.jam().is_some() && devices.available() {
             true => px(BANNER),
             false => Pixels::ZERO,
         }
@@ -589,15 +562,6 @@ impl Render for PlayerBar {
             .border_color(theme.border)
             .occlude()
             .on_mouse_move(cx.listener(Self::hover));
-
-        let context_menu = self.context_menu.clone().map(|(track, position)| {
-            Popup::new(position, self.track_menu.for_track(&track, cx)).on_close(cx.listener(
-                |this, _, _, cx| {
-                    this.context_menu = None;
-                    cx.notify();
-                },
-            ))
-        });
 
         let content = match (stacked, layout) {
             (true, _) => base
@@ -840,44 +804,10 @@ impl Render for PlayerBar {
                         }),
                 )
         });
-        // a Jam's strip names the device already, so the plain one is for when there is no Jam
-        let banner = banner.or_else(|| {
-            self.playback.read(cx).steered(cx).map(|steered| {
-                let devices = Sonora::global(cx).devices.clone();
-                strip("elsewhere-banner")
-                    .role(Role::Status)
-                    .aria_label(t!(
-                        "devices-elsewhere-banner",
-                        device = steered.device.name.clone()
-                    ))
-                    .child(
-                        gpui::svg()
-                            .path(icons::path("icons/monitor-speaker.svg"))
-                            .size(px(BANNER_ICON))
-                            .flex_none()
-                            .text_color(theme.foreground),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .child(t!("devices-elsewhere-banner", device = steered.device.name)),
-                    )
-                    .child(
-                        Button::new("elsewhere-here")
-                            .ghost()
-                            .small()
-                            .label(t!("devices-elsewhere-here"))
-                            .on_click(move |_, _, cx| devices.read(cx).transfer_here()),
-                    )
-            })
-        });
 
         content
             .relative()
             .when_some(banner, |this, banner| this.child(banner))
-            .when_some(context_menu, |this, menu| this.child(menu))
             .child(self.people.clone())
     }
 }

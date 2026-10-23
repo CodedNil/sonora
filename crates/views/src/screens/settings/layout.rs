@@ -158,7 +158,11 @@ pub(crate) fn frame(
         .when(!layout.measured, |page| page.invisible())
         .child(
             layout
-                .fade(Scroller::new(id, scrollbar).bottom_inset(crate::chrome::Chrome::bottom(cx)))
+                .fade(
+                    Scroller::new(id, scrollbar)
+                        .free_scroll()
+                        .bottom_inset(crate::chrome::Chrome::bottom(cx)),
+                )
                 .flex()
                 .flex_col()
                 .items_center()

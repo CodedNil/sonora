@@ -20,6 +20,8 @@ const TINT_HOVER: f32 = 0.14;
 const TINT_ACTIVE: f32 = 0.24;
 /// How far a small button's label sits from its edge, which text set beside one lines up with.
 pub const SMALL_INSET: Pixels = px(8.);
+/// The size an icon is drawn at unless the caller asks for another.
+const GLYPH: Pixels = px(16.);
 
 type Click = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
@@ -41,6 +43,7 @@ pub struct Button {
     /// A small element drawn after the icon and before the label, as a picker's curve sketch.
     leading: Option<AnyElement>,
     detail: Option<SharedString>,
+    icon_size: Option<Pixels>,
     trailing: Option<SharedString>,
     variant: Variant,
     small: bool,
@@ -69,6 +72,7 @@ impl Button {
             icon: None,
             leading: None,
             detail: None,
+            icon_size: None,
             trailing: None,
             variant: Variant::Ghost,
             small: false,
@@ -114,6 +118,12 @@ impl Button {
     /// that opens a page of its own says what is chosen there.
     pub fn detail(mut self, detail: impl Into<SharedString>) -> Self {
         self.detail = Some(detail.into());
+        self
+    }
+
+    /// Draws the icons at `size` rather than the usual 16 pixels.
+    pub fn icon_size(mut self, size: Pixels) -> Self {
+        self.icon_size = Some(size);
         self
     }
 
@@ -270,6 +280,7 @@ impl RenderOnce for Button {
             icon,
             leading,
             detail,
+            icon_size,
             trailing,
             variant,
             small,
@@ -374,6 +385,7 @@ impl RenderOnce for Button {
             false => state_style(hover, hovered, frosting),
         };
         let pressed = state_style(active, pressed, frosting);
+        let glyph = icon_size.unwrap_or(GLYPH);
         let overrides = std::mem::take(base.style());
         // A node reaches the tree only with a role, and an icon-only button has
         // no label of its own, so its tooltip key doubles as the accessible
@@ -428,7 +440,7 @@ impl RenderOnce for Button {
                 this.child(
                     svg()
                         .path(icons::path(path))
-                        .size(px(16.))
+                        .size(glyph)
                         .flex_none()
                         .text_color(foreground)
                         .with_transformation(Transformation::rotate(radians(turn * TAU))),
@@ -459,7 +471,7 @@ impl RenderOnce for Button {
                 this.child(
                     svg()
                         .path(icons::path(path))
-                        .size(px(16.))
+                        .size(glyph)
                         .flex_none()
                         .text_color(foreground),
                 )

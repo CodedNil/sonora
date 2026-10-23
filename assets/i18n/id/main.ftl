@@ -283,7 +283,6 @@ devices-jam-invite-detail = { $count ->
    *[other] { $count } orang sudah ada di Jam ini.
 }
 devices-jam-invite-join = Gabung
-devices-elsewhere-banner = Diputar di { $device }
 devices-elsewhere-here = Putar di sini
 fullscreen-artwork = Sampul
 
@@ -576,7 +575,6 @@ settings-group-protected = Pemutaran terproteksi
 settings-group-output = Keluaran
 settings-group-status = Status
 settings-group-startup = Saat memulai
-settings-group-context-menus = Menu konteks
 key-ctrl = Ctrl
 key-super = Super
 key-alt = Alt
@@ -642,9 +640,6 @@ settings-font-value = { $size } px
 settings-startup = Buka saat memulai
 settings-startup-detail = Layar yang pertama dibuka saat Sonora dijalankan
 settings-startup-no-guest = Tidak tersedia di Mode Tamu
-settings-entries = Menu bilah sisi
-settings-entries-detail = Bagian-bagian yang ditampilkan di bilah sisi
-settings-entries-pick = Pilih menu
 settings-language = Bahasa
 settings-language-detail = Bahasa yang digunakan di seluruh antarmuka Sonora
 settings-language-system = Bawaan sistem
@@ -1000,8 +995,6 @@ settings-group-text = Teks
 settings-group-motion = Animasi & Gerakan
 settings-group-streaming = Streaming
 settings-group-spotify-connect = Spotify Connect
-settings-adaptive-menu = Menu konteks adaptif
-settings-adaptive-menu-detail = Sembunyikan entri menu yang sudah ditampilkan oleh baris tersebut (seperti album atau artis)
 settings-accounts = Kelola akun
 settings-accounts-detail = Layanan musik yang dapat diputar dari perangkat ini
 settings-provider-current = Sedang memutar dari layanan ini

@@ -5,7 +5,7 @@ use std::time::Duration;
 use gpui::prelude::*;
 use gpui::{
     Anchor, AnyElement, AnyWindowHandle, App, Bounds, ClickEvent, Div, ElementId, Entity,
-    FocusHandle, Focusable as _, Global, Interactivity, MouseButton, MouseClickEvent,
+    FocusHandle, Focusable as _, FontWeight, Global, Interactivity, MouseButton, MouseClickEvent,
     MouseDownEvent, Pixels, Point, ScrollWheelEvent, SharedString, Size, Stateful, StyleRefinement,
     Window, anchored, deferred, div, point, px, svg,
 };
@@ -762,8 +762,8 @@ impl RenderOnce for Menu {
                     .w_full()
                     .min_w_0()
                     .flex_col()
-                    .px_3()
-                    .py_1()
+                    .px(theme.metrics.pad * 1.5)
+                    .py(theme.metrics.pad / 2.)
                     .child(content)
                     .into_any_element();
             }
@@ -1263,4 +1263,31 @@ fn step(
         scrollbar.read(cx).scroll().scroll_to_item(rows[place]);
     }
     search.input.update(cx, |_, cx| cx.notify());
+}
+/// The shared sentence-case label for custom context-menu controls and drag rows.
+pub fn menu_label(label: impl Into<SharedString>, cx: &App) -> Div {
+    div()
+        .text_size(cx.theme().text(crate::Text::Body))
+        .text_color(cx.theme().foreground)
+        .child(label.into())
+}
+
+/// A subdued section title inside a context-menu editor, without sidebar heading capitals.
+pub fn menu_heading(label: impl Into<SharedString>, cx: &App) -> Div {
+    div()
+        .text_size(cx.theme().text(crate::Text::Small))
+        .text_color(cx.theme().muted_foreground)
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(label.into())
+}
+
+/// Shared height, typography and control spacing for custom menu editor rows.
+pub fn menu_row(cx: &App) -> Div {
+    div()
+        .h(cx.theme().metrics.row)
+        .flex()
+        .items_center()
+        .gap_3()
+        .text_size(cx.theme().text(crate::Text::Body))
+        .text_color(cx.theme().foreground)
 }

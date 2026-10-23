@@ -1,16 +1,15 @@
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, Context, Entity, FontWeight, Pixels, Point, Render, SharedString, WeakEntity,
-    Window, div, px,
+    AnyElement, Context, Entity, FontWeight, Pixels, Render, SharedString, Window, div, px,
 };
 use i18n::t;
 use music::{Credit, Track};
 use router::{Destination, Link as _};
 use state::{Playback, SongDetail, Sonora};
 use ui::{
-    ActiveTheme as _, Avatar, Button, Fact, InfoCard, Initials, Popup, Scrollbar, Scroller,
-    Skeleton, Tails as _, Text, clock,
+    ActiveTheme as _, Avatar, Button, Fact, InfoCard, Initials, Scrollbar, Scroller, Skeleton,
+    Tails as _, Text, clock,
 };
 
 use crate::shared::about::{AboutArtist, about_modal};
@@ -18,7 +17,7 @@ use crate::shared::cells;
 use crate::shared::hero::{
     HeroMetaStrip, HeroPlayButton, PageHero, copyright_notice, release_date_label,
 };
-use crate::shared::menus::ItemMenu;
+use crate::shared::menus::{CardMenu, Item};
 use crate::shared::pins::Pinned as _;
 use crate::shared::trouble;
 
@@ -34,9 +33,6 @@ pub(crate) struct SongView {
     scrollbar: Entity<Scrollbar>,
     about_bar: Entity<Scrollbar>,
     about_open: bool,
-    track_menu: ItemMenu,
-    context_menu: Option<Point<Pixels>>,
-    me: WeakEntity<Self>,
 }
 
 impl SongView {
@@ -79,7 +75,6 @@ impl SongView {
         let library = Sonora::global(cx).library.clone();
         cx.observe(&library, |_, _, cx| cx.notify()).detach();
         let me = cx.entity_id();
-        let playlist_scrollbar = cx.new(|_| Scrollbar::inset().watching(me));
 
         Self {
             detail,
@@ -87,9 +82,6 @@ impl SongView {
             scrollbar: cx.new(|_| Scrollbar::new(gpui::ScrollHandle::new()).watching(me)),
             about_bar: cx.new(|_| Scrollbar::new(gpui::ScrollHandle::new()).watching(me)),
             about_open: false,
-            track_menu: ItemMenu::new(playlist_scrollbar, cx),
-            context_menu: None,
-            me: cx.weak_entity(),
         }
     }
 
@@ -139,7 +131,6 @@ impl SongView {
             });
 
         let pin = track.pin().map(|pin| pin.cover(cover.clone()));
-        let view = self.me.clone();
 
         PageHero::new("song-hero", track.name.clone())
             .pin(pin)
@@ -148,30 +139,11 @@ impl SongView {
             .meta(meta)
             .actions(actions)
             .explicit(track.explicit)
-            .drag_start(move |event, window, cx| {
-                window.prevent_default();
-                view.update(cx, |this, cx| {
-                    this.track_menu.reset(cx);
-                    this.context_menu = Some(event.position);
-                    cx.notify();
-                })
-                .ok();
-            })
+            .drag_start(CardMenu::opener(
+                Item::Track(track.clone()),
+                self.playback.clone(),
+            ))
             .into_any_element()
-    }
-
-    fn menu(&self, cx: &mut Context<Self>) -> Option<Popup> {
-        let position = self.context_menu?;
-        let track = self.detail.read(cx).track().cloned()?;
-
-        Some(
-            Popup::new(position, self.track_menu.for_track(&track, cx)).on_close(cx.listener(
-                |this, _, _, cx| {
-                    this.context_menu = None;
-                    cx.notify();
-                },
-            )),
-        )
     }
 
     fn overview(&self, track: &Track, cx: &Context<Self>) -> AnyElement {
@@ -554,7 +526,7 @@ impl Render for SongView {
                 Scroller::new("song-page", &self.scrollbar)
                     .bottom_inset(crate::chrome::Chrome::bottom(cx))
                     .px(theme.metrics.inset)
-                    .py(theme.metrics.inset)
+                    .pb(theme.metrics.inset)
                     .when(loading && track.is_none(), |this| {
                         this.child(self.loading(cx))
                     })
@@ -605,7 +577,6 @@ impl Render for SongView {
                             )
                     }),
             )
-            .children(self.menu(cx))
             .children(self.about_dialog(cx))
             .into_any_element()
     }

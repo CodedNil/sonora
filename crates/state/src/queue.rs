@@ -212,6 +212,7 @@ fn hydrate(stub: Stub) -> Track {
         duration: Duration::from_secs_f32(stub.seconds.max(0.)),
         added_at: None,
         added_by: None,
+        year: 0,
         playcount: None,
         popularity: 0,
         explicit: stub.explicit,
@@ -663,6 +664,11 @@ impl Queue {
     /// The full upcoming play order, including recommendations.
     pub fn upcoming(&self) -> impl ExactSizeIterator<Item = &Track> {
         self.upcoming.iter().map(|entry| entry.track.as_ref())
+    }
+
+    /// Stable occurrence keys for queue-row reorder animations.
+    pub fn upcoming_keys(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.upcoming.iter().map(|entry| entry.uid.as_str())
     }
 
     /// How many songs are left to play before the recommendations.
@@ -1350,6 +1356,7 @@ mod tests {
             duration: Duration::from_secs(180),
             added_at: None,
             added_by: None,
+            year: 0,
             playcount: None,
             popularity: 0,
             explicit: false,

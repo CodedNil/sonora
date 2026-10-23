@@ -14,7 +14,9 @@ use crate::input::{
     clamp_range, masked_text, primary_paste, span,
 };
 use crate::menu::{Menu, MenuItem};
+use crate::metrics::Text as Size;
 use crate::popup::Popup;
+use crate::separator::Separator;
 use crate::theme::ActiveTheme as _;
 
 struct Text {
@@ -325,6 +327,7 @@ impl Render for Input {
             .h(height)
             .px_3()
             .rounded(radius)
+            .when(self.pill, |this| this.rounded_full().px_4())
             // a field tucked into a frosted menu takes the menu's own translucent row fill, since
             // a flat one would sit on the frost as a solid slab
             .map(|this| match (self.blurred, self.tucked, blurring(cx)) {
@@ -411,6 +414,18 @@ impl Render for Input {
                 self.shortcut.clone().filter(|_| self.content.is_empty()),
                 |this, keystroke| this.child(crate::Kbd::new(keystroke)),
             )
+            .when_some(self.action.clone(), |this, (icon, tooltip, act)| {
+                this.child(Separator::vertical().h(theme.text(Size::Large)))
+                    .child(
+                        Button::new("input-action")
+                            .icon(icon)
+                            .tooltip(tooltip)
+                            .small()
+                            .ghost()
+                            .px_1()
+                            .on_click(move |_, window, cx| act(window, cx)),
+                    )
+            })
             .when_some(context_menu, |this, menu| this.child(menu))
     }
 }

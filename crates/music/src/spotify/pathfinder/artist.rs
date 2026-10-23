@@ -5,7 +5,7 @@ use librespot_core::Session;
 use serde::Deserialize;
 
 use super::query;
-use crate::{Album, ArtistRef, ReleaseType};
+use crate::{Album, ArtistRef, ReleaseType, SavedArtist};
 
 pub(crate) struct Overview {
     pub(crate) name: String,
@@ -14,6 +14,7 @@ pub(crate) struct Overview {
     pub(crate) monthly_listeners: Option<u64>,
     pub(crate) tracks: Vec<(String, Option<u64>)>,
     pub(crate) albums: Vec<Album>,
+    pub(crate) similar: Vec<SavedArtist>,
 }
 
 #[derive(Deserialize)]
@@ -29,6 +30,31 @@ struct PathArtist {
     visuals: Visuals,
     discography: Option<Discography>,
     stats: Option<Stats>,
+    #[serde(rename = "relatedContent", default)]
+    related: RelatedContent,
+}
+
+/// Related shelves returned by the current artist overview.
+#[derive(Default, Deserialize)]
+struct RelatedContent {
+    #[serde(rename = "relatedArtists", default)]
+    artists: RelatedArtists,
+}
+
+/// The artists in the overview’s Fans also like shelf.
+#[derive(Default, Deserialize)]
+struct RelatedArtists {
+    #[serde(default)]
+    items: Vec<RelatedArtist>,
+}
+
+/// An artist card with the same profile and portrait fields used by Spotify’s page.
+#[derive(Deserialize)]
+struct RelatedArtist {
+    uri: String,
+    profile: Profile,
+    #[serde(default)]
+    visuals: Visuals,
 }
 
 #[derive(Deserialize)]
@@ -208,6 +234,20 @@ fn overview(data: Data, artist_id: &str) -> Result<Overview> {
         monthly_listeners: artist.stats.and_then(|stats| stats.monthly_listeners),
         tracks,
         albums,
+        similar: artist
+            .related
+            .artists
+            .items
+            .into_iter()
+            .filter_map(|artist| {
+                Some(SavedArtist {
+                    id: artist.uri.strip_prefix("spotify:artist:")?.to_owned(),
+                    name: artist.profile.name,
+                    cover: cover(&artist.visuals.avatar.sources, true),
+                    added_at: None,
+                })
+            })
+            .collect(),
     })
 }
 

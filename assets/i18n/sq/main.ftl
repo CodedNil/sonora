@@ -283,7 +283,6 @@ devices-jam-invite-detail = { $count ->
    *[other] { $count } persona janë tashmë në këtë Jam.
 }
 devices-jam-invite-join = Bashkohu
-devices-elsewhere-banner = Duke luajtur në { $device }
 devices-elsewhere-here = Luaj këtu
 fullscreen-artwork = Kopertina
 
@@ -576,7 +575,6 @@ settings-group-protected = Luajtja e mbrojtur
 settings-group-output = Dalja
 settings-group-status = Statusi
 settings-group-startup = Nisja
-settings-group-context-menus = Menutë kontekstuale
 key-ctrl = Ctrl
 key-super = Super
 key-alt = Alt
@@ -642,9 +640,6 @@ settings-font-value = { $size } px
 settings-startup = Shfaq në nisje
 settings-startup-detail = Ekrani që hap Sonora në nisje
 settings-startup-no-guest = Nuk disponohet në modalitetin mysafir
-settings-entries = Zërat e shiritit anësor
-settings-entries-detail = Seksionet e listuara në shiritin anësor
-settings-entries-pick = Zgjidh zërat
 settings-language = Gjuha
 settings-language-detail = Gjuha që Sonora përdor në të gjithë ndërfaqen
 settings-language-system = Sistemi
@@ -1000,8 +995,6 @@ settings-group-text = Teksti
 settings-group-motion = Lëvizja
 settings-group-streaming = Transmetimi
 settings-group-spotify-connect = Spotify Connect
-settings-adaptive-menu = Menu kontekstuale adaptive
-settings-adaptive-menu-detail = Lë jashtë zërat që rreshti tregon tashmë, si albumi ose artisti
 settings-accounts = Menaxho llogaritë
 settings-accounts-detail = Shërbimet nga të cilat ky pajisje mund të luajë
 settings-provider-current = Duke luajtur nga ky shërbim

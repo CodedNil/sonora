@@ -200,6 +200,7 @@ impl Store {
                     duration: std::time::Duration::from_millis(duration.max(0) as u64),
                     added_at: Some(played_at / 1_000),
                     added_by: None,
+                    year: 0,
                     playcount: None,
                     popularity: 0,
                     explicit: row.get(10)?,

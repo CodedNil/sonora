@@ -6,7 +6,7 @@ use gpui::prelude::*;
 use gpui::{AnyElement, Context, FontWeight, SharedString, div, img};
 use i18n::t;
 use state::Channel;
-use ui::{ActiveTheme as _, Avatar, Switch, Text};
+use ui::{ActiveTheme as _, Avatar, Text};
 
 use super::rows::{outward, segmented};
 use super::{Group, SettingsView, Slot, group_heading};
@@ -83,21 +83,6 @@ impl SettingsView {
                 .role(gpui::accesskit::Role::Label)
                 .aria_label(state::VERSION)
                 .child(state::VERSION)
-                .into_any_element(),
-        )
-    }
-
-    pub(super) fn updates_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).check_updates();
-
-        self.row(
-            t!("settings-check-updates"),
-            Switch::new("check-updates", on)
-                .name(t!("settings-check-updates"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_check_updates(!on, cx));
-                }))
                 .into_any_element(),
         )
     }

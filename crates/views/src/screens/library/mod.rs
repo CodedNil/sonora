@@ -7,7 +7,7 @@ use std::rc::Rc;
 use crate::chrome::tools::{self, Sliders};
 use crate::chrome::{Chrome, Searchable, Toolbar, Tooled};
 use crate::shared::confirm::{Confirm, Kind};
-use crate::shared::menus::{ItemMenu, new_playlist_menu};
+use crate::shared::menus::{CardMenu, Item, ItemMenu, new_playlist_menu};
 use crate::shared::playlist_editor::{Edit, PlaylistEditor};
 
 use gpui::accesskit::Role;
@@ -26,7 +26,7 @@ use state::{
 use ui::{
     ActiveTheme as _, Button, Card, Deck, FilterChange, LEADING, Mode, Pinnable, Popovers, Popup,
     Scrollbar, Scroller, Sort, SortAxis, TableDelegate, TableEvent, TableSource, TableState, Text,
-    Vacancy, Viewport, heading, quantize, runtime, scrolled, snapped, table,
+    Vacancy, heading, runtime, scrolled, snapped, table,
 };
 
 use crate::shared::album_grid::{AlbumGrid, CardGrid};
@@ -62,13 +62,8 @@ pub enum Section {
 }
 
 const PINNED: [&str; 3] = ["cover", "title", "name"];
-const RECENT: Sort = Sort::Descending;
 
-#[derive(Clone)]
-enum LibraryMenu {
-    Background,
-    Track(Box<Track>),
-}
+const RECENT: Sort = Sort::Descending;
 
 #[derive(Clone)]
 enum DeckRow {
@@ -203,7 +198,7 @@ pub struct LibraryView {
     albums: Entity<TableState<AlbumSource>>,
     playlists: Entity<TableState<PlaylistSource>>,
     artists: Entity<TableState<ArtistSource>>,
-    context_menu: Option<(LibraryMenu, Point<Pixels>)>,
+    context_menu: Option<Point<Pixels>>,
     toolbar: Entity<Toolbar>,
     popovers: Popovers,
     sliders: [Sliders; 4],
@@ -218,7 +213,7 @@ impl LibraryView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let width = cells::content_width(window, Pixels::ZERO, cx);
+        let width = cells::content_width(window, page::reserved(cx.theme().metrics.inset), cx);
         let settings = Sonora::global(cx).settings.clone();
         let stored = |section: Section, cx: &App| {
             let settings = settings.read(cx);
@@ -606,14 +601,25 @@ impl LibraryView {
         cx.notify();
     }
 
-    fn viewport(scroll: &ScrollHandle, window: &Window) -> Viewport {
-        quantize(scroll, window);
-        let visible = scroll.bounds().size.height;
-
-        Viewport::measured(scrolled(scroll), visible, window)
-    }
-
-    fn header(&self, cx: &Context<Self>) -> AnyElement {
+    fn header(&self, compact: bool, cx: &App) -> AnyElement {
+        if !self.section.listing() {
+            let label = match self.section {
+                Section::Albums => "nav-albums",
+                Section::Artists => "nav-artists",
+                Section::Playlists => "nav-playlists",
+                Section::Songs => "nav-songs",
+            };
+            return PageHero::new("library-section-hero", i18n::lookup(label, None))
+                .compact(compact)
+                .fallback(self.section.glyph(self.shape(cx)))
+                .accent()
+                .eyebrow(match self.shelf {
+                    Shelf::Local => t!("nav-local"),
+                    Shelf::Streaming => t!("nav-library"),
+                })
+                .actions(self.toolbar.clone())
+                .into_any_element();
+        }
         let state = self.tracks().read(cx);
         let delegate = state.delegate();
         let listed = delegate.row_count();
@@ -650,6 +656,7 @@ impl LibraryView {
         };
 
         PageHero::new("library-hero", title)
+            .compact(compact)
             .fallback(icon)
             .accent()
             .eyebrow(eyebrow)
@@ -659,17 +666,21 @@ impl LibraryView {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(HeroPlayButton::listed(
-                        "play-library",
-                        t!("library-play-liked-songs"),
-                        self.tracks(),
-                        self.playback.clone(),
-                    ))
+                    .child(
+                        HeroPlayButton::listed(
+                            "play-library",
+                            t!("library-play-liked-songs"),
+                            self.tracks(),
+                            self.playback.clone(),
+                        )
+                        .compact(compact),
+                    )
                     .child(HeroPlayButton::shuffle_listed(
                         "shuffle-library",
                         self.tracks(),
                         self.playback.clone(),
-                    )),
+                    ))
+                    .child(self.toolbar.clone()),
             )
             .into_any_element()
     }
@@ -821,7 +832,7 @@ impl LibraryView {
     }
 
     fn resize(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let width = cells::content_width(window, Pixels::ZERO, cx);
+        let width = cells::content_width(window, page::reserved(cx.theme().metrics.inset), cx);
         if (width - self.width).abs() < px(0.5) {
             return;
         }
@@ -861,7 +872,8 @@ impl LibraryView {
 
         Scroller::new("library-cards", &self.card_scrollbar)
             .bottom_inset(crate::chrome::Chrome::bottom(cx))
-            .py(inset)
+            .pb(inset)
+            .child(div().px(inset).child(self.header(false, cx)))
             .child(
                 div()
                     .flex()
@@ -892,7 +904,11 @@ impl LibraryView {
         let gap = deck_gap(window);
         let tile = Card::tile_height(card, window, cx);
         let heading = head_height(window, cx);
-        let depth = (scrolled(&scroll) - inset).max(Pixels::ZERO);
+        let hero = scroll
+            .bounds_for_item(0)
+            .map(|bounds| bounds.size.height)
+            .unwrap_or_default();
+        let depth = (scrolled(&scroll) - hero).max(Pixels::ZERO);
 
         let repacked = self.card_columns != columns
             || (self.card_tile - tile).abs() >= px(0.5)
@@ -935,7 +951,7 @@ impl LibraryView {
                 .copied()
                 .unwrap_or(Pixels::ZERO);
             let into = heights.get(index).copied().unwrap_or(Pixels::ZERO) * share;
-            scroll.set_offset(point(Pixels::ZERO, -(top + into + inset)));
+            scroll.set_offset(point(Pixels::ZERO, -(top + into + hero)));
         }
 
         let rows = self.card_rows.clone();
@@ -944,9 +960,11 @@ impl LibraryView {
 
         Scroller::new("library-cards", &self.card_scrollbar)
             .bottom_inset(crate::chrome::Chrome::bottom(cx))
-            .py(inset)
+            .pb(inset)
+            .child(div().px(inset).child(self.header(false, cx)))
             .child(
                 Deck::new("library-deck")
+                    .magnetic(self.card_scrollbar.read(cx).anchors())
                     .rows(heights)
                     .gap(gap)
                     .draw(move |index, _, cx| {
@@ -1030,7 +1048,6 @@ impl LibraryView {
 
         let pin = track.pin();
         let context = track.clone();
-        let view = self.me.clone();
 
         Some(
             Card::new(("library-track", display), SharedString::from(track.name))
@@ -1041,19 +1058,10 @@ impl LibraryView {
                 .flat()
                 .when(track.explicit, Card::explicit)
                 .bare_meta(artists)
-                .menu(move |event, _, cx| {
-                    let Some(view) = view.upgrade() else {
-                        return;
-                    };
-                    view.update(cx, |this, cx| {
-                        this.tracks().read(cx).delegate().source().menu().reset(cx);
-                        this.context_menu = Some((
-                            LibraryMenu::Track(Box::new(context.clone())),
-                            event.position,
-                        ));
-                        cx.notify();
-                    });
-                })
+                .menu(CardMenu::opener(
+                    Item::Track(context),
+                    self.playback.clone(),
+                ))
                 .when(playable, move |card| {
                     card.play(playing, move |_, _, cx| match current {
                         Some(_) => played.1.update(cx, |playback, cx| playback.toggle_play(cx)),
@@ -1124,34 +1132,30 @@ impl Render for LibraryView {
         let theme = *cx.theme();
         let inset = theme.metrics.inset;
         let mode = self.mode();
+        let bar = match mode {
+            Mode::Grid => &self.card_scrollbar,
+            Mode::List => &self.scrollbar,
+        };
+        let sticky = page::sticky(bar, cx);
         if mode == Mode::List {
             self.table(self.section).claim(cx);
             let scroll = self.scrollbar.read(cx).scroll().clone();
-            let viewport = match self.section.listing() {
-                true => page::viewport(&scroll, inset, window),
-                false => Self::viewport(&scroll, window),
-            };
+            let viewport = page::viewport(&scroll, sticky, window);
+            let anchors = self.scrollbar.read(cx).anchors();
+            self.table(self.section).set_anchors(anchors, cx);
             self.table(self.section).set_viewport(viewport, cx);
         }
 
-        let context_menu = self.context_menu.clone().map(|(target, position)| {
-            let menu = match target {
-                LibraryMenu::Track(track) => self
-                    .tracks()
-                    .read(cx)
-                    .delegate()
-                    .source()
-                    .menu()
-                    .for_track(&track, cx),
-                LibraryMenu::Background => new_playlist_menu(cx.listener(|this, _, window, cx| {
-                    this.create_playlist(window, cx);
-                })),
-            };
+        let context_menu = self.context_menu.map(|position| {
+            let menu = new_playlist_menu(cx.listener(|this, _, window, cx| {
+                this.create_playlist(window, cx);
+            }));
             Popup::new(position, menu).on_close(cx.listener(|this, _, _, cx| {
                 this.context_menu = None;
                 cx.notify();
             }))
         });
+
         let view = cx.entity().downgrade();
         let section = self.section;
         let note = self.note(cx);
@@ -1162,22 +1166,29 @@ impl Render for LibraryView {
             (section, Mode::List) if section.listing() => {
                 Scroller::new("library-page", &self.scrollbar)
                     .bottom_inset(crate::chrome::Chrome::bottom(cx))
-                    .pt(inset)
+                    .px(inset)
                     .pb(inset)
-                    .child(div().px(inset).child(self.header(cx)))
+                    .child(div().child(self.header(false, cx)))
                     .child(table(self.tracks()))
                     .when_some(note, |this, note| this.child(note))
                     .into_any_element()
             }
             (_, Mode::List) => Scroller::new("library-page", &self.scrollbar)
                 .bottom_inset(crate::chrome::Chrome::bottom(cx))
+                .px(inset)
                 .pb(inset)
+                .child(div().child(self.header(false, cx)))
                 .child(self.table(self.section).element())
                 .when_some(note, |this, note| this.child(note))
                 .into_any_element(),
             (_, Mode::Grid) if note.is_none() && self.waiting(cx) => self.pending_cards(window, cx),
             (_, Mode::Grid) => match note {
-                Some(note) => note.size_full().into_any_element(),
+                Some(note) => Scroller::new("library-cards", &self.card_scrollbar)
+                    .bottom_inset(crate::chrome::Chrome::bottom(cx))
+                    .pb(inset)
+                    .child(div().px(inset).child(self.header(false, cx)))
+                    .child(note)
+                    .into_any_element(),
                 None => self.cards(window, cx),
             },
         };
@@ -1194,11 +1205,14 @@ impl Render for LibraryView {
                     return;
                 };
                 view.update(cx, |this, cx| {
-                    this.context_menu = Some((LibraryMenu::Background, event.position));
+                    this.context_menu = Some(event.position);
                     cx.notify();
                 });
             })
             .child(content)
+            .when(sticky > Pixels::ZERO, |this| {
+                this.child(page::header(self.header(true, cx), inset, cx))
+            })
             .when_some(context_menu, |this, menu| this.child(menu))
     }
 }
@@ -1276,12 +1290,6 @@ impl Tooled for LibraryView {
 
         let mut tools = Vec::new();
         tools.extend(create);
-        let switchable = !self.section.listing();
-        tools.extend(switchable.then(|| {
-            tools::views(&self.popovers, self.mode(), move |mode, cx| {
-                viewed.update(cx, |view, cx| view.set_mode(mode, cx)).ok();
-            })
-        }));
         // A section keeps its funnel while anything is narrowed, even once the axes have gone
         // with the rows, or an empty result would lock the filter that emptied it in place.
         let table = self.table(self.section);
@@ -1297,14 +1305,22 @@ impl Tooled for LibraryView {
                 cx,
             ));
         }
-        tools.push(tools::sorts(
-            &self.popovers,
-            self.sorts(cx),
-            move |key, cx| {
-                sorted.update(cx, |view, cx| view.set_sort(key, cx)).ok();
-            },
-            cx,
-        ));
+        if self.mode() == Mode::Grid {
+            tools.push(tools::sorts(
+                &self.popovers,
+                self.sorts(cx),
+                move |key, cx| {
+                    sorted.update(cx, |view, cx| view.set_sort(key, cx)).ok();
+                },
+                cx,
+            ));
+        }
+        let switchable = !self.section.listing();
+        tools.extend(switchable.then(|| {
+            tools::views(&self.popovers, self.mode(), move |mode, cx| {
+                viewed.update(cx, |view, cx| view.set_mode(mode, cx)).ok();
+            })
+        }));
         tools
     }
 }

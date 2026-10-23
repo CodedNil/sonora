@@ -48,6 +48,14 @@ pub struct ArtistRef {
     pub id: Option<String>,
 }
 
+/// The short looping clip a song shows behind its artwork, or the still an artist set instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Canvas {
+    pub url: String,
+    /// Whether `url` is a clip to loop rather than a still image.
+    pub video: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Credit {
     pub name: String,
@@ -68,6 +76,9 @@ pub struct Track {
     pub duration: Duration,
     pub added_at: Option<i64>,
     pub added_by: Option<Arc<Contributor>>,
+    /// Reported release year; zero means the provider did not supply one.
+    #[serde(default)]
+    pub year: i32,
     pub playcount: Option<u64>,
     pub popularity: u32,
     pub explicit: bool,

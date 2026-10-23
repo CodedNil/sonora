@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use gpui::{App, Entity, Pixels, ScrollHandle, Window, px};
+use gpui::prelude::*;
+use gpui::{App, Div, Entity, Pixels, ScrollHandle, Window, div, px};
+use ui::ActiveTheme as _;
 
 use state::{AppSettings, FilterValue, Playback};
 use ui::{Filter, FilterChange, Listing, TableState, Viewport, quantize, scrolled};
@@ -152,7 +154,7 @@ pub(crate) fn resize(
     table.set_width(next, cx);
 }
 
-pub(crate) fn viewport(scroll: &ScrollHandle, inset: Pixels, window: &Window) -> Viewport {
+pub(crate) fn viewport(scroll: &ScrollHandle, header: Pixels, window: &Window) -> Viewport {
     quantize(scroll, window);
     let hero = scroll
         .bounds_for_item(0)
@@ -160,5 +162,42 @@ pub(crate) fn viewport(scroll: &ScrollHandle, inset: Pixels, window: &Window) ->
         .unwrap_or_default();
     let visible = scroll.bounds().size.height;
 
-    Viewport::measured(scrolled(scroll) - inset - hero, visible, window)
+    let mut viewport =
+        Viewport::measured(scrolled(scroll) - hero + header, visible - header, window);
+    viewport.underlap = header;
+    viewport
+}
+
+/// Reveals the compact header as the full hero scrolls away, keeping table and snap targets below it.
+pub(crate) fn sticky(bar: &Entity<ui::Scrollbar>, cx: &App) -> Pixels {
+    let bar = bar.read(cx);
+    let scroll = bar.scroll();
+    let height = cx.theme().metrics.control + cx.theme().metrics.pad * 2.;
+    let hero = scroll.bounds_for_item(0).map(|bounds| bounds.size.height);
+    let shown = hero.is_some_and(|hero| scrolled(scroll) + height >= hero);
+    let height = match shown {
+        true => height,
+        false => Pixels::ZERO,
+    };
+    bar.anchors().set_inset(height);
+    height
+}
+
+/// The shared surface for a compact page header, above the sticky table headings.
+pub(crate) fn header(content: impl IntoElement, inset: Pixels, cx: &App) -> Div {
+    ui::popover_surface(
+        div()
+            .absolute()
+            .top_0()
+            .left(inset)
+            .right(inset)
+            .px(cx.theme().metrics.pad)
+            .rounded_tl(cx.theme().radius)
+            .rounded_tr(cx.theme().radius)
+            .min_w_0()
+            .overflow_hidden()
+            .occlude(),
+        cx,
+    )
+    .child(content)
 }

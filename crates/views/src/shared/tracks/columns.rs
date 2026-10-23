@@ -2,7 +2,7 @@ use gpui::{Pixels, TextAlign, px};
 use ui::rank::{ESSENTIAL, HANDY, NICE, SPARE, USEFUL};
 use ui::{ColumnSpec, Width};
 
-use crate::shared::cells::{DATE, NUMBER};
+use crate::shared::cells::{ADDED_DATE, DATE, NUMBER};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TrackField {
@@ -16,10 +16,13 @@ pub(crate) enum TrackField {
     PlayedAt,
     Plays,
     Duration,
+    Year,
+    Tags,
+    Popularity,
 }
 
 const LENGTH: Pixels = px(84.);
-const CREDITED: Pixels = px(144.);
+const CREDITED: Pixels = px(192.);
 const CONTRIBUTOR: Pixels = px(168.);
 const ALBUM_LENGTH: Pixels = px(120.);
 const ALBUM_PLAYS: Pixels = px(108.);
@@ -61,7 +64,7 @@ const ADDED_AT: ColumnSpec<TrackField> = ColumnSpec {
     field: TrackField::AddedAt,
     key: "added-at",
     header: "column-date-added",
-    width: Width::Fixed(DATE),
+    width: Width::Fixed(ADDED_DATE),
     rank: NICE,
     ..COLUMN
 };
@@ -80,10 +83,17 @@ const CREDITED_AT: ColumnSpec<TrackField> = ColumnSpec {
     ..ADDED_AT
 };
 
+/// Play counts can be enabled wherever a provider supplies them.
+const OPTIONAL_PLAYS: ColumnSpec<TrackField> = ColumnSpec {
+    hidden_by_default: true,
+    ..PLAYS
+};
+
 const PLAYS: ColumnSpec<TrackField> = ColumnSpec {
     field: TrackField::Plays,
     key: "plays",
     header: "column-plays",
+    align: TextAlign::Right,
     width: Width::Fixed(DATE),
     rank: NICE,
     ..COLUMN
@@ -128,17 +138,127 @@ const ALBUM_DURATION: ColumnSpec<TrackField> = ColumnSpec {
     ..DURATION
 };
 
-pub(crate) const LIBRARY_COLUMNS: &[ColumnSpec<TrackField>] =
-    &[INDEX, COVER, TITLE, ARTISTS, ALBUM, ADDED_AT, DURATION];
+const OPTIONAL_COVER: ColumnSpec<TrackField> = ColumnSpec {
+    hidden_by_default: true,
+    ..COVER
+};
+const OPTIONAL_ALBUM: ColumnSpec<TrackField> = ColumnSpec {
+    hidden_by_default: true,
+    ..ALBUM
+};
+const OPTIONAL_ADDED_AT: ColumnSpec<TrackField> = ColumnSpec {
+    hidden_by_default: true,
+    ..ADDED_AT
+};
+const OPTIONAL_ADDED_BY: ColumnSpec<TrackField> = ColumnSpec {
+    hidden_by_default: true,
+    ..ADDED_BY
+};
 
-pub(crate) const PLAYLIST_COLUMNS_SHARED: &[ColumnSpec<TrackField>] =
-    &[INDEX, COVER, TITLE, ARTISTS, ALBUM, CREDITED_AT, DURATION];
+const YEAR: ColumnSpec<TrackField> = ColumnSpec {
+    field: TrackField::Year,
+    key: "year",
+    header: "column-year",
+    align: TextAlign::Right,
+    width: Width::Fixed(crate::shared::cells::YEAR),
+    rank: SPARE,
+    hidden_by_default: true,
+    ..COLUMN
+};
 
-pub(crate) const PLAYLIST_COLUMNS_BLEND: &[ColumnSpec<TrackField>] =
-    &[INDEX, COVER, TITLE, ARTISTS, ALBUM, ADDED_BY, DURATION];
+const TAGS: ColumnSpec<TrackField> = ColumnSpec {
+    field: TrackField::Tags,
+    key: "tags",
+    header: "column-tags",
+    width: Width::Fixed(CREDITED),
+    rank: SPARE,
+    hidden_by_default: true,
+    ..COLUMN
+};
 
-pub(crate) const HISTORY_COLUMNS: &[ColumnSpec<TrackField>] =
-    &[INDEX, COVER, TITLE, ARTISTS, ALBUM, PLAYED_AT, DURATION];
+const POPULARITY: ColumnSpec<TrackField> = ColumnSpec {
+    field: TrackField::Popularity,
+    key: "popularity",
+    header: "column-popularity",
+    align: TextAlign::Right,
+    width: Width::Fixed(LENGTH),
+    rank: SPARE,
+    hidden_by_default: true,
+    ..COLUMN
+};
+
+pub(crate) const LIBRARY_COLUMNS: &[ColumnSpec<TrackField>] = &[
+    INDEX,
+    COVER,
+    TITLE,
+    ARTISTS,
+    ALBUM,
+    ADDED_AT,
+    OPTIONAL_PLAYS,
+    DURATION,
+    YEAR,
+    TAGS,
+    POPULARITY,
+];
+
+pub(crate) const PLAYLIST_COLUMNS: &[ColumnSpec<TrackField>] = &[
+    INDEX,
+    COVER,
+    TITLE,
+    ARTISTS,
+    ALBUM,
+    ADDED_AT,
+    OPTIONAL_ADDED_BY,
+    OPTIONAL_PLAYS,
+    DURATION,
+    YEAR,
+    TAGS,
+    POPULARITY,
+];
+
+pub(crate) const PLAYLIST_COLUMNS_SHARED: &[ColumnSpec<TrackField>] = &[
+    INDEX,
+    COVER,
+    TITLE,
+    ARTISTS,
+    ALBUM,
+    CREDITED_AT,
+    OPTIONAL_ADDED_BY,
+    OPTIONAL_PLAYS,
+    DURATION,
+    YEAR,
+    TAGS,
+    POPULARITY,
+];
+
+pub(crate) const PLAYLIST_COLUMNS_BLEND: &[ColumnSpec<TrackField>] = &[
+    INDEX,
+    COVER,
+    TITLE,
+    ARTISTS,
+    ALBUM,
+    ADDED_BY,
+    OPTIONAL_ADDED_AT,
+    OPTIONAL_PLAYS,
+    DURATION,
+    YEAR,
+    TAGS,
+    POPULARITY,
+];
+
+pub(crate) const HISTORY_COLUMNS: &[ColumnSpec<TrackField>] = &[
+    INDEX,
+    COVER,
+    TITLE,
+    ARTISTS,
+    ALBUM,
+    PLAYED_AT,
+    OPTIONAL_PLAYS,
+    DURATION,
+    YEAR,
+    TAGS,
+    POPULARITY,
+];
 
 pub(crate) const ARTIST_COLUMNS: &[ColumnSpec<TrackField>] = &[
     INDEX,
@@ -148,6 +268,9 @@ pub(crate) const ARTIST_COLUMNS: &[ColumnSpec<TrackField>] = &[
     ALBUM.ranked(HANDY),
     PLAYS,
     DURATION,
+    YEAR,
+    TAGS,
+    POPULARITY,
 ];
 
 pub(crate) const ARTIST_COLUMNS_LEAN: &[ColumnSpec<TrackField>] = &[
@@ -156,25 +279,44 @@ pub(crate) const ARTIST_COLUMNS_LEAN: &[ColumnSpec<TrackField>] = &[
     TITLE,
     ARTISTS.ranked(SPARE),
     ALBUM.ranked(HANDY),
+    OPTIONAL_PLAYS,
     DURATION,
+    YEAR,
+    TAGS,
+    POPULARITY,
 ];
 
 pub(crate) const ALBUM_COLUMNS: &[ColumnSpec<TrackField>] = &[
     INDEX,
+    OPTIONAL_COVER,
     ALBUM_TITLE,
     ALBUM_ARTISTS,
     ALBUM_PLAYCOUNT,
+    OPTIONAL_ALBUM,
     ALBUM_DURATION,
+    YEAR,
+    TAGS,
+    POPULARITY,
 ];
 
-pub(crate) const ALBUM_COLUMNS_LEAN: &[ColumnSpec<TrackField>] =
-    &[INDEX, ALBUM_TITLE, ALBUM_ARTISTS, ALBUM_DURATION];
+pub(crate) const ALBUM_COLUMNS_LEAN: &[ColumnSpec<TrackField>] = &[
+    INDEX,
+    OPTIONAL_COVER,
+    ALBUM_TITLE,
+    ALBUM_ARTISTS,
+    OPTIONAL_ALBUM,
+    OPTIONAL_PLAYS,
+    ALBUM_DURATION,
+    YEAR,
+    TAGS,
+    POPULARITY,
+];
 
 pub(crate) fn playlist_columns(blend: bool, shared: bool) -> &'static [ColumnSpec<TrackField>] {
     match (blend, shared) {
         (true, _) => PLAYLIST_COLUMNS_BLEND,
         (false, true) => PLAYLIST_COLUMNS_SHARED,
-        (false, false) => LIBRARY_COLUMNS,
+        (false, false) => PLAYLIST_COLUMNS,
     }
 }
 

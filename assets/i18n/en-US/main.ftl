@@ -31,11 +31,16 @@ nav-artists = Artists
 nav-local = Local Music
 nav-back = Back
 nav-forward = Forward
-nav-sidebar = Toggle sidebar
-nav-sidebar-right = Show or hide lyrics and queue
+nav-sidebar = Toggle left sidebar
+nav-sidebar-right = Toggle right sidebar
 nav-pinned = Pinned
 nav-unpin = Unpin
 nav-pin-hint = Drop here to pin
+nav-place-sidebar = Sidebar
+nav-place-top = Top bar
+nav-place-hidden = Disabled
+card-expand = Fill the panel
+card-collapse = Back to the other cards
 library-liked-songs = Favorites
 library-play-liked-songs = Play
 library-no-songs = No favorites yet
@@ -226,6 +231,7 @@ confirm-delete-track-files = The file(s) will be permanently deleted from disk. 
 # queue panel
 queue-title = Queue
 queue-history = History
+queue-previous = Previous
 queue-now-playing = Now playing
 queue-from = From
 queue-from-radio = { $name } radio
@@ -283,8 +289,7 @@ devices-jam-invite-detail = { $count ->
    *[other] { $count } people are already in this Jam.
 }
 devices-jam-invite-join = Join
-devices-elsewhere-banner = Playing on { $device }
-devices-elsewhere-here = Play here
+devices-elsewhere-here = Play Here
 fullscreen-artwork = Artwork
 
 # filters
@@ -297,6 +302,11 @@ history-clear-confirm = Every play is removed from this device. This cannot be u
 filter-library = Filter your library
 filter-album = Filter album tracks
 filter-reset = Reset filters
+filter-range-max = <{ $value }
+filter-range-min = >{ $value }
+filter-range-both = { $min }–{ $max }
+filter-active-value = { $filter }: { $value }
+filter-collaborations = Collaborations
 filter-duration = Duration
 filter-year = Year
 filter-hide-explicit = Hide explicit
@@ -380,7 +390,7 @@ artist-monthly-listeners = { $count ->
    *[other] { $value } monthly listeners
 }
 artist-play = Play now
-artist-popular = Popular
+artist-popular = Popular by artist
 artist-popular-eyebrow = Explore this artist
 artist-popular-empty = Nothing to play from this artist yet
 artist-popular-more = Show all
@@ -473,6 +483,14 @@ song-content = Content
 song-explicit = Explicit
 song-clean = Clean
 artist-about = About the artist
+artist-follow = Follow
+stage-album = From the album
+stage-related = Fans also like
+stage-plays = { $count ->
+    [one] { $value } play
+   *[other] { $value } plays
+}
+artist-following = Following
 artist-about-fallback = Explore the artist's popular songs and releases.
 artist-about-open = Go to artist
 song-copyright = © { $notice }
@@ -576,7 +594,6 @@ settings-group-protected = Protected playback
 settings-group-output = Output
 settings-group-status = Status
 settings-group-startup = Startup
-settings-group-context-menus = Context menus
 key-ctrl = Ctrl
 key-super = Super
 key-alt = Alt
@@ -647,9 +664,7 @@ settings-font-value = { $size } px
 settings-startup = Start on
 settings-startup-detail = The screen Sonora opens on launch
 settings-startup-no-guest = Unavailable in Guest mode
-settings-entries = Sidebar entries
-settings-entries-detail = The sections listed in the sidebar
-settings-entries-pick = Choose entries
+nav-edit-sidebar = Edit sidebar
 settings-language = Language
 settings-language-detail = The language Sonora uses across the interface
 settings-language-system = System
@@ -1007,8 +1022,6 @@ settings-group-text = Text
 settings-group-motion = Motion
 settings-group-streaming = Streaming
 settings-group-spotify-connect = Spotify Connect
-settings-adaptive-menu = Adaptive context menu
-settings-adaptive-menu-detail = Leaves out entries the row already shows, such as the album or the artist
 settings-accounts = Streaming services
 settings-accounts-detail = The services this device can play from
 settings-provider-current = In use
@@ -1351,3 +1364,50 @@ response-graph-readout = { $frequency } · { $direction ->
         [down] -{ $gain }
        *[flat] { $gain }
     } dB
+
+column-artwork = Artwork
+
+nav-library-songs = Your library: Songs
+nav-library-albums = Your library: Albums
+nav-library-artists = Your library: Artists
+nav-library-playlists = Your library: Playlists
+nav-local-songs = Local content: Songs
+nav-local-albums = Local content: Albums
+nav-local-artists = Local content: Artists
+nav-local-playlists = Local content: Playlists
+
+nav-compact-library = Library
+nav-compact-local = Local
+
+date-added-moments-ago = A few moments ago
+date-added-minutes-ago = { $count ->
+    [one] 1 minute ago
+   *[other] { $count } minutes ago
+}
+date-added-hours-ago = { $count ->
+    [one] 1 hour ago
+   *[other] { $count } hours ago
+}
+date-added-days-ago = { $count ->
+    [one] 1 day ago
+   *[other] { $count } days ago
+}
+date-added-weeks-ago = { $count ->
+    [one] 1 week ago
+   *[other] { $count } weeks ago
+}
+
+
+nav-place-top-left = Top bar · Left
+nav-place-top-center = Top bar · Center
+nav-place-top-right = Top bar · Right
+nav-transport = Navigation controls
+
+column-tags = Tags
+column-popularity = Popularity
+
+
+album-copyright-combined = © ℗ { $notice }
+
+queue-reset-help = Restore the original queue
+queue-clear-help = Remove upcoming queued songs

@@ -283,7 +283,6 @@ devices-jam-invite-detail = { $count ->
    *[other] 已有 { $count } 人在此 Jam 中。
 }
 devices-jam-invite-join = 加入
-devices-elsewhere-banner = 正在 { $device } 上播放
 devices-elsewhere-here = 在此播放
 fullscreen-artwork = 封面
 
@@ -576,7 +575,6 @@ settings-group-protected = 受保护的播放
 settings-group-output = 输出
 settings-group-status = 状态
 settings-group-startup = 启动
-settings-group-context-menus = 上下文菜单
 key-ctrl = Ctrl
 key-super = Super
 key-alt = Alt
@@ -642,9 +640,6 @@ settings-font-value = { $size } px
 settings-startup = 欢迎页
 settings-startup-detail = Sonora 启动时打开的页面
 settings-startup-no-guest = 访客模式下不可用
-settings-entries = 侧边栏项
-settings-entries-detail = 侧边栏中显示的项
-settings-entries-pick = 选择项
 settings-language = 语言
 settings-language-detail = Sonora 在整个界面中使用的语言
 settings-language-system = 系统
@@ -1000,8 +995,6 @@ settings-group-text = 文字
 settings-group-motion = 动画
 settings-group-streaming = 串流
 settings-group-spotify-connect = Spotify Connect
-settings-adaptive-menu = 自适应上下文菜单
-settings-adaptive-menu-detail = 省略行中已显示的项，例如专辑或歌手
 settings-accounts = 管理账户
 settings-accounts-detail = 此设备可以播放的服务
 settings-provider-current = 正在从此服务播放

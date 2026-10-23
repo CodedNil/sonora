@@ -1028,8 +1028,10 @@ impl RenderOnce for Artwork {
         let placeholder = {
             let fallback = fallback.clone();
             move || match overlay {
-                true => div().size(size).into_any_element(),
-                false => blank(size, rounded, muted, glyph, fallback.clone()).into_any_element(),
+                true => div().size_full().into_any_element(),
+                false => blank(size, rounded, muted, glyph, fallback.clone())
+                    .size_full()
+                    .into_any_element(),
             }
         };
 
@@ -1081,14 +1083,16 @@ impl RenderOnce for Artwork {
                                     .absolute()
                                     .top_0()
                                     .left_0()
-                                    .size(size)
+                                    .size_full()
                                     .rounded(rounded),
                             )
                         })
                         .child(
                             img(source)
                                 .image_cache(&cache)
-                                .size(size)
+                                // Decode resolution belongs to the cache; drawing follows the
+                                // wrapper, including a caller's rectangular bounds.
+                                .size_full()
                                 .object_fit(ObjectFit::Cover)
                                 .rounded(rounded)
                                 .with_fallback(placeholder),

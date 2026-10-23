@@ -223,6 +223,11 @@ pub fn track(value: &Value) -> Option<Track> {
         duration: Duration::from_secs(number(value, &["DURATION", "duration"]).unwrap_or(0)),
         added_at: when(value, &["ADDED_AT", "time_add", "DATE_ADD"]),
         added_by: None,
+        year: text(value, &["PHYSICAL_RELEASE_DATE", "release_date"])
+            .or_else(|| text(&album, &["release_date"]))
+            .and_then(|date| date.get(..4))
+            .and_then(|year| year.parse().ok())
+            .unwrap_or(0),
         playcount: None,
         popularity: number(value, &["RANK", "rank"])
             .map(|rank| (rank / 10_000).min(100) as u32)

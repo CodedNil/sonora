@@ -1,20 +1,13 @@
-use std::rc::Rc;
-
 use crate::chrome::Chrome;
-use crate::shared::menus::{Item, ItemMenu};
 use gpui::accesskit::Role;
 use gpui::prelude::*;
-use gpui::{
-    AnyElement, App, Context, Entity, MouseDownEvent, Pixels, Point, Render, ScrollHandle,
-    WeakEntity, Window, div, px,
-};
+use gpui::{AnyElement, App, Context, Entity, Pixels, Render, ScrollHandle, Window, div, px};
 use i18n::t;
-use music::GenreItem;
 use state::{Home, Network, Playback, Sonora};
-use ui::{ActiveTheme as _, Lazy, Mode, Popup, Scrollbar, Scroller};
+use ui::{ActiveTheme as _, Lazy, Mode, ScrollAnchors, Scrollbar, Scroller};
 
 use crate::shared::cells;
-use crate::shared::picks::{Picks, Shape};
+use crate::shared::picks::{Picks, PicksMotion, Shape};
 use crate::shared::shelves::Shelves;
 use crate::shared::tracks::{PlaybackStatus, playback_status};
 use crate::shared::trouble;
@@ -22,6 +15,7 @@ use crate::shared::trouble;
 const STEADY: Pixels = px(0.5);
 
 pub(crate) struct HomeView {
+    picks_motion: std::rc::Rc<PicksMotion>,
     home: Entity<Home>,
     playback: Entity<Playback>,
     playback_status: PlaybackStatus,
@@ -29,9 +23,7 @@ pub(crate) struct HomeView {
     width: Pixels,
     quick_picks: Pager,
     scrollbar: Entity<Scrollbar>,
-    /// The submenu state of a track's context menu.
-    menus: ItemMenu,
-    context_menu: Option<(Item, Point<Pixels>)>,
+    anchors: ScrollAnchors,
 }
 
 #[derive(Default)]
@@ -58,12 +50,10 @@ impl HomeView {
         cx: &mut Context<Self>,
     ) -> Self {
         let me = cx.entity_id();
-        let playlist_scrollbar = cx.new(|_| Scrollbar::inset().watching(me));
-        let menus = ItemMenu::new(playlist_scrollbar, cx);
+        let scrollbar = cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(me));
+        let anchors = scrollbar.read(cx).anchors();
 
-        cx.observe(&home, |this, _, cx| {
-            this.menus.reset(cx);
-            this.context_menu = None;
+        cx.observe(&home, |_, _, cx| {
             cx.notify();
         })
         .detach();
@@ -73,7 +63,8 @@ impl HomeView {
         let library = Sonora::global(cx).library.clone();
         cx.observe(&library, |_, _, cx| cx.notify()).detach();
 
-        let shelves = cx.new(|_| Shelves::new("home-shelf", me, playback.clone()));
+        let shelves =
+            cx.new(|_| Shelves::new("home-shelf", me, playback.clone()).magnetic(anchors.clone()));
         cx.observe(&shelves, |_, _, cx| cx.notify()).detach();
 
         let current_playback = playback_status(&playback, cx);
@@ -93,9 +84,9 @@ impl HomeView {
             shelves,
             width: Pixels::ZERO,
             quick_picks: Pager::default(),
-            scrollbar: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(me)),
-            menus,
-            context_menu: None,
+            picks_motion: PicksMotion::new(me),
+            scrollbar,
+            anchors,
         }
     }
 
@@ -117,34 +108,33 @@ impl HomeView {
         home.is_loading(cx) || home.is_feeding()
     }
 
-    /// The Quick picks deck, the one deck on the page: what the provider lists as played lately
-    /// and its picks after them, a skeleton while they are on their way.
+    /// Recent plays and recommendations, with a skeleton while the provider loads them.
     fn quick_picks(&mut self, width: Pixels, cx: &mut Context<Self>) -> AnyElement {
         let items = self.home.read(cx).quick_picks();
         let shape = Shape::new(width, items.len());
         let pages = shape.pages;
         let page = self.quick_picks.fit(shape.columns, shape.pages);
-        let opened = items.clone();
-        let home = cx.entity().downgrade();
 
-        Picks::mixed("quick-picks", items, self.playback.clone(), width, page)
-            .title("home-quick-picks")
-            .vacancy("home-quick-picks-empty")
-            .loading(self.home.read(cx).is_loading(cx))
-            .on_previous(cx.listener(|this, _, _, cx| {
-                this.quick_picks.page = this.quick_picks.page.saturating_sub(1);
-                this.context_menu = None;
-                cx.notify();
-            }))
-            .on_next(cx.listener(move |this, _, _, cx| {
-                this.quick_picks.page = (this.quick_picks.page + 1).min(pages.saturating_sub(1));
-                this.context_menu = None;
-                cx.notify();
-            }))
-            .on_context_menu(move |place, event, _, cx| {
-                open_item_menu(&home, &opened, place, event, cx);
-            })
-            .into_any_element()
+        Picks::new(
+            "quick-picks",
+            items,
+            self.playback.clone(),
+            width,
+            page,
+            &self.picks_motion,
+        )
+        .title("home-quick-picks")
+        .vacancy("home-quick-picks-empty")
+        .loading(self.home.read(cx).is_loading(cx))
+        .on_previous(cx.listener(|this, _, _, cx| {
+            this.quick_picks.page = this.quick_picks.page.saturating_sub(1);
+            cx.notify();
+        }))
+        .on_next(cx.listener(move |this, _, _, cx| {
+            this.quick_picks.page = (this.quick_picks.page + 1).min(pages.saturating_sub(1));
+            cx.notify();
+        }))
+        .into_any_element()
     }
 
     /// The page home shows in place of its shelves: the No connection state the moment the
@@ -186,17 +176,11 @@ impl Render for HomeView {
         }
 
         let theme = *cx.theme();
-        let available = cells::content_width(window, theme.metrics.inset * 2., cx);
+        let (left, right) = Chrome::page_insets(cx);
+        let available = cells::content_width(window, left + right, cx);
         if (available - self.width).abs() >= STEADY {
             self.width = available;
         }
-        let context_menu = self.context_menu.clone().map(|(item, position)| {
-            let menu = item.menu(&self.menus, self.playback.clone(), false, cx);
-            Popup::new(position, menu).on_close(cx.listener(|this, _, _, cx| {
-                this.context_menu = None;
-                cx.notify();
-            }))
-        });
 
         let view = cx.entity();
         let picks = Lazy::new("home-quick-picks", move |_, cx| {
@@ -214,36 +198,17 @@ impl Render for HomeView {
 
         Scroller::new("home-page", &self.scrollbar)
             .bottom_inset(crate::chrome::Chrome::bottom(cx))
-            .p(theme.metrics.inset)
+            .pl(left)
+            .pr(right)
+            .pb(theme.metrics.island_gap())
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap_8()
-                    .child(picks)
+                    .child(self.anchors.mark("quick-picks", picks))
                     .children(shelves),
             )
-            .when_some(context_menu, |this, menu| this.child(menu))
             .into_any_element()
     }
-}
-
-fn open_item_menu(
-    home: &WeakEntity<HomeView>,
-    items: &Rc<Vec<GenreItem>>,
-    place: usize,
-    event: &MouseDownEvent,
-    cx: &mut gpui::App,
-) {
-    let Some(item) = items.get(place).and_then(Item::of) else {
-        return;
-    };
-    let Some(home) = home.upgrade() else {
-        return;
-    };
-    home.update(cx, |this, cx| {
-        this.menus.reset(cx);
-        this.context_menu = Some((item, event.position));
-        cx.notify();
-    });
 }

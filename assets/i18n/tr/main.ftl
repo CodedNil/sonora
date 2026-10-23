@@ -262,7 +262,6 @@ devices-jam-invite-detail = { $count ->
    *[other] Bu Jam'de zaten { $count } kişi var.
 }
 devices-jam-invite-join = Katıl
-devices-elsewhere-banner = { $device } üzerinde çalıyor
 devices-elsewhere-here = Burada çal
 fullscreen-artwork = Kapak
 
@@ -553,7 +552,6 @@ settings-group-protected = Korumalı çalma
 settings-group-output = Çıkış
 settings-group-status = Durum
 settings-group-startup = Açılış
-settings-group-context-menus = Bağlam menüleri
 key-ctrl = Ctrl
 key-super = Super
 key-alt = Alt
@@ -618,9 +616,6 @@ settings-font-value = { $size } px
 settings-startup = Açılışta göster
 settings-startup-detail = Sonora'nın açılışta gösterdiği ekran
 settings-startup-no-guest = Konuk modunda kullanılamaz
-settings-entries = Kenar çubuğu girdileri
-settings-entries-detail = Kenar çubuğunda listelenen bölümler
-settings-entries-pick = Girdileri seç
 settings-language = Dil
 settings-language-detail = Sonora'nın arayüz genelinde kullandığı dil
 settings-language-system = Sistem
@@ -975,8 +970,6 @@ settings-group-text = Metin
 settings-group-motion = Hareket
 settings-group-streaming = Yayın
 settings-group-spotify-connect = Spotify Connect
-settings-adaptive-menu = Uyarlanabilir bağlam menüsü
-settings-adaptive-menu-detail = Satırın zaten gösterdiği albüm ya da sanatçı gibi girdileri dışarıda bırakır
 settings-accounts = Hesapları yönet
 settings-accounts-detail = Bu cihazın çalabileceği servisler
 settings-provider-current = Bu servisten çalıyor

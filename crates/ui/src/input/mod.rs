@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::actions;
@@ -55,6 +56,8 @@ const PRIMARY_SELECTION: bool = cfg!(any(target_os = "linux", target_os = "freeb
 static PRIMARY_PASTE: AtomicBool = AtomicBool::new(true);
 
 type Motion = fn(&str, usize) -> usize;
+/// What the trailing button of a field does when pressed.
+type Act = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 
 /// Re-reads GNOME's middle-click paste switch through the settings portal and repaints every
 /// window when it changed. A desktop that does not expose the switch keeps middle-click paste on.
@@ -243,6 +246,9 @@ pub struct Input {
     icon: Option<SharedString>,
     compact: bool,
     tucked: bool,
+    pill: bool,
+    /// A button at the far end of the field: its icon, its tooltip key and what it does.
+    action: Option<(SharedString, SharedString, Act)>,
     blurred: bool,
     clearable: bool,
     masked: bool,
@@ -271,6 +277,8 @@ impl Input {
             icon: None,
             compact: false,
             tucked: false,
+            pill: false,
+            action: None,
             blurred: false,
             clearable: false,
             masked: false,
@@ -301,6 +309,24 @@ impl Input {
 
     pub fn tucked(mut self) -> Self {
         self.tucked = true;
+        self
+    }
+
+    /// Rounds the field's ends fully, for a search field that stands on its own in a bar.
+    pub fn pill(mut self) -> Self {
+        self.pill = true;
+        self
+    }
+
+    /// Ends the field with a button behind a rule, showing `icon` with the Fluent `tooltip`,
+    /// which runs `act` when pressed.
+    pub fn action(
+        mut self,
+        icon: impl Into<SharedString>,
+        tooltip: impl Into<SharedString>,
+        act: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.action = Some((icon.into(), tooltip.into(), Rc::new(act)));
         self
     }
 

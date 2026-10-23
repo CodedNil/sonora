@@ -20,6 +20,7 @@ crates/
   embed/      build-script helper that walks a folder and writes include_bytes! literals
   webview/    a native browser window over a throwaway session, for cookie sign-ins and PO tokens
   widevine/   the Widevine CDM host, pssh and CENC fMP4 parsing, for any DRM'd provider
+  video/      short H.264 clips (a song's Canvas) decoded a frame at a time with openh264 (no GPUI)
 ```
 
 Dependency direction is strict. Do not create a back edge:
@@ -29,7 +30,7 @@ sonora → views → state → music
          state, music → storage
          state → webview
          music → widevine
-         all ui-side crates → ui, router, input → ui → gpui
+         all ui-side crates → ui, router, input → ui → gpui, video
          every ui-side crate → i18n, icons → gpui
 ```
 

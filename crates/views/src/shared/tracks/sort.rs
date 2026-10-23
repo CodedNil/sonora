@@ -12,6 +12,18 @@ pub(super) fn compare(tracks: &[Track], field: TrackField, a: usize, b: usize) -
     let folded = |pick: fn(&Track) -> &str| folded(text(a, pick), text(b, pick));
 
     match field {
+        TrackField::Popularity => tracks
+            .get(a)
+            .map(|t| t.popularity)
+            .cmp(&tracks.get(b).map(|t| t.popularity)),
+        TrackField::Year => tracks
+            .get(a)
+            .map(|t| t.year)
+            .cmp(&tracks.get(b).map(|t| t.year)),
+        TrackField::Tags => tracks
+            .get(a)
+            .map(|t| &t.tags)
+            .cmp(&tracks.get(b).map(|t| &t.tags)),
         TrackField::Title => folded(|track| &track.name),
         TrackField::Artists => folded(|track| &track.artists),
         TrackField::Album => folded(|track| &track.album),

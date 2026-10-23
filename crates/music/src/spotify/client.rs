@@ -10,12 +10,13 @@ use librespot_protocol::playlist4_external::SelectedListContent as RootList;
 use protobuf::Message as _;
 
 use crate::spotify::{
-    albums, artists, collection, collection2, pathfinder, playlists, profiles, radio, search, wire,
+    albums, artists, canvas, collection, collection2, credits, pathfinder, playlists, profiles,
+    radio, search, wire,
 };
 use crate::{
     Album, AlbumCatalogue, AlbumDetail, Artist, ArtistCatalogue, ArtistProfile, Genre, GenreDetail,
-    GenreItem, GenreSection, HomeFeed, Playlist, PlaylistDetail, SUGGESTIONS, SavedArtist, Track,
-    UserDetail, UserProfile,
+    GenreItem, GenreSection, HomeFeed, Playlist, PlaylistDetail, SavedArtist, Track, UserDetail,
+    UserProfile,
 };
 
 const MADE_FOR_YOU: &str = "0JQ5DAt0tbjZptfcdMSKl3";
@@ -99,6 +100,14 @@ impl MusicApi for LibrespotClient {
         pathfinder::track(&self.session, track_id).await
     }
 
+    async fn canvas(&self, track_id: &str) -> Result<Option<crate::Canvas>> {
+        canvas::canvas(&self.session, track_id).await
+    }
+
+    async fn credits(&self, track_id: &str) -> Result<Vec<crate::Credit>> {
+        credits::credits(&self.session, track_id).await
+    }
+
     async fn saved_albums(&self) -> Result<Vec<Album>> {
         albums::saved_albums(&self.session).await
     }
@@ -123,9 +132,6 @@ impl MusicApi for LibrespotClient {
         albums::album_tracks(&self.session, album_id).await
     }
 
-    /// The artist's own releases without the album the page is already showing. Similar
-    /// artists stay out: the internal queries are persisted by hash, so nothing here can
-    /// ask for a relationship the official client never registered.
     async fn album_catalogue(
         &self,
         album_id: &str,
@@ -134,15 +140,9 @@ impl MusicApi for LibrespotClient {
         let Some(artist_id) = artist_id else {
             return Ok(AlbumCatalogue::default());
         };
-        let mut also_like = artists::discography(&self.session, artist_id)
+        artists::suggestions(&self.session, artist_id, album_id)
             .await
-            .with_context(|| format!("cannot load more from artist {artist_id}"))?;
-        also_like.retain(|album| album.id != album_id);
-        also_like.truncate(SUGGESTIONS);
-        Ok(AlbumCatalogue {
-            also_like,
-            similar: Vec::new(),
-        })
+            .with_context(|| format!("cannot load more from artist {artist_id}"))
     }
 
     async fn playlist(&self, playlist_id: &str) -> Result<PlaylistDetail> {

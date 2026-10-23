@@ -124,6 +124,9 @@ impl RangeAxis {
     }
 
     pub fn whole(&self) -> bool {
+        if self.bounds.1 - self.bounds.0 <= f32::EPSILON {
+            return true;
+        }
         let (low, high) = self.share();
         low <= f32::EPSILON && high >= 1. - f32::EPSILON
     }

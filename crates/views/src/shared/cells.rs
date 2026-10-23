@@ -9,7 +9,7 @@ use gpui::{
     Window, div, px, svg,
 };
 use i18n::t;
-use music::{ArtistRef, Contributor};
+use music::{ArtistRef, Contributor, SavedArtist};
 use router::{Destination, Link as _, navigate};
 use state::Playback;
 use ui::{
@@ -32,6 +32,8 @@ pub(crate) type Tap = Box<dyn Fn(&mut App)>;
 pub(crate) const NUMBER: Pixels = px(44.);
 pub(crate) const TRAILING: Pixels = px(72.);
 pub(crate) const DATE: Pixels = px(112.);
+/// Leaves room for relative dates such as “A few moments ago”.
+pub(crate) const ADDED_DATE: Pixels = px(160.);
 pub(crate) const YEAR: Pixels = px(64.);
 pub(crate) const HIT: Pixels = px(18.);
 pub(crate) const FACE: Pixels = px(20.);
@@ -149,6 +151,20 @@ pub(crate) fn index<F>(
             label: action,
         },
     )
+}
+
+/// A collection table's shared numbered play/pause cell, using the collection's playback origin.
+pub(crate) fn collection_index<F>(
+    cell: &Cell<F>,
+    origin: state::Origin,
+    playback: &Entity<Playback>,
+    cx: &App,
+) -> AnyElement {
+    let playing = playback.read(cx).playing_from(&origin, cx);
+    let press = toggle(playback, playing, move |playback, cx| {
+        playback.play_origin(origin.clone(), cx);
+    });
+    index(cell, playing, true, None, None, press, cx)
 }
 
 /// The press of a row's transport cell. It pauses or resumes the current row and calls `start`
@@ -286,6 +302,19 @@ pub(crate) fn artist_links(
         color,
     )
     .on_click(|id, cx| navigate(Destination::Artist(id), cx))
+    .on_menu(|id, name, event, window, cx| {
+        let artist = SavedArtist {
+            id: id.to_string(),
+            name: name.to_string(),
+            cover: None,
+            added_at: None,
+        };
+        let playback = state::Sonora::global(cx).playback.clone();
+        crate::shared::menus::CardMenu::opener(
+            crate::shared::menus::Item::Artist(artist),
+            playback,
+        )(event, window, cx);
+    })
 }
 
 pub(crate) fn artists<F>(
@@ -325,6 +354,25 @@ pub(crate) fn stamp(seconds: Option<i64>) -> SharedString {
         .and_then(|seconds| jiff::Timestamp::new(seconds, 0).ok())
         .map(|stamp| release_date_label(&stamp.strftime("%Y-%m-%d").to_string()))
         .unwrap_or_default()
+}
+
+/// Date-added labels stay relative for thirty days, then use the normal calendar date.
+pub(crate) fn added_stamp(seconds: Option<i64>) -> SharedString {
+    let Some(stamp) = seconds.and_then(|seconds| jiff::Timestamp::new(seconds, 0).ok()) else {
+        return SharedString::default();
+    };
+    let elapsed = (jiff::Timestamp::now().as_second() - stamp.as_second()).max(0);
+    let minutes = elapsed / 60;
+    let hours = minutes / 60;
+    let days = hours / 24;
+    match elapsed {
+        ..60 => t!("date-added-moments-ago"),
+        _ if minutes < 60 => t!("date-added-minutes-ago", count = minutes),
+        _ if hours < 24 => t!("date-added-hours-ago", count = hours),
+        _ if days < 7 => t!("date-added-days-ago", count = days),
+        _ if days < 30 => t!("date-added-weeks-ago", count = days / 7),
+        _ => self::stamp(seconds),
+    }
 }
 
 pub(crate) fn relative_stamp(seconds: Option<i64>) -> SharedString {

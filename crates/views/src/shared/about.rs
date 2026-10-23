@@ -141,6 +141,7 @@ pub(crate) fn about_modal(
                         .child(
                             div().absolute().inset_0().child(
                                 Scroller::new("artist-about-bio", bar)
+                                    .free_scroll()
                                     .when(overflows, |this| this.pb(tail))
                                     .when(overflows && effects(), |this| {
                                         this.fade_edges(px(0.), FADE)
@@ -175,19 +176,26 @@ fn blurb(biography: Option<String>) -> SharedString {
         .unwrap_or_else(|| t!("artist-about-fallback"))
 }
 
+/// A biography as plain text: its tags dropped and its HTML entities turned back into the
+/// characters they stand for.
+pub(crate) fn plain_biography(biography: &str) -> SharedString {
+    rich(biography).0
+}
+
 /// Apple's biographies mark titles with `<i>` italics. Strips the tags and returns the plain
 /// text with the byte ranges to draw slanted, for `bio_text`. A tag without its partner, or
-/// one this does not know, is dropped rather than shown.
+/// one this does not know, is dropped rather than shown. Spotify's carry HTML entities, which
+/// are decoded on the way.
 fn rich(biography: &str) -> (SharedString, Vec<Range<usize>>) {
     let mut plain = String::with_capacity(biography.len());
     let mut italics = Vec::new();
     let mut rest = biography;
     let mut open: Option<usize> = None;
     while let Some(at) = rest.find('<') {
-        plain.push_str(&rest[..at]);
+        decode_into(&mut plain, &rest[..at]);
         let after = &rest[at..];
         let Some(end) = after.find('>') else {
-            plain.push_str(after);
+            decode_into(&mut plain, after);
             break;
         };
         match &after[..=end] {
@@ -203,8 +211,49 @@ fn rich(biography: &str) -> (SharedString, Vec<Range<usize>>) {
         }
         rest = &after[end + 1..];
     }
-    plain.push_str(rest);
+    decode_into(&mut plain, rest);
     (SharedString::from(plain), italics)
+}
+
+/// Appends `text` with its HTML entities decoded: numbered ones in decimal or hex, and the
+/// handful of named ones a biography uses. Anything else that looks like one is kept as written.
+fn decode_into(plain: &mut String, text: &str) {
+    let mut rest = text;
+    while let Some(at) = rest.find('&') {
+        plain.push_str(&rest[..at]);
+        let after = &rest[at..];
+        let decoded = after.find(';').and_then(|end| {
+            let name = &after[1..end];
+            let character = match name.strip_prefix('#') {
+                Some(number) => match number.strip_prefix(['x', 'X']) {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                    None => number.parse().ok(),
+                }
+                .and_then(char::from_u32),
+                None => match name {
+                    "amp" => Some('&'),
+                    "lt" => Some('<'),
+                    "gt" => Some('>'),
+                    "quot" => Some('"'),
+                    "apos" => Some('\''),
+                    "nbsp" => Some('\u{a0}'),
+                    _ => None,
+                },
+            };
+            character.map(|character| (character, end))
+        });
+        match decoded {
+            Some((character, end)) => {
+                plain.push(character);
+                rest = &after[end + 1..];
+            }
+            None => {
+                plain.push('&');
+                rest = &after[1..];
+            }
+        }
+    }
+    plain.push_str(rest);
 }
 
 /// A biography with its `<i>` titles drawn slanted, in the style around it.
