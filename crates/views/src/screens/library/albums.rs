@@ -10,7 +10,7 @@ use state::{Collection, Library, LibraryPart, Network, Origin, Playback, Shelf, 
 use ui::rank::{HANDY, NICE, SPARE, USEFUL};
 use ui::{Cell, ColumnSpec, Menu, Pin, TableSource, Width};
 
-use crate::shared::cells::{self, DATE, NUMBER, TRAILING, YEAR};
+use crate::shared::cells::{self, ADDED_DATE, NUMBER, TRAILING, YEAR};
 use crate::shared::menus::{ItemMenu, album_menu};
 use crate::shared::pins::Pinned as _;
 use crate::shared::text::{folded, holds};
@@ -74,7 +74,7 @@ const ADDED_AT: ColumnSpec<AlbumField> = ColumnSpec {
     field: AlbumField::AddedAt,
     key: "added-at",
     header: "column-date-added",
-    width: Width::Fixed(DATE),
+    width: Width::Fixed(ADDED_DATE),
     rank: NICE,
     ..COLUMN
 };
@@ -124,17 +124,6 @@ impl AlbumSource {
             downloaded: false,
             spread: RefCell::new(None),
         }
-    }
-
-    fn index_cell(&self, cell: &Cell<AlbumField>, album: &Album, cx: &App) -> AnyElement {
-        let origin = Origin::album(album.id.clone()).named(album.name.clone());
-        let playing = self.playback.read(cx).playing_from(&origin, cx);
-        let played = origin.clone();
-        let press = cells::toggle(&self.playback, playing, move |playback, cx| {
-            playback.play_origin(played.clone(), cx)
-        });
-
-        cells::index(cell, playing, true, None, None, press, cx)
     }
 
     pub(super) fn at(&self, row: usize, cx: &App) -> Option<Album> {
@@ -317,7 +306,12 @@ impl TableSource for AlbumSource {
         };
 
         if cell.field == AlbumField::Index {
-            return self.index_cell(&cell, album, cx);
+            return cells::collection_index(
+                &cell,
+                Origin::album(album.id.clone()).named(album.name.clone()),
+                &self.playback,
+                cx,
+            );
         }
 
         match cell.field {
@@ -331,7 +325,7 @@ impl TableSource for AlbumSource {
             ),
             AlbumField::Year => cells::dim(&cell, year(album), muted),
             AlbumField::TrackCount => cells::dim(&cell, format!("{}", album.track_count), muted),
-            AlbumField::AddedAt => cells::dim(&cell, cells::stamp(album.added_at), muted),
+            AlbumField::AddedAt => cells::dim(&cell, cells::added_stamp(album.added_at), muted),
             AlbumField::Index => cells::blank(&cell),
         }
     }

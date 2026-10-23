@@ -62,7 +62,10 @@ pub struct Metrics {
     pub control: Pixels,
     pub control_small: Pixels,
     pub field: Pixels,
+    /// The title bar as it has always been: room for its controls and a page's toolbar.
     pub title_bar: Pixels,
+    /// The title bar once it holds the search field or section buttons in its middle.
+    pub title_bar_tall: Pixels,
     pub player_bar: Pixels,
     pub list_row: Pixels,
     pub thumb: Pixels,
@@ -90,11 +93,17 @@ impl Metrics {
             control_small: roomy(26., 1.7),
             field: roomy(40., 2.6),
             title_bar: roomy(36., 2.4),
+            title_bar_tall: roomy(52., 3.4),
             player_bar: roomy(76., 5.),
             list_row: roomy(52., 3.2),
             thumb: px(34.),
             cover: px(140.),
         }
+    }
+
+    /// The space between a floating chrome island and the window edge or player bar.
+    pub fn island_gap(self) -> Pixels {
+        self.pad * 1.5
     }
 }
 

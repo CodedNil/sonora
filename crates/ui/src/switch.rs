@@ -36,6 +36,13 @@ impl Switch {
         }
     }
 
+    /// Places a custom label and this switch in the standard persistent menu-control row.
+    pub fn menu_row(self, label: impl IntoElement, cx: &App) -> Div {
+        crate::menu_row(cx)
+            .child(div().flex_1().min_w_0().child(label))
+            .child(self)
+    }
+
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, FontWeight, SharedString, div, img};
 use i18n::t;
-use ui::{ActiveTheme as _, Avatar, Switch, Text};
+use ui::{ActiveTheme as _, Avatar, Text};
 
 use super::rows::outward;
 use super::{Group, SettingsView, Slot, group_heading};
@@ -77,20 +77,6 @@ impl SettingsView {
         self.row(
             t!("settings-version"),
             div().child(VERSION).into_any_element(),
-        )
-    }
-
-    pub(super) fn updates_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).check_updates();
-
-        self.row(
-            t!("settings-check-updates"),
-            Switch::new("check-updates", on)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_check_updates(!on, cx));
-                }))
-                .into_any_element(),
         )
     }
 

@@ -207,7 +207,10 @@ impl Root {
 
         let queries = cx.new(|cx| Search::new(session.clone(), search_library, io.clone(), cx));
         let genres = cx.new(|cx| Genres::new(session.clone(), io.clone(), cx));
-        let search = cx.new(|cx| SearchView::new(queries, genres.clone(), playback.clone(), cx));
+        let field = SearchView::field(cx);
+        let search = cx.new(|cx| {
+            SearchView::new(field.clone(), queries, genres.clone(), playback.clone(), cx)
+        });
 
         let settings = cx.new(|cx| SettingsView::new(session.clone(), playback.clone(), cx));
         let equalizer = Sonora::global(cx).equalizer.clone();
@@ -221,29 +224,42 @@ impl Root {
         let user_profile = cx.new(|cx| Profile::new(session.clone(), io.clone(), cx));
         let user = cx.new(|cx| UserView::new(user_profile.clone(), playback.clone(), cx));
 
+        let title_bar = cx.new(|cx| TitleBar::new(field, cx));
         let start = navigation.read(cx).current();
         let workspace = cx.new(|cx| {
             Workspace::new(
                 playback.clone(),
                 queue.clone(),
                 library_view.clone().into(),
+                title_bar.clone(),
                 cx,
             )
         });
+        // Native window buttons must follow the sidebar’s animated width too.
+        #[cfg(target_os = "macos")]
+        cx.observe(&workspace, |_, _, cx| cx.notify()).detach();
         let fullscreen = cx.new(|cx| FullscreenView::new(playback.clone(), queue.clone(), cx));
         let ambient = cx.new(Ambient::new);
 
-        let title_bar = cx.new(TitleBar::new);
-        cx.subscribe(&title_bar, |this, _, event, cx| match event {
-            TitleBarEvent::ToggleSidebar => this
-                .shells
-                .workspace
-                .update(cx, |workspace, cx| workspace.toggle_sidebar(cx)),
-            TitleBarEvent::ToggleSidebarRight => this
-                .shells
-                .workspace
-                .update(cx, |workspace, cx| workspace.toggle_sidebar_right(cx)),
-        })
+        cx.subscribe_in(
+            &title_bar,
+            window,
+            |this, _, event, window, cx| match event {
+                TitleBarEvent::ToggleSidebar => this
+                    .shells
+                    .workspace
+                    .update(cx, |workspace, cx| workspace.toggle_sidebar(cx)),
+                TitleBarEvent::ToggleSidebarRight => this
+                    .shells
+                    .workspace
+                    .update(cx, |workspace, cx| workspace.toggle_sidebar_right(cx)),
+                TitleBarEvent::Search => this.open_search(cx),
+                TitleBarEvent::EnterResults => this
+                    .screens
+                    .search
+                    .update(cx, |search, cx| search.enter_results(window, cx)),
+            },
+        )
         .detach();
 
         // Re-read the system preference when the window becomes active instead of keeping a
@@ -543,11 +559,9 @@ impl Root {
     }
 
     fn options(&self, cx: &Context<Self>) -> TitleBarOptions {
-        let content = self.toolbar.clone().map(Into::into);
-
         match self.view {
-            RootView::Workspace => self.shells.workspace.read(cx).title_bar(content, cx),
-            RootView::Fullscreen => self.shells.fullscreen.read(cx).title_bar(content, cx),
+            RootView::Workspace => self.shells.workspace.read(cx).title_bar(cx),
+            RootView::Fullscreen => self.shells.fullscreen.read(cx).title_bar(cx),
         }
     }
 
@@ -998,6 +1012,7 @@ impl Render for Root {
             },
             false => self.options(cx),
         };
+        let bar_height = options.height(window, cx);
         self.title_bar
             .update(cx, |bar, cx| bar.set_options(options, cx));
 
@@ -1030,13 +1045,11 @@ impl Render for Root {
         #[cfg(target_os = "macos")]
         if !window.is_fullscreen() {
             let settings = Sonora::global(cx).settings.read(cx);
-            let framed = (
-                settings.window_rounding(),
-                crate::chrome::traffic_lights(
-                    settings,
-                    ui::snapped(theme.metrics.title_bar, window),
-                ),
-            );
+            let mut controls = crate::chrome::traffic_lights(settings, bar_height);
+            if !show_sign_in && matches!(self.view, RootView::Workspace) {
+                controls.x += self.shells.workspace.read(cx).title_bar_offset(cx);
+            }
+            let framed = (settings.window_rounding(), controls);
             if self.framed != Some(framed) {
                 self.framed = Some(framed);
                 window.defer(cx, move |window, cx| {
@@ -1177,13 +1190,18 @@ impl Render for Root {
             .when(ambient, |this| this.child(self.ambient.clone()))
             // The bar only changes when it is told to, so a frame drawn for the lyrics or the
             // progress bar replays it rather than building it again.
-            .child(
-                self.title_bar.clone().cached(
-                    StyleRefinement::default()
-                        .w_full()
-                        .h(ui::snapped(theme.metrics.title_bar, window))
-                        .flex_none(),
-                ),
+            .when(
+                show_sign_in || matches!(self.view, RootView::Fullscreen),
+                |this| {
+                    this.child(
+                        self.title_bar.clone().cached(
+                            StyleRefinement::default()
+                                .w_full()
+                                .h(bar_height)
+                                .flex_none(),
+                        ),
+                    )
+                },
             )
             .when_else(
                 show_sign_in,

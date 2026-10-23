@@ -11,7 +11,10 @@ use protobuf::{EnumOrUnknown, Message as _};
 use crate::spotify::collection2::SavedItem;
 use crate::spotify::pace::paced;
 use crate::spotify::{albums, collection, collection2, pathfinder, wire};
-use crate::{Album, Artist, ArtistCatalogue, ArtistProfile, ReleaseType, SavedArtist, Track};
+use crate::{
+    Album, AlbumCatalogue, Artist, ArtistCatalogue, ArtistProfile, ReleaseType, SUGGESTIONS,
+    SavedArtist, Track,
+};
 
 const ARTIST_PREFIX: &str = "spotify:artist:";
 const ALBUM_PREFIX: &str = "spotify:album:";
@@ -43,7 +46,8 @@ pub async fn catalogue(
     artist_id: &str,
     known: Vec<Track>,
 ) -> Result<ArtistCatalogue> {
-    let albums = discography(session, artist_id).await?;
+    let message = metadata(session, artist_id).await?;
+    let albums = releases(session, &message).await?;
     if albums.is_empty() {
         return Ok(ArtistCatalogue::default());
     }
@@ -161,11 +165,74 @@ async fn popular(session: &Session, releases: &[Album], known: &[Track]) -> Resu
     Ok(rest)
 }
 
-/// Every release of an artist, newest first: the albums tab of an album page reads its
-/// more-from-the-artist half off this.
-pub(crate) async fn discography(session: &Session, artist_id: &str) -> Result<Vec<Album>> {
-    let message = metadata(session, artist_id).await?;
-    releases(session, &message).await
+/// More releases and related artists from the current artist overview, falling back to metadata.
+pub(crate) async fn suggestions(
+    session: &Session,
+    artist_id: &str,
+    album_id: &str,
+) -> Result<AlbumCatalogue> {
+    // The current artist page carries Fans also like; legacy metadata often leaves it empty.
+    match pathfinder::artist(session, artist_id).await {
+        Ok(overview) => {
+            let mut also_like = overview.albums;
+            also_like.retain(|album| album.id != album_id);
+            also_like.truncate(SUGGESTIONS);
+            let mut similar = overview.similar;
+            similar.truncate(SUGGESTIONS);
+            return Ok(AlbumCatalogue { also_like, similar });
+        }
+        Err(error) => log::debug!("artists: cannot load Pathfinder suggestions: {error:#}"),
+    }
+    let artist = metadata(session, artist_id).await?;
+    let (albums, similar) = tokio::join!(releases(session, &artist), related(session, &artist));
+    let mut also_like = albums.unwrap_or_else(|error| {
+        log::debug!("artists: cannot load more releases: {error:#}");
+        Vec::new()
+    });
+    also_like.retain(|album| album.id != album_id);
+    also_like.truncate(SUGGESTIONS);
+    let similar = similar.unwrap_or_else(|error| {
+        log::debug!("artists: cannot load related artists: {error:#}");
+        Vec::new()
+    });
+    Ok(AlbumCatalogue { also_like, similar })
+}
+
+/// Expands the related artist IDs in metadata into named cards with portraits.
+async fn related(session: &Session, artist: &ArtistMessage) -> Result<Vec<SavedArtist>> {
+    let mut seen = HashSet::new();
+    let ids: Vec<_> = artist
+        .related
+        .iter()
+        .filter_map(|artist| collection::base62(artist.gid()))
+        .filter(|id| seen.insert(id.clone()))
+        .take(SUGGESTIONS)
+        .collect();
+    let mut found = cards(session, &ids).await.unwrap_or_else(|error| {
+        log::debug!("artists: cannot load related artist portraits: {error:#}");
+        HashMap::new()
+    });
+    Ok(ids
+        .into_iter()
+        .filter_map(|id| {
+            found.remove(&id).or_else(|| {
+                let related = artist
+                    .related
+                    .iter()
+                    .find(|artist| collection::base62(artist.gid()).as_ref() == Some(&id))?;
+                if related.name().is_empty() {
+                    return None;
+                }
+                let profile = profile_from(related);
+                Some(SavedArtist {
+                    id,
+                    name: profile.name,
+                    cover: profile.cover_large,
+                    added_at: None,
+                })
+            })
+        })
+        .collect())
 }
 
 async fn releases(session: &Session, artist: &ArtistMessage) -> Result<Vec<Album>> {

@@ -175,6 +175,77 @@ pub enum SideTab {
     Lyrics,
 }
 
+/// Which of the right panel's cards show, and which one, if any, fills the panel. The sidebar and
+/// fullscreen keep one each. A card can only fill the panel while it shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Cards {
+    pub lyrics: bool,
+    pub queue: bool,
+    pub expanded: Option<SideTab>,
+}
+
+impl Default for Cards {
+    fn default() -> Self {
+        Self {
+            lyrics: true,
+            queue: true,
+            expanded: None,
+        }
+    }
+}
+
+impl Cards {
+    /// Where fullscreen starts: the lyrics beside the cover, the queue tucked away.
+    pub fn fullscreen() -> Self {
+        Self {
+            queue: false,
+            ..Self::default()
+        }
+    }
+
+    pub fn shows(self, tab: SideTab) -> bool {
+        match tab {
+            SideTab::Lyrics => self.lyrics,
+            SideTab::Queue => self.queue,
+        }
+    }
+
+    /// Whether any card shows at all.
+    pub fn any(self) -> bool {
+        self.lyrics || self.queue
+    }
+
+    /// Shows or hides `tab`. Hiding the card that fills the panel puts the rest back.
+    pub fn toggled(self, tab: SideTab) -> Self {
+        self.showing(tab, !self.shows(tab))
+    }
+
+    /// Shows or hides `tab`.
+    pub fn showing(mut self, tab: SideTab, shown: bool) -> Self {
+        match tab {
+            SideTab::Lyrics => self.lyrics = shown,
+            SideTab::Queue => self.queue = shown,
+        }
+        if !shown && self.expanded == Some(tab) {
+            self.expanded = None;
+        }
+        self
+    }
+
+    /// Lets `tab` fill the panel, or puts it back among the others if it already does.
+    pub fn expand(self, tab: SideTab) -> Self {
+        let shown = self.showing(tab, true);
+        Self {
+            expanded: match self.expanded == Some(tab) {
+                true => None,
+                false => Some(tab),
+            },
+            ..shown
+        }
+    }
+}
+
 /// The writing systems lyrics romanization applies to. Only CJK are enabled by default.
 /// A partial object in `settings.json` keeps the defaults for the scripts it leaves out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -411,7 +482,6 @@ struct Values {
     panel_lyrics_scale: f32,
     fullscreen_lyrics_scale: f32,
     romanization_scripts: RomanizationScripts,
-    adaptive_menu: bool,
     check_updates: bool,
     close_to_tray: bool,
     tray_icon: bool,
@@ -424,6 +494,20 @@ struct Values {
     local_folders: Vec<PathBuf>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     hidden_nav: Vec<String>,
+    /// The saved sidebar, toolbar alignment or hidden location of each chrome entry.
+    /// It wins over `hidden_nav`, which predates it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    nav_places: BTreeMap<String, String>,
+    /// Chrome entries in the order the user chose. New entries are inserted beside their
+    /// default neighbours without changing the saved entries' relative order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    nav_order: Vec<String>,
+    /// The right sidebar's sections by id, in the order the user put them, and the ones they
+    /// hid. A section the order leaves out keeps its own place after the rest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    stage_order: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    stage_hidden: Vec<String>,
     /// Missing system requirements the user asked never to hear about again.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     silenced_requirements: Vec<String>,
@@ -608,7 +692,6 @@ impl Default for Values {
             panel_lyrics_scale: DEFAULT_LYRICS_SCALE,
             fullscreen_lyrics_scale: DEFAULT_LYRICS_SCALE,
             romanization_scripts: RomanizationScripts::default(),
-            adaptive_menu: false,
             check_updates: cfg!(target_os = "windows"),
             close_to_tray: true,
             tray_icon: true,
@@ -618,6 +701,10 @@ impl Default for Values {
             startup: DEFAULT_STARTUP.to_owned(),
             local_folders: Vec::new(),
             hidden_nav: Vec::new(),
+            nav_places: BTreeMap::new(),
+            nav_order: Vec::new(),
+            stage_order: Vec::new(),
+            stage_hidden: Vec::new(),
             silenced_requirements: Vec::new(),
             scrobbling: BTreeMap::new(),
             appearance: Appearance::default(),
@@ -635,8 +722,11 @@ impl Values {
 
 /// One narrowed filter axis as stored per table: a flag that is on, or a range the user
 /// shrank. Whole ranges and flags that are off read as untouched and take no space.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum FilterValue {
+    /// Accepts saved selections from the removed multi-select filter without losing app state.
+    #[serde(rename = "Choice")]
+    LegacySelection(Vec<String>),
     Flag(bool),
     Range(f32, f32),
 }
@@ -649,10 +739,12 @@ struct StateValues {
     volume: f32,
     sidebar_width: f32,
     sidebar_open: bool,
+    sidebar_compact: bool,
     sidebar_right_width: f32,
     sidebar_right_open: bool,
-    sidebar_right_tab: SideTab,
-    fullscreen_tab: Option<SideTab>,
+    sidebar_cards: Cards,
+    #[serde(default = "Cards::fullscreen")]
+    fullscreen_cards: Cards,
     shuffle: bool,
     repeat: Repeat,
     radio: bool,
@@ -679,10 +771,11 @@ impl Default for StateValues {
             volume: DEFAULT_VOLUME,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             sidebar_open: true,
+            sidebar_compact: false,
             sidebar_right_width: DEFAULT_SIDEBAR_RIGHT_WIDTH,
             sidebar_right_open: false,
-            sidebar_right_tab: SideTab::Queue,
-            fullscreen_tab: Some(SideTab::Lyrics),
+            sidebar_cards: Cards::default(),
+            fullscreen_cards: Cards::fullscreen(),
             shuffle: false,
             repeat: Repeat::Off,
             radio: true,
@@ -1110,10 +1203,6 @@ impl AppSettings {
         self.values.romanization_scripts
     }
 
-    pub fn adaptive_menu(&self) -> bool {
-        self.values.adaptive_menu
-    }
-
     pub fn check_updates(&self) -> bool {
         self.values.check_updates
     }
@@ -1153,6 +1242,11 @@ impl AppSettings {
         self.state.sidebar_open
     }
 
+    /// Whether the left sidebar is folded down to its rail of icons.
+    pub fn sidebar_compact(&self) -> bool {
+        self.state.sidebar_compact
+    }
+
     pub fn sidebar_right_width(&self) -> f32 {
         self.state.sidebar_right_width
     }
@@ -1161,14 +1255,14 @@ impl AppSettings {
         self.state.sidebar_right_open
     }
 
-    pub fn sidebar_right_tab(&self) -> SideTab {
-        self.state.sidebar_right_tab
+    /// The cards the right sidebar shows.
+    pub fn sidebar_cards(&self) -> Cards {
+        self.state.sidebar_cards
     }
 
-    /// The panel the fullscreen view last showed beside the cover, or `None` when it showed the
-    /// artwork alone.
-    pub fn fullscreen_tab(&self) -> Option<SideTab> {
-        self.state.fullscreen_tab
+    /// The cards fullscreen shows beside the cover. None showing leaves the artwork alone.
+    pub fn fullscreen_cards(&self) -> Cards {
+        self.state.fullscreen_cards
     }
 
     pub fn shuffle(&self) -> bool {
@@ -1609,11 +1703,6 @@ impl AppSettings {
         self.schedule_save(cx);
     }
 
-    pub fn set_adaptive_menu(&mut self, adaptive_menu: bool, cx: &mut Context<Self>) {
-        self.values.adaptive_menu = adaptive_menu;
-        self.schedule_save(cx);
-    }
-
     pub fn set_check_updates(&mut self, check_updates: bool, cx: &mut Context<Self>) {
         self.values.check_updates = check_updates;
         self.schedule_save(cx);
@@ -1694,7 +1783,13 @@ impl AppSettings {
 
     /// The narrowed filter axes stored under a table key, if any.
     pub fn filters(&self, table: &str) -> Option<HashMap<String, FilterValue>> {
-        self.state.filters.get(table).cloned()
+        self.state.filters.get(table).map(|filters| {
+            filters
+                .iter()
+                .filter(|(_, value)| !matches!(value, FilterValue::LegacySelection(_)))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect()
+        })
     }
 
     /// Stores the narrowed filter axes of a table. An empty map drops the entry, so resetting
@@ -1780,6 +1875,11 @@ impl AppSettings {
         self.schedule_state_save(cx);
     }
 
+    pub fn set_sidebar_compact(&mut self, compact: bool, cx: &mut Context<Self>) {
+        self.state.sidebar_compact = compact;
+        self.schedule_state_save(cx);
+    }
+
     pub fn set_sidebar_right_width(&mut self, width: f32, cx: &mut Context<Self>) {
         self.state.sidebar_right_width = width;
         self.schedule_state_save(cx);
@@ -1790,19 +1890,19 @@ impl AppSettings {
         self.schedule_state_save(cx);
     }
 
-    pub fn set_sidebar_right_tab(&mut self, tab: SideTab, cx: &mut Context<Self>) {
-        if self.state.sidebar_right_tab == tab {
+    pub fn set_sidebar_cards(&mut self, cards: Cards, cx: &mut Context<Self>) {
+        if self.state.sidebar_cards == cards {
             return;
         }
-        self.state.sidebar_right_tab = tab;
+        self.state.sidebar_cards = cards;
         self.schedule_state_save(cx);
     }
 
-    pub fn set_fullscreen_tab(&mut self, tab: Option<SideTab>, cx: &mut Context<Self>) {
-        if self.state.fullscreen_tab == tab {
+    pub fn set_fullscreen_cards(&mut self, cards: Cards, cx: &mut Context<Self>) {
+        if self.state.fullscreen_cards == cards {
             return;
         }
-        self.state.fullscreen_tab = tab;
+        self.state.fullscreen_cards = cards;
         self.schedule_state_save(cx);
     }
 
@@ -1906,14 +2006,60 @@ impl AppSettings {
         !self.values.hidden_nav.iter().any(|hidden| hidden == entry)
     }
 
-    pub fn set_nav_shown(&mut self, entry: &str, shown: bool, cx: &mut Context<Self>) {
-        if self.nav_shown(entry) == shown {
+    /// Where the user put a navigation entry, as the id they chose, or `None` if they never
+    /// moved it. An entry hidden before places existed reads as `hidden`.
+    pub fn nav_place(&self, entry: &str) -> Option<&str> {
+        match self.values.nav_places.get(entry) {
+            Some(place) => Some(place),
+            None if !self.nav_shown(entry) => Some("hidden"),
+            None => None,
+        }
+    }
+
+    /// The navigation entries the user has ordered, by id, first to last.
+    pub fn nav_order(&self) -> &[String] {
+        &self.values.nav_order
+    }
+
+    /// Saves the shared order of navigation entries and toolbar control groups.
+    pub fn set_nav_order(&mut self, entries: Vec<String>, cx: &mut Context<Self>) {
+        self.values.nav_order = entries;
+        self.schedule_save(cx);
+    }
+
+    /// The right sidebar's sections the user has ordered, by id, first to last.
+    pub fn stage_order(&self) -> &[String] {
+        &self.values.stage_order
+    }
+
+    pub fn stage_shown(&self, section: &str) -> bool {
+        !self
+            .values
+            .stage_hidden
+            .iter()
+            .any(|hidden| hidden == section)
+    }
+
+    /// Saves the right sidebar's sections: every id in the order they show, and whether each
+    /// one does.
+    pub fn set_stage(&mut self, sections: Vec<(String, bool)>, cx: &mut Context<Self>) {
+        self.values.stage_hidden = sections
+            .iter()
+            .filter(|(_, shown)| !shown)
+            .map(|(id, _)| id.clone())
+            .collect();
+        self.values.stage_order = sections.into_iter().map(|(id, _)| id).collect();
+        self.schedule_save(cx);
+    }
+
+    pub fn set_nav_place(&mut self, entry: &str, place: &str, cx: &mut Context<Self>) {
+        if self.values.nav_places.get(entry).map(String::as_str) == Some(place) {
             return;
         }
-        match shown {
-            true => self.values.hidden_nav.retain(|hidden| hidden != entry),
-            false => self.values.hidden_nav.push(entry.to_owned()),
-        }
+        self.values.hidden_nav.retain(|hidden| hidden != entry);
+        self.values
+            .nav_places
+            .insert(entry.to_owned(), place.to_owned());
         self.schedule_save(cx);
     }
 

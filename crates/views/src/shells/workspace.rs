@@ -11,8 +11,8 @@ use ui::{
 };
 
 use crate::chrome::{
-    AppNotice, Chrome, JamCode, JamJoin, PlayerBar, SidebarLeft, SidebarRight, TitleBarOptions,
-    ToastStack,
+    AppNotice, Chrome, JamCode, JamJoin, LayoutEditor, PlayerBar, SidebarLeft, SidebarRight,
+    TitleBar, TitleBarOptions, ToastStack, UpNext,
 };
 use crate::shared::confirm::Confirm;
 use crate::shared::menus::CardMenu;
@@ -23,8 +23,8 @@ use crate::shells::Shell;
 
 pub(crate) struct Workspace {
     sidebar: Entity<SidebarLeft>,
+    titlebar: Entity<TitleBar>,
     player_bar: Entity<PlayerBar>,
-    playback: Entity<Playback>,
     /// How tall the strip over the player bar stands, which the pages' bottom clearance adds.
     strip: Pixels,
     settings: Entity<AppSettings>,
@@ -37,6 +37,8 @@ pub(crate) struct Workspace {
     jam_join: Entity<JamJoin>,
     jam_code: Entity<JamCode>,
     toasts: Entity<ToastStack>,
+    up_next: Entity<UpNext>,
+    layout_editor: Entity<LayoutEditor>,
     notice: Entity<AppNotice>,
     content: AnyView,
     /// A screen's own header, floated over the top of the page and outside its transition.
@@ -55,23 +57,28 @@ impl Workspace {
         playback: Entity<Playback>,
         queue: Entity<Queue>,
         content: AnyView,
+        titlebar: Entity<TitleBar>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let sidebar = cx.new(SidebarLeft::new);
+        let up_next = cx.new(|cx| UpNext::new(playback.clone(), queue.clone(), cx));
+        let sidebar = cx.new(|cx| SidebarLeft::new(up_next.clone(), cx));
         let sidebar_right = cx.new(|cx| SidebarRight::new(queue.clone(), playback.clone(), cx));
+        cx.observe(&sidebar, |_, _, cx| cx.notify()).detach();
+        cx.observe(&sidebar_right, |_, _, cx| cx.notify()).detach();
+        // A child view's own notify does not reach a cached parent, so the shell redraws itself
+        // as the card comes and goes.
+        cx.observe(&up_next, |_, _, cx| cx.notify()).detach();
         let player_bar = cx.new(|cx| PlayerBar::new(playback.clone(), queue, cx));
         let settings = Sonora::global(cx).settings.clone();
         cx.observe(&settings, |_, _, cx| cx.notify()).detach();
         let devices = Sonora::global(cx).devices.clone();
         cx.observe(&devices, |this, _, cx| this.restrip(cx))
             .detach();
-        cx.observe(&playback, |this, _, cx| this.restrip(cx))
-            .detach();
 
         Self {
             sidebar,
+            titlebar,
             player_bar,
-            playback,
             strip: Pixels::ZERO,
             settings,
             sidebar_right,
@@ -83,6 +90,8 @@ impl Workspace {
             jam_join: cx.new(JamJoin::new),
             jam_code: cx.new(JamCode::new),
             toasts: cx.new(ToastStack::new),
+            up_next,
+            layout_editor: LayoutEditor::entity(cx),
             notice: cx.new(AppNotice::new),
             content,
             header: None,
@@ -95,7 +104,7 @@ impl Workspace {
     /// Reads how tall the strip over the player bar stands, and redraws only when that changes,
     /// since playback notifies on every tick.
     fn restrip(&mut self, cx: &mut Context<Self>) {
-        let strip = PlayerBar::strip(self.playback.read(cx), cx);
+        let strip = PlayerBar::strip(cx);
         if self.strip != strip {
             self.strip = strip;
             self.toasts
@@ -110,6 +119,12 @@ impl Workspace {
 
     pub fn toggle_sidebar(&self, cx: &mut Context<Self>) {
         self.sidebar.update(cx, |sidebar, cx| sidebar.toggle(cx));
+    }
+
+    /// The space before the title bar, used to place AppKit’s native window controls.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn title_bar_offset(&self, cx: &App) -> Pixels {
+        self.sidebar.read(cx).occupied_width()
     }
 
     pub fn toggle_sidebar_right(&self, cx: &mut Context<Self>) {
@@ -180,16 +195,15 @@ impl Workspace {
 }
 
 impl Shell for Workspace {
-    fn title_bar(&self, content: Option<AnyView>, cx: &App) -> TitleBarOptions {
+    fn title_bar(&self, cx: &App) -> TitleBarOptions {
         let sidebar = self.sidebar.read(cx);
 
         TitleBarOptions {
             navigation: true,
             sidebar_open: sidebar.is_open(),
             sidebar_right: Some(self.sidebar_right.read(cx).is_open()),
-            offset: sidebar.occupied_width(),
-            border: true,
-            content,
+            tall: crate::chrome::crowded(cx),
+            border: false,
             transparent: false,
         }
     }
@@ -197,15 +211,16 @@ impl Shell for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sidebar_right
+            .update(cx, |sidebar, cx| sidebar.adapt(window, cx));
         let right = self.sidebar_right.read(cx).occupied_width(window);
         let reserved = self.sidebar_right.read(cx).reserved_width();
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.adapt(reserved, window, cx));
         let left = self.sidebar.read(cx).occupied_width();
-        let overlay_width = self.sidebar.read(cx).overlay_width();
         Chrome::publish(left, right, reserved, cx);
         let covered = self.sidebar_right.read(cx).covers_content(window);
-        let overlay = self.sidebar.read(cx).overlays();
+        let title_height = self.title_bar(cx).height(window, cx);
         let bar_height = PlayerBar::height(window, cx);
         let underlap = self.settings.read(cx).player_bar_translucent();
         let bottom = match underlap {
@@ -213,17 +228,30 @@ impl Render for Workspace {
             false => Pixels::ZERO,
         } + self.strip;
         Chrome::set_bottom(bottom, cx);
+        let sidebar_embeds_up_next = self.sidebar.read(cx).embeds_up_next();
+        let sidebar_bottom = bottom
+            + match sidebar_embeds_up_next {
+                true => Pixels::ZERO,
+                false => self.up_next.read(cx).clearance(cx),
+            };
         // A cached view is laid out from the style given here and its own root
         // style is never consulted, so it can only be cached while it is in the
-        // flow at a width this knows: an overlaid sidebar places itself, and a
-        // closed one hides itself and takes no space at all.
+        // flow at a width this knows: a closed one hides itself and takes no space
+        // at all.
         let sidebar_width = self.sidebar.read(cx).occupied_width();
-        let sidebar = match overlay || sidebar_width == gpui::Pixels::ZERO {
+        let sidebar = match sidebar_width == gpui::Pixels::ZERO {
             true => self.sidebar.clone().into_any_element(),
             false => self
                 .sidebar
                 .clone()
-                .cached(StyleRefinement::default().w(sidebar_width).h_full())
+                .cached(
+                    StyleRefinement::default()
+                        .flex()
+                        .flex_col()
+                        .w(sidebar_width)
+                        .h_full()
+                        .min_h_0(),
+                )
                 .into_any_element(),
         };
         // The header is cached at the height it last measured, so a page that redraws every
@@ -312,70 +340,109 @@ impl Render for Workspace {
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .when(!overlay, |this| this.child(sidebar))
                     .child(
                         div()
-                            .relative()
+                            .flex()
+                            .flex_col()
+                            .flex_none()
+                            .min_h_0()
+                            .w(sidebar_width)
+                            .h_full()
+                            .pb(sidebar_bottom)
+                            .child(sidebar),
+                    )
+                    .child(
+                        div()
                             .flex()
                             .flex_col()
                             .flex_1()
                             .min_w_0()
                             .min_h_0()
-                            .ml(overlay_width)
-                            .when(overlay, |this| this.overflow_hidden())
-                            .when(covered, |this| this.hidden())
+                            .child(
+                                self.titlebar.clone().cached(
+                                    StyleRefinement::default()
+                                        .w_full()
+                                        .h(title_height)
+                                        .flex_none(),
+                                ),
+                            )
                             .child(
                                 div()
                                     .relative()
                                     .flex()
-                                    .flex_col()
                                     .flex_1()
                                     .min_h_0()
-                                    .when(hidden > 0., |this| this.overflow_hidden())
+                                    .pt(cx.theme().metrics.island_gap())
                                     .child(
                                         div()
-                                            .absolute()
-                                            .left(-overlay_width)
-                                            .right_0()
-                                            .top_0()
-                                            .bottom_0()
+                                            .relative()
                                             .flex()
                                             .flex_col()
-                                            .map(|this| match dissolving {
-                                                true => entering(this, hidden),
-                                                false => veiled(this, hidden),
-                                            })
-                                            .child(content),
-                                    )
-                                    .when(scrim > 0., |this| {
-                                        this.child(
-                                            div()
-                                                .absolute()
-                                                .left_0()
-                                                .right_0()
-                                                .top_0()
-                                                .bottom_0()
-                                                .bg(backdrop)
-                                                .opacity(scrim),
-                                        )
-                                    })
-                                    // The header comes last, so it paints over the page and
-                                    // the scrim, and spans the same width the page does
-                                    // beneath an overlaid sidebar.
-                                    .when_some(header, |this, header| {
-                                        this.child(
-                                            div()
-                                                .absolute()
-                                                .left(-overlay_width)
-                                                .right_0()
-                                                .top_0()
-                                                .child(header),
-                                        )
-                                    }),
+                                            .flex_1()
+                                            .min_w_0()
+                                            .min_h_0()
+                                            .when(covered, |this| this.hidden())
+                                            .child(
+                                                div()
+                                                    .relative()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .flex_1()
+                                                    .min_h_0()
+                                                    .when(hidden > 0., |this| {
+                                                        this.overflow_hidden()
+                                                    })
+                                                    .child(
+                                                        div()
+                                                            .absolute()
+                                                            .left_0()
+                                                            .right_0()
+                                                            .top_0()
+                                                            .bottom_0()
+                                                            .flex()
+                                                            .flex_col()
+                                                            .map(|this| match dissolving {
+                                                                true => entering(this, hidden),
+                                                                false => veiled(this, hidden),
+                                                            })
+                                                            .child(content),
+                                                    )
+                                                    .when(scrim > 0., |this| {
+                                                        this.child(
+                                                            div()
+                                                                .absolute()
+                                                                .left_0()
+                                                                .right_0()
+                                                                .top_0()
+                                                                .bottom_0()
+                                                                .bg(backdrop)
+                                                                .opacity(scrim),
+                                                        )
+                                                    })
+                                                    // The header comes last, so it paints over the page and
+                                                    // the scrim.
+                                                    .when_some(header, |this, header| {
+                                                        this.child(
+                                                            div()
+                                                                .absolute()
+                                                                .left_0()
+                                                                .right_0()
+                                                                .top_0()
+                                                                .child(header),
+                                                        )
+                                                    }),
+                                            ),
+                                    ),
                             ),
                     )
-                    .child(self.sidebar_right.clone())
-                    .when(overlay, |this| this.child(self.sidebar.clone())),
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(right)
+                            .h_full()
+                            .pb(bottom)
+                            .child(self.sidebar_right.clone()),
+                    ),
             )
             .child(
                 div()
@@ -386,12 +453,16 @@ impl Render for Workspace {
                             .clone()
                             .cached(StyleRefinement::default().w_full().h(bar_height)),
                     )
+                    .when(!sidebar_embeds_up_next, |this| {
+                        this.child(self.up_next.clone())
+                    })
                     .child(self.toasts.clone()),
             )
             // deferred so the cards sit above the sidebars' resize grips, and ahead of the
             // dialogs so those still cover them
             .child(deferred(self.notice.clone()))
             .child(self.card_menu.clone())
+            .child(self.layout_editor.clone())
             .child(self.playlist_editor.clone())
             .child(self.tag_editor.clone())
             .child(self.confirm.clone())

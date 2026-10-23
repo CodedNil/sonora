@@ -1,7 +1,12 @@
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Div, ElementId, Entity, Interactivity, MouseButton, MouseMoveEvent, Pixels,
-    ScrollWheelEvent, StyleRefinement, Window, div, px,
+    AnyElement, App, DispatchPhase, Div, ElementId, Entity, EntityId, Interactivity, MouseButton,
+    MouseMoveEvent, Pixels, ScrollHandle, ScrollWheelEvent, StyleRefinement, Window, canvas, div,
+    px,
 };
 
 use crate::button::Button;
@@ -14,6 +19,118 @@ const REACH: f32 = 3.;
 /// How far a perched control floats off the bottom of its region.
 const PERCH: Pixels = px(12.);
 
+/// Measured starts shared by a scroller and its sections or virtualized rows. Mark a container,
+/// not its text, so settling preserves the section's own internal padding.
+#[derive(Clone)]
+pub struct ScrollAnchors {
+    scroll: ScrollHandle,
+    points: Rc<RefCell<HashMap<ElementId, Pixels>>>,
+    inset: Rc<Cell<Pixels>>,
+    marker: Rc<Cell<Option<Pixels>>>,
+    marker_owner: Rc<Cell<Option<EntityId>>>,
+    table: Rc<Cell<bool>>,
+}
+
+impl ScrollAnchors {
+    pub fn new(scroll: ScrollHandle) -> Self {
+        Self {
+            scroll,
+            points: Rc::default(),
+            inset: Rc::default(),
+            marker: Rc::default(),
+            marker_owner: Rc::default(),
+            table: Rc::default(),
+        }
+    }
+
+    /// Keeps the scrollbar faintly visible while it belongs to an overflowing table.
+    pub fn set_table(&self, table: bool) {
+        self.table.set(table);
+    }
+
+    pub(crate) fn has_table(&self) -> bool {
+        self.table.get()
+    }
+
+    /// Sets a highlighted content position for the scrollbar, independent of magnetic targets.
+    pub fn set_marker(&self, top: Option<Pixels>, cx: &mut App) -> bool {
+        if self.marker.replace(top) == top {
+            return false;
+        }
+        if let Some(owner) = self.marker_owner.get() {
+            cx.notify(owner);
+        }
+        true
+    }
+
+    pub(crate) fn watch_marker(&self, owner: EntityId) {
+        self.marker_owner.set(Some(owner));
+    }
+
+    pub(crate) fn marker(&self) -> Option<Pixels> {
+        self.marker.get()
+    }
+
+    /// Converts a viewport position to the unscrolled content coordinate used by scrollbar marks.
+    pub(crate) fn content_position(&self, top: Pixels) -> Pixels {
+        top - self.scroll.bounds().top() - self.scroll.offset().y
+    }
+
+    /// Leaves room for a persistent page header above each magnetic target.
+    pub fn set_inset(&self, inset: Pixels) {
+        self.inset.set(inset);
+    }
+
+    /// Measures a section without changing its content or layout.
+    pub fn mark(&self, id: impl Into<ElementId>, content: impl IntoElement) -> Div {
+        let id = id.into();
+        let anchors = self.clone();
+        div()
+            .min_w_0()
+            .flex_none()
+            .child(content)
+            .on_children_prepainted(move |bounds, _, _| {
+                if let Some(bounds) = bounds.first() {
+                    anchors.record(id.clone(), bounds.top(), Pixels::ZERO);
+                }
+            })
+    }
+
+    /// Records an unscrolled position relative to the viewport, with room for a sticky header.
+    pub fn record(&self, id: impl Into<ElementId>, top: Pixels, inset: Pixels) {
+        let at =
+            top - self.scroll.bounds().top() - self.scroll.offset().y - inset - self.inset.get();
+        self.points
+            .borrow_mut()
+            .insert(id.into(), at.max(Pixels::ZERO));
+    }
+
+    /// Chooses a nearby, reachable section ahead in the scroll direction, never one left behind.
+    pub(crate) fn nearest(
+        &self,
+        at: Pixels,
+        reach: Pixels,
+        maximum: Pixels,
+        direction: f32,
+    ) -> Option<Pixels> {
+        self.points
+            .borrow()
+            .values()
+            .copied()
+            .filter(|point| {
+                *point <= maximum
+                    && (*point - at).abs() <= reach
+                    && (*point - at).as_f32() * direction >= 0.
+            })
+            .min_by(|a, b| {
+                (a.as_f32() - at.as_f32())
+                    .abs()
+                    .total_cmp(&(b.as_f32() - at.as_f32()).abs())
+                    .then_with(|| a.as_f32().total_cmp(&b.as_f32()))
+            })
+    }
+}
+
 #[derive(IntoElement)]
 pub struct Scroller {
     base: Div,
@@ -23,6 +140,7 @@ pub struct Scroller {
     present_surface: bool,
     owns_scroll: bool,
     bottom_inset: Pixels,
+    sectioned: bool,
 }
 
 impl Scroller {
@@ -36,6 +154,7 @@ impl Scroller {
             present_surface: true,
             owns_scroll: true,
             bottom_inset: Pixels::ZERO,
+            sectioned: true,
         }
     }
 
@@ -48,6 +167,12 @@ impl Scroller {
             owns_scroll: false,
             ..Self::new(id, bar)
         }
+    }
+
+    /// Keeps continuous text, editing controls and self-following content free-scrolling.
+    pub fn free_scroll(mut self) -> Self {
+        self.sectioned = false;
+        self
     }
 
     /// Lets a caller merge the scroll presentation into child transforms, avoiding nested
@@ -94,15 +219,32 @@ impl RenderOnce for Scroller {
             present_surface,
             owns_scroll,
             bottom_inset,
+            sectioned,
         } = self;
+        bar.read(cx).anchors().watch_marker(bar.entity_id());
+        let anchors = sectioned.then(|| bar.read(cx).anchors());
+        if let Some(anchors) = &anchors {
+            anchors.points.borrow_mut().clear();
+        }
+        let measuring = anchors.clone();
 
-        bar.update(cx, |bar, cx| bar.set_track_bottom(bottom_inset, cx));
+        bar.update(cx, |bar, cx| {
+            bar.set_track_bottom(bottom_inset, cx);
+            bar.set_anchors(anchors);
+        });
         let scroll = bar.read(cx).scroll().clone();
         let overrides = std::mem::take(base.style());
         bar.read(cx).sync();
         let presentation = bar.read(cx).presentation();
         let gliding = bar.clone();
 
+        let base = base.when_some(measuring, |surface, anchors| {
+            surface.on_children_prepainted(move |bounds, _, _| {
+                for (index, bounds) in bounds.iter().enumerate() {
+                    anchors.record(("section", index), bounds.top(), Pixels::ZERO);
+                }
+            })
+        });
         let mut surface = middle_scroll(base, &bar)
             .id(id)
             .size_full()
@@ -113,10 +255,7 @@ impl RenderOnce for Scroller {
                     .track_scroll(&scroll)
             })
             .on_scroll_wheel(move |event: &ScrollWheelEvent, window, cx| {
-                match event.delta.precise() {
-                    true => gliding.update(cx, |bar, _| bar.stirred()),
-                    false => gliding.update(cx, |bar, _| bar.nudge(window)),
-                }
+                gliding.update(cx, |bar, cx| bar.wheel(event, window, cx));
             })
             .children(children);
 
@@ -141,6 +280,36 @@ impl RenderOnce for Scroller {
             .child(surface)
             .child(bar)
     }
+}
+
+/// Lays a layer over a region nested inside a larger scroll, which takes the wheel before
+/// anything scrollable in the region can and scrolls `bar`'s region with it, the way the wheel
+/// does over the rest of that scroll. The region below still scrolls when its own code asks it to,
+/// so a lyrics card can follow the song while the wheel moves the page it sits on. The parent
+/// has to be `relative`.
+pub fn wheel_to(bar: &Entity<Scrollbar>) -> impl IntoElement {
+    let bar = bar.clone();
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let bar = bar.clone();
+            window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+                if phase != DispatchPhase::Capture || !bounds.contains(&event.position) {
+                    return;
+                }
+                cx.stop_propagation();
+                let scroll = bar.read(cx).scroll().clone();
+                let delta = event.delta.pixel_delta(window.line_height());
+                let mut offset = scroll.offset();
+                offset.y = (offset.y + delta.y).clamp(-scroll.max_offset().y, Pixels::ZERO);
+                scroll.set_offset(offset);
+                bar.update(cx, |bar, cx| bar.wheel(event, window, cx));
+                window.refresh();
+            });
+        },
+    )
+    .absolute()
+    .inset_0()
 }
 
 /// Adds browser-style middle-button auto-scrolling to a scrollable surface. A middle click

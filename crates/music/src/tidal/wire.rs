@@ -154,6 +154,11 @@ pub fn track(wrapper: &Value) -> Option<Track> {
         duration: Duration::from_secs(number(value, "duration").unwrap_or(0)),
         added_at: added(wrapper),
         added_by: None,
+        year: text(value, "streamStartDate")
+            .or_else(|| text(album, "releaseDate"))
+            .and_then(|date| date.get(..4))
+            .and_then(|year| year.parse().ok())
+            .unwrap_or(0),
         playcount: None,
         popularity: count(value, "popularity").unwrap_or(0),
         explicit: value

@@ -38,7 +38,10 @@ impl GenreView {
         let settings = Sonora::global(cx).settings.clone();
         let mode = settings.read(cx).view_or(SECTION, Mode::Grid);
         let id = cx.entity_id();
-        let shelves = cx.new(|_| Shelves::new("genre-shelf", id, playback.clone()));
+        let scrollbar = cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(id));
+        let anchors = scrollbar.read(cx).anchors();
+        let shelves =
+            cx.new(|_| Shelves::new("genre-shelf", id, playback.clone()).magnetic(anchors));
 
         cx.observe(&detail, |this, _, cx| {
             this.shelves.update(cx, |shelves, _| shelves.reset());
@@ -57,7 +60,7 @@ impl GenreView {
             detail,
             settings,
             shelves,
-            scrollbar: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(id)),
+            scrollbar,
             toolbar,
             popovers: Popovers::default(),
             mode,
@@ -145,7 +148,8 @@ impl Render for GenreView {
         div().flex().flex_col().size_full().child(
             Scroller::new("genre", &self.scrollbar)
                 .bottom_inset(crate::chrome::Chrome::bottom(cx))
-                .p(pad)
+                .px(pad)
+                .pb(pad)
                 .child(
                     div()
                         .flex()
@@ -161,9 +165,13 @@ impl Render for GenreView {
                         .when_some(title, |this, title| {
                             this.child(
                                 div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_3()
                                     .text_size(theme.text(Text::Display))
                                     .font_weight(FontWeight::BOLD)
-                                    .child(SharedString::from(title)),
+                                    .child(SharedString::from(title))
+                                    .child(self.toolbar.clone()),
                             )
                         })
                         .when(empty, |this| this.child(vacant(t!("genre-empty"), cx)))

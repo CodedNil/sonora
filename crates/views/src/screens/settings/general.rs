@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{AnyElement, App, Context, SharedString, Window};
 use i18n::{Language, t};
-use router::{NavEntry, Screen};
+use router::Screen;
 use ui::{MenuItem, OptionCard, Pace, Picker, Rounding, Saver, Stillness, Switch};
 
 use super::appearance::corner;
@@ -10,16 +10,12 @@ use super::{Group, LANGUAGES, SettingsView, Slot};
 use crate::shared::popups::matches_query;
 
 const STARTUP: &str = "startup";
-const ENTRIES: &str = "entries";
 
 impl SettingsView {
     pub(super) fn general_groups(&self, cx: &App) -> Vec<Group> {
         vec![
-            Group::new("settings-group-startup", "icons/house.svg").rows([
-                Slot::Startup,
-                Slot::Entries,
-                Slot::Language,
-            ]),
+            Group::new("settings-group-startup", "icons/house.svg")
+                .rows([Slot::Startup, Slot::Language]),
             Group::new("settings-group-window", "icons/panel-left-open.svg")
                 .rows([Slot::Tray, Slot::TrayIcon])
                 .rows(self.decoration_slots(cx)),
@@ -28,7 +24,6 @@ impl SettingsView {
                 Slot::Pace,
                 Slot::Saver,
             ]),
-            Group::new("settings-group-context-menus", "icons/list.svg").rows([Slot::AdaptiveMenu]),
         ]
     }
 
@@ -79,26 +74,6 @@ impl SettingsView {
             }));
 
         self.row(t!("settings-startup"), picker.into_any_element())
-    }
-
-    pub(super) fn entries_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let picker = Picker::new(ENTRIES, &self.popovers, t!("settings-entries-pick"))
-            .width(Picker::REGULAR)
-            .sticky()
-            .items(NavEntry::ALL.map(|entry| {
-                let shown = self.settings.read(cx).nav_shown(entry.id());
-
-                MenuItem::new(entry.id(), i18n::lookup(entry.key(), None))
-                    .selected(shown)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.settings.update(cx, |settings, cx| {
-                            settings.set_nav_shown(entry.id(), !shown, cx)
-                        });
-                        cx.notify();
-                    }))
-            }));
-
-        self.row(t!("settings-entries"), picker.into_any_element())
     }
 
     pub(super) fn language_row(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -171,37 +146,6 @@ impl SettingsView {
                         settings.window_decorations()
                     });
                     window.request_decorations(decorations);
-                }))
-                .into_any_element(),
-        )
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
-    pub(super) fn decorations_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).window_controls();
-
-        self.row(
-            t!("settings-window-controls"),
-            Switch::new("window-controls", on)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_window_controls(!on, cx));
-                }))
-                .into_any_element(),
-        )
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    pub(super) fn traffic_light_controls_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).traffic_light_controls();
-
-        self.row(
-            t!("settings-traffic-light-controls"),
-            Switch::new("traffic-light-controls", on)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings.update(cx, |settings, cx| {
-                        settings.set_traffic_light_controls(!on, cx)
-                    });
                 }))
                 .into_any_element(),
         )
@@ -324,47 +268,5 @@ impl SettingsView {
         super::Row::new(t!("settings-saver"), choices.into_any_element())
             .detail(t!("settings-saver-detail"))
             .into_any_element()
-    }
-
-    pub(super) fn adaptive_menu_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).adaptive_menu();
-
-        self.row(
-            t!("settings-adaptive-menu"),
-            Switch::new("adaptive-menu", on)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_adaptive_menu(!on, cx));
-                }))
-                .into_any_element(),
-        )
-    }
-
-    pub(super) fn tray_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).close_to_tray();
-
-        self.row(
-            t!("settings-close-to-tray"),
-            Switch::new("close-to-tray", on)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_close_to_tray(!on, cx));
-                }))
-                .into_any_element(),
-        )
-    }
-
-    pub(super) fn tray_icon_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).tray_icon();
-
-        self.row(
-            t!("settings-tray-icon"),
-            Switch::new("tray-icon", on)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_tray_icon(!on, cx));
-                }))
-                .into_any_element(),
-        )
     }
 }

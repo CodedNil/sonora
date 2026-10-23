@@ -69,10 +69,19 @@ pub struct Named {
 
 /// A queued track and the collection it was queued from. A track the user added on its own has
 /// no origin.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 struct Entry {
+    /// Keeps reorder animation attached to this occurrence, even for repeated songs.
+    uid: String,
     track: Track,
     origin: Option<Origin>,
+}
+
+/// Source positions compare track content; animation keys only identify rendered occurrences.
+impl PartialEq for Entry {
+    fn eq(&self, other: &Self) -> bool {
+        self.track == other.track && self.origin == other.origin
+    }
 }
 
 impl Entry {
@@ -174,6 +183,7 @@ fn hydrate(stub: Stub) -> Track {
         duration: Duration::from_secs_f32(stub.seconds.max(0.)),
         added_at: None,
         added_by: None,
+        year: 0,
         playcount: None,
         popularity: 0,
         explicit: stub.explicit,
@@ -372,6 +382,7 @@ fn tagged(
     origin: Option<Origin>,
 ) -> impl Iterator<Item = Entry> {
     tracks.into_iter().map(move |track| Entry {
+        uid: queue_uid(),
         track,
         origin: origin.clone(),
     })
@@ -499,6 +510,7 @@ impl Queue {
     pub(crate) fn revive(&mut self, resume: Resume, cx: &mut Context<Self>) -> Option<Track> {
         let origins = resume.origins;
         let entry = |stub: Stub| Entry {
+            uid: queue_uid(),
             origin: stub.from.and_then(|index| origins.get(index).cloned()),
             track: hydrate(stub),
         };
@@ -582,6 +594,13 @@ impl Queue {
         self.upcoming
             .range(..self.queued())
             .map(|entry| &entry.track)
+    }
+
+    /// Stable occurrence keys for upcoming rows, including repeated copies of the same song.
+    pub fn upcoming_keys(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.upcoming
+            .range(..self.queued())
+            .map(|entry| entry.uid.as_str())
     }
 
     /// The tracks the user queued by hand. They open `upcoming`.
@@ -1113,6 +1132,11 @@ fn drop_copies(entries: &mut Vec<Entry>, restored: &[Entry]) {
     });
 }
 
+/// Makes an animation key for a newly queued occurrence, retained when it moves.
+fn queue_uid() -> String {
+    format!("sonora-{:016x}", fastrand::u64(..))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
@@ -1138,6 +1162,7 @@ mod tests {
             duration: Duration::from_secs(180),
             added_at: None,
             added_by: None,
+            year: 0,
             playcount: None,
             popularity: 0,
             explicit: false,
@@ -1151,6 +1176,7 @@ mod tests {
 
     fn entry(id: &str) -> Entry {
         Entry {
+            uid: format!("test-{id}"),
             track: track(id),
             origin: None,
         }

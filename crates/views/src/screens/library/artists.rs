@@ -10,7 +10,7 @@ use state::{Library, LibraryPart, Network, Origin, Playback, Shelf, Sonora};
 use ui::rank::{ESSENTIAL, HANDY};
 use ui::{Cell, ColumnSpec, Menu, Pin, TableSource, Width};
 
-use crate::shared::cells::{self, DATE, NUMBER};
+use crate::shared::cells::{self, ADDED_DATE, NUMBER};
 use crate::shared::menus::artist_menu;
 use crate::shared::pins::Pinned as _;
 use crate::shared::text::{folded, holds};
@@ -42,7 +42,7 @@ const ADDED_AT: ColumnSpec<ArtistField> = ColumnSpec {
     field: ArtistField::AddedAt,
     key: "added-at",
     header: "column-date-added",
-    width: Width::Fixed(DATE),
+    width: Width::Fixed(ADDED_DATE),
     rank: HANDY,
     ..COLUMN
 };
@@ -77,17 +77,6 @@ impl ArtistSource {
             starred: false,
             heard: RefCell::new(None),
         }
-    }
-
-    fn index_cell(&self, cell: &Cell<ArtistField>, artist: &SavedArtist, cx: &App) -> AnyElement {
-        let origin = Origin::artist(artist.id.clone()).named(artist.name.clone());
-        let playing = self.playback.read(cx).playing_from(&origin, cx);
-        let played = origin.clone();
-        let press = cells::toggle(&self.playback, playing, move |playback, cx| {
-            playback.play_origin(played.clone(), cx)
-        });
-
-        cells::index(cell, playing, true, None, None, press, cx)
     }
 
     pub(super) fn at(&self, row: usize, cx: &App) -> Option<SavedArtist> {
@@ -206,7 +195,6 @@ impl TableSource for ArtistSource {
         Some(artist_menu(
             self.at(*rows.first()?, cx)?,
             self.playback.clone(),
-            false,
             cx,
         ))
     }
@@ -220,13 +208,18 @@ impl TableSource for ArtistSource {
         };
 
         if cell.field == ArtistField::Index {
-            return self.index_cell(&cell, artist, cx);
+            return cells::collection_index(
+                &cell,
+                Origin::artist(artist.id.clone()).named(artist.name.clone()),
+                &self.playback,
+                cx,
+            );
         }
 
         match cell.field {
             ArtistField::Cover => cells::avatar(&cell, artist.cover.clone()),
             ArtistField::Name => cells::dim(&cell, artist.name.clone(), theme.foreground),
-            ArtistField::AddedAt => cells::dim(&cell, cells::stamp(artist.added_at), muted),
+            ArtistField::AddedAt => cells::dim(&cell, cells::added_stamp(artist.added_at), muted),
             ArtistField::Index => cells::blank(&cell),
         }
     }

@@ -14,9 +14,10 @@ use gpui::{
 };
 
 use crate::artwork::{PREFETCH_REACH, Prefetch};
+use crate::drag::ReorderMotion;
 use crate::filters::FilterChange;
 use crate::glass::{blurring, popover_surface};
-use crate::menu::Menu;
+use crate::menu::{Menu, MenuItem};
 use crate::metrics::{snapped, text_width};
 use crate::pin::{Pin, Pinnable};
 use crate::popup::Popup;
@@ -37,6 +38,7 @@ pub const TABLE_CONTEXT: &str = "Table";
 
 const MIN_CELL: Pixels = px(24.);
 const GRIP: Pixels = px(9.);
+const COLUMN_SORT_ICON: Pixels = px(12.);
 /// Rows kept ready past the visible ones: two below, and one above so a row emerging
 /// from behind the head is already drawn rather than popping in as the head lifts.
 const OVERSCAN: usize = 2;
@@ -93,6 +95,16 @@ pub trait TableSource: 'static {
 
     fn columns(&self) -> &'static [ColumnSpec<Self::Field>];
     fn rows(&self, cx: &App) -> usize;
+
+    /// Observes asynchronous data the source loads after its initial rows have arrived.
+    fn observe(&self, _cx: &mut Context<TableState<Self>>)
+    where
+        Self: Sized,
+    {
+    }
+
+    /// Requests data needed to sort the whole source, beyond the currently visible cells.
+    fn prepare(&self, _sorted: Option<Self::Field>, _cx: &mut App) {}
 
     fn populated(&self, _field: Self::Field, _cx: &App) -> bool {
         true
@@ -427,10 +439,15 @@ impl<S: TableSource> TableDelegate<S> {
             .columns()
             .iter()
             .filter(|spec| self.source.populated(spec.field, cx))
+            .filter(|spec| !matches!(spec.key, "title" | "name"))
+            .filter(|spec| !spec.header.is_empty() || spec.key == "cover")
             .map(|spec| Toggle {
                 key: spec.key,
-                label: spec.label(),
-                visible: !self.layout.hides(spec.key),
+                label: match spec.key {
+                    "cover" => i18n::t!("column-artwork"),
+                    _ => spec.label(),
+                },
+                visible: self.layout.visible(spec),
             })
             .collect()
     }
@@ -554,12 +571,15 @@ pub struct Toggle {
 pub struct Viewport {
     pub top: Pixels,
     pub height: Pixels,
+    /// Rows retained behind a translucent page header above the column headings.
+    pub underlap: Pixels,
 }
 
 impl Viewport {
     pub fn measured(top: Pixels, height: Pixels, window: &Window) -> Self {
         Self {
             top: top.max(Pixels::ZERO),
+            underlap: Pixels::ZERO,
             height: match height > Pixels::ZERO {
                 true => height,
                 false => window.viewport_size().height,
@@ -568,14 +588,14 @@ impl Viewport {
     }
 
     fn rows(&self, row: Pixels) -> usize {
-        (self.height / row).ceil().max(0.) as usize + OVERSCAN + OVERSCAN_ABOVE
+        ((self.height + self.underlap) / row).ceil().max(0.) as usize + OVERSCAN + OVERSCAN_ABOVE
     }
 
     /// The first row to draw: the one under the top edge of the viewport — the head's
     /// band counts as in view, since the head is see-through on a glass window — and
     /// `OVERSCAN_ABOVE` more before it.
     fn first(&self, head: Pixels, row: Pixels) -> usize {
-        let under_edge = ((self.top - head) / row).floor().max(0.) as usize;
+        let under_edge = ((self.top - self.underlap - head) / row).floor().max(0.) as usize;
         under_edge.saturating_sub(OVERSCAN_ABOVE)
     }
 }
@@ -588,6 +608,8 @@ struct ColumnResize {
 
 #[derive(Clone)]
 struct ColumnMove {
+    owner: gpui::EntityId,
+    key: &'static str,
     column: usize,
     origin: StdCell<Pixels>,
 }
@@ -597,14 +619,27 @@ struct Sizing {
     widths: Vec<Pixels>,
 }
 
+/// A column's original index, preview destination and pointer displacement during a drag.
+struct MovingColumn {
+    key: &'static str,
+    from: usize,
+    to: usize,
+    delta: Pixels,
+}
+
 pub struct TableState<S: TableSource> {
     delegate: TableDelegate<S>,
     viewport: Viewport,
+    anchors: Option<crate::ScrollAnchors>,
     corners: Corners<Pixels>,
     focus: FocusHandle,
     scroll: Option<ScrollHandle>,
     context_menu: Option<(Vec<usize>, Point<Pixels>)>,
-    moving: Option<(usize, usize)>,
+    moving: Option<MovingColumn>,
+    column_menu: Option<Point<Pixels>>,
+    /// Absolute column positions let both headers and visible rows share one animation.
+    positions: ReorderMotion,
+    suppress_sort: bool,
     sizing: Option<Sizing>,
 }
 
@@ -618,14 +653,19 @@ impl<S: TableSource> Focusable for TableState<S> {
 
 impl<S: TableSource> TableState<S> {
     pub fn new(delegate: TableDelegate<S>, cx: &mut Context<Self>) -> Self {
+        delegate.source.observe(cx);
         Self {
             delegate,
             viewport: Viewport::default(),
+            anchors: None,
             corners: Corners::default(),
             focus: cx.focus_handle(),
             scroll: None,
             context_menu: None,
             moving: None,
+            column_menu: None,
+            positions: ReorderMotion::default(),
+            suppress_sort: false,
             sizing: None,
         }
     }
@@ -648,7 +688,12 @@ impl<S: TableSource> TableState<S> {
     }
 
     fn deselect(&mut self, _: &Deselect, _: &mut Window, cx: &mut Context<Self>) {
-        if self.context_menu.take().is_some() {
+        if self.moving.take().is_some() {
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+        if self.column_menu.take().is_some() || self.context_menu.take().is_some() {
             cx.stop_propagation();
             cx.notify();
             return;
@@ -846,6 +891,7 @@ impl<S: TableSource> TableState<S> {
     }
 
     fn resize(&mut self, resize: &ColumnResize, to: Pixels, cx: &mut Context<Self>) {
+        self.suppress_sort = true;
         let start = match &self.sizing {
             Some(sizing) if sizing.column == resize.column => sizing.widths.clone(),
             _ => {
@@ -883,22 +929,129 @@ impl<S: TableSource> TableState<S> {
         cx.notify();
     }
 
+    /// Moves the whole visible column with the pointer while neighbours make room for its slot.
     fn move_column(&mut self, moved: &ColumnMove, to: Pixels, cx: &mut Context<Self>) {
-        let target = shifted(
-            &self.delegate.columns,
-            moved.column,
-            to - moved.origin.get(),
-        );
-        if self.moving == Some((moved.column, target)) {
+        let Some(column) = self.delegate.columns.get(moved.column) else {
+            return;
+        };
+        if column.spec.key != moved.key {
             return;
         }
-        self.moving = Some((moved.column, target));
+        let first = self
+            .delegate
+            .columns
+            .iter()
+            .take_while(|column| column.spec.anchored)
+            .count();
+        let start = self.delegate.offset(moved.column);
+        let end = self
+            .delegate
+            .columns
+            .iter()
+            .map(|column| column.width)
+            .sum::<Pixels>();
+        let delta = (to - moved.origin.get()).clamp(
+            self.delegate.offset(first) - start,
+            end - column.width - start,
+        );
+        let target = shifted(&self.delegate.columns, moved.column, delta);
+        self.suppress_sort = true;
+        self.moving = Some(MovingColumn {
+            key: moved.key,
+            from: moved.column,
+            to: target,
+            delta,
+        });
         cx.notify();
+    }
+
+    /// Steps shared column positions once per frame, keeping the held column under the pointer.
+    fn animate_columns(&mut self, window: &mut Window, cx: &App) {
+        let mut targets = Vec::new();
+        for (ix, column) in self.delegate.columns.iter().enumerate() {
+            let mut target = self.delegate.offset(ix);
+            let held = self.moving.as_ref().is_some_and(|moving| moving.from == ix);
+            if let Some(moving) = &self.moving {
+                let width = self.delegate.columns[moving.from].width;
+                if held {
+                    target += moving.delta;
+                } else if moving.from < ix && ix <= moving.to {
+                    target -= width;
+                } else if moving.to <= ix && ix < moving.from {
+                    target += width;
+                }
+            }
+            targets.push((column.spec.key.into(), target, held));
+        }
+        self.positions.animate(targets, window, cx);
+    }
+
+    /// The shared preview position of a header and all of its visible cells.
+    fn column_left(&self, ix: usize) -> Pixels {
+        self.positions
+            .position(self.delegate.columns[ix].spec.key, self.delegate.offset(ix))
+    }
+
+    /// Draws the held column last so its header and cells pass over their neighbours.
+    fn column_indices(&self) -> Vec<usize> {
+        let mut indices: Vec<_> = (0..self.delegate.columns.len()).collect();
+        if let Some(moving) = &self.moving {
+            indices.retain(|ix| *ix != moving.from);
+            indices.push(moving.from);
+        }
+        indices
+    }
+
+    /// Applies a visibility choice without changing the defaults for any other columns.
+    fn toggle_column(&mut self, key: &'static str, cx: &mut Context<Self>) {
+        let Some(spec) = self
+            .delegate
+            .source
+            .columns()
+            .iter()
+            .find(|spec| spec.key == key)
+        else {
+            return;
+        };
+        let mut layout = self.delegate.layout.clone();
+        layout
+            .visibility
+            .insert(key.to_owned(), !layout.visible(spec));
+        self.delegate.set_layout(layout, cx);
+        cx.emit(TableEvent::LayoutChanged);
+        cx.notify();
+    }
+
+    /// Rebuilds the column chooser from current choices so several columns can be toggled in place.
+    fn column_menu(&self, cx: &mut Context<Self>) -> Option<Popup> {
+        let position = self.column_menu?;
+        let menu = Menu::new("table-columns")
+            .header(
+                div()
+                    .px_3()
+                    .py_2()
+                    .child(crate::menu_heading(i18n::lookup("tool-columns", None), cx)),
+            )
+            .items(self.delegate.toggles(cx).into_iter().map(|toggle| {
+                MenuItem::new(toggle.key, toggle.label.clone()).content(
+                    crate::Switch::new(toggle.key, toggle.visible)
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.toggle_column(toggle.key, cx)),
+                        )
+                        .menu_row(crate::menu_label(toggle.label, cx), cx),
+                )
+            }));
+        Some(
+            Popup::new(position, menu).on_close(cx.listener(|this, _, _, cx| {
+                this.column_menu = None;
+                cx.notify();
+            })),
+        )
     }
 
     fn finish_column_drag(&mut self, cx: &mut Context<Self>) {
         self.sizing = None;
-        let Some((from, to)) = self.moving.take() else {
+        let Some(MovingColumn { from, to, .. }) = self.moving.take() else {
             return;
         };
         if from == to {
@@ -907,7 +1060,8 @@ impl<S: TableSource> TableState<S> {
         }
 
         let mut layout = self.delegate.layout.clone();
-        layout.order = reordered(&self.delegate.columns, from, to);
+        let reordered = reordered(&self.delegate.columns, from, to);
+        layout.reorder(self.delegate.source.columns(), &reordered);
         self.delegate.set_layout(layout, cx);
         cx.emit(TableEvent::LayoutChanged);
         cx.notify();
@@ -939,13 +1093,6 @@ impl<S: TableSource> TableState<S> {
                 )
             })
             .collect();
-        let marker = self.moving.and_then(|(from, to)| {
-            let column = self.delegate.columns.get(to)?;
-            (from != to).then(|| match to > from {
-                true => self.delegate.offset(to) + column.width,
-                false => self.delegate.offset(to),
-            })
-        });
         let handles: Vec<(usize, Pixels)> = self
             .delegate
             .columns
@@ -956,9 +1103,15 @@ impl<S: TableSource> TableState<S> {
             .map(|(ix, _)| (ix, self.delegate.offset(ix + 1)))
             .collect();
 
+        let mut heads = heads;
+        heads.sort_by_key(|(ix, ..)| {
+            self.moving
+                .as_ref()
+                .is_some_and(|moving| moving.from == *ix)
+        });
+        let table = cx.entity().downgrade();
         div()
             .relative()
-            .flex()
             .flex_none()
             .h(head)
             .when_else(
@@ -979,12 +1132,28 @@ impl<S: TableSource> TableState<S> {
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_column_drag(cx)),
             )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    window.focus(&this.focus, cx);
+                    this.context_menu = None;
+                    this.column_menu = Some(event.position);
+                    cx.notify();
+                }),
+            )
             .children(heads.into_iter().map(
                 |(ix, width, inner, align, header, sortable, direction, movable)| {
-                    let dragged = self.moving.is_some_and(|(from, _)| from == ix);
+                    let dragged = self.moving.as_ref().is_some_and(|moving| moving.from == ix);
                     div()
-                        .id(("head", ix))
-                        .relative()
+                        .id(SharedString::from(format!(
+                            "head-{}",
+                            self.delegate.columns[ix].spec.key
+                        )))
+                        .absolute()
+                        .top_0()
+                        .left(self.column_left(ix))
                         .flex()
                         .flex_none()
                         .items_center()
@@ -997,33 +1166,32 @@ impl<S: TableSource> TableState<S> {
                         .when(sortable, |this| {
                             this.cursor_pointer()
                                 .hover(move |style| style.text_color(theme.foreground))
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                                        if this.moving.is_some() || this.sizing.is_some() {
-                                            return;
-                                        }
-                                        this.toggle_sort(ix, cx);
-                                    }),
-                                )
-                        })
-                        .when(movable, |this| {
-                            this.on_drag_move(cx.listener(
-                                move |this, event: &DragMoveEvent<ColumnMove>, _, cx| {
-                                    let moved = event.drag(cx).clone();
-                                    if moved.column != ix {
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if this.suppress_sort
+                                        || this.moving.is_some()
+                                        || this.sizing.is_some()
+                                    {
                                         return;
                                     }
-                                    this.move_column(&moved, event.event.position.x, cx);
-                                },
-                            ))
-                            .on_drag(
+                                    this.toggle_sort(ix, cx);
+                                }))
+                        })
+                        .when(movable, |this| {
+                            let table = table.clone();
+                            this.cursor_grab().on_drag(
                                 ColumnMove {
+                                    owner: cx.entity_id(),
+                                    key: self.delegate.columns[ix].spec.key,
                                     column: ix,
                                     origin: StdCell::new(Pixels::ZERO),
                                 },
-                                |moved, _, window, cx| {
+                                move |moved, _, window, cx| {
                                     moved.origin.set(window.mouse_position().x);
+                                    table
+                                        .update(cx, |this, cx| {
+                                            this.move_column(moved, window.mouse_position().x, cx)
+                                        })
+                                        .ok();
                                     cx.new(|_| Empty)
                                 },
                             )
@@ -1033,7 +1201,7 @@ impl<S: TableSource> TableState<S> {
                             this.child(
                                 svg()
                                     .path(icons::path(sort_icon(direction)))
-                                    .size(px(12.))
+                                    .size(COLUMN_SORT_ICON)
                                     .flex_none()
                                     .text_color(match direction {
                                         Some(_) => theme.foreground,
@@ -1043,20 +1211,11 @@ impl<S: TableSource> TableState<S> {
                         })
                 },
             ))
-            .children(
-                handles
-                    .into_iter()
-                    .map(|(ix, edge)| resize_handle(ix, edge, cx)),
-            )
-            .when_some(marker, |this, marker| {
-                this.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(marker - px(1.))
-                        .w(px(2.))
-                        .bg(theme.foreground),
+            .when(self.moving.is_none(), |this| {
+                this.children(
+                    handles
+                        .into_iter()
+                        .map(|(ix, edge)| resize_handle(ix, edge, cx)),
                 )
             })
     }
@@ -1068,6 +1227,7 @@ impl<S: TableSource> TableState<S> {
         let last = (first + self.viewport.rows(row_height)).min(count);
         let bottom = self.corners.bottom_left.max(self.corners.bottom_right);
         let marked = &self.delegate.marked;
+        let columns = self.column_indices();
 
         let mut rows: Vec<AnyElement> = (first..last)
             .map(|display| {
@@ -1075,7 +1235,9 @@ impl<S: TableSource> TableState<S> {
                 let tail = display + 1 == count;
                 let selected = marked.contains(&row);
                 let playing = self.delegate.source.playing(row, cx);
-                let cells: Vec<AnyElement> = (0..self.delegate.columns.len())
+                let cells: Vec<AnyElement> = columns
+                    .iter()
+                    .copied()
                     .map(|ix| {
                         let column = &self.delegate.columns[ix];
                         let cell = Cell {
@@ -1086,7 +1248,16 @@ impl<S: TableSource> TableState<S> {
                             display,
                             row,
                         };
-                        self.delegate.source.cell(cell, cx)
+                        let held = self.moving.as_ref().is_some_and(|moving| moving.from == ix);
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left(self.column_left(ix))
+                            .w(column.width)
+                            .h_full()
+                            .when(held, |this| this.bg(theme.table_active))
+                            .child(self.delegate.source.cell(cell, cx))
+                            .into_any_element()
                     })
                     .collect();
 
@@ -1149,6 +1320,7 @@ impl<S: TableSource> TableState<S> {
                                 window.focus(&this.focus.clone(), cx);
                                 window.prevent_default();
                                 cx.stop_propagation();
+                                this.column_menu = None;
                                 this.context_menu = Some((rows, event.position));
                                 cx.notify();
                             }
@@ -1266,7 +1438,22 @@ fn sort_icon(direction: Option<Sort>) -> &'static str {
 
 impl<S: TableSource> Render for TableState<S> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.delegate
+            .source
+            .prepare(self.delegate.sort.map(|(field, _)| field), cx);
         self.delegate.measure(window, cx);
+        if self.moving.as_ref().is_some_and(|moving| {
+            !cx.has_active_drag()
+                || self
+                    .delegate
+                    .columns
+                    .get(moving.from)
+                    .is_none_or(|column| column.spec.key != moving.key)
+        }) {
+            self.moving = None;
+        }
+        self.animate_columns(window, cx);
+        let column_menu = self.column_menu(cx);
 
         let metrics = cx.theme().metrics;
         let row = snapped(metrics.row, window);
@@ -1283,9 +1470,14 @@ impl<S: TableSource> Render for TableState<S> {
         let frosted = blurring(cx);
         let backdrop = (!frosted && !cx.theme().transparent).then(|| cx.theme().background);
         let masked = match frosted {
-            true => pinned,
+            true => (pinned - self.viewport.underlap).max(Pixels::ZERO),
             false => pinned + head,
         };
+        let playing = self
+            .delegate
+            .order
+            .iter()
+            .position(|row| self.delegate.source.playing(*row, cx));
         let context_menu = self.context_menu.clone().and_then(|(rows, position)| {
             let visible = self.delegate.visible();
             self.delegate
@@ -1301,6 +1493,28 @@ impl<S: TableSource> Render for TableState<S> {
 
         div()
             .key_context(TABLE_CONTEXT)
+            .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, _| {
+                if event.button == MouseButton::Left {
+                    this.suppress_sort = false;
+                }
+            }))
+            .on_drag_move(
+                cx.listener(|this, event: &DragMoveEvent<ColumnMove>, _, cx| {
+                    let moved = event.drag(cx).clone();
+                    if moved.owner != cx.entity_id() {
+                        return;
+                    }
+                    this.move_column(&moved, event.event.position.x, cx);
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_column_drag(cx)),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_column_drag(cx)),
+            )
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::select_previous))
@@ -1360,7 +1574,31 @@ impl<S: TableSource> Render for TableState<S> {
                     .rounded_tr(top.top_right)
                     .child(self.header(head, top, cx)),
             )
+            .when_some(self.anchors.clone(), |this, anchors| {
+                let first = self.viewport.first(head, row);
+                let last = (first + self.viewport.rows(row)).min(self.delegate.order.len());
+                let id = gpui::SharedString::from(format!("table-{}", cx.entity_id().as_u64()));
+                this.on_children_prepainted(move |bounds, window, cx| {
+                    if let Some(bounds) = bounds.first() {
+                        let top = bounds.top() - masked;
+                        let position = playing.map(|display| {
+                            anchors.content_position(top + head + row * (display as f32 + 0.5))
+                        });
+                        if anchors.set_marker(position, cx) {
+                            window.refresh();
+                        }
+                        for display in first..last {
+                            anchors.record(
+                                (id.clone(), display),
+                                top + row * display as f32,
+                                Pixels::ZERO,
+                            );
+                        }
+                    }
+                })
+            })
             .when_some(context_menu, |this, menu| this.child(menu))
+            .when_some(column_menu, |this, menu| this.child(menu))
     }
 }
 
@@ -1384,6 +1622,9 @@ impl<S: TableSource> InteractiveElement for Table<S> {
 
 impl<S: TableSource> RenderOnce for Table<S> {
     fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let overrides = std::mem::take(self.base.style());
+        self.base = self.base.rounded(cx.theme().radius);
+        self.base.style().refine(&overrides);
         let corners = radii(self.base.style(), window.rem_size());
         self.state.update(cx, |state, _| state.corners = corners);
 
@@ -1433,6 +1674,8 @@ pub trait Listing {
     fn set_width(&self, width: Pixels, cx: &mut App);
     fn set_query(&self, query: &str, cx: &mut App);
     fn set_viewport(&self, viewport: Viewport, cx: &mut App);
+    /// Shares the enclosing scroller’s magnetic measurements with virtualized rows.
+    fn set_anchors(&self, anchors: crate::ScrollAnchors, cx: &mut App);
     fn rebuild(&self, cx: &mut App);
     fn refresh(&self, cx: &mut App);
     fn element(&self) -> AnyElement;
@@ -1529,6 +1772,11 @@ impl<S: TableSource> Listing for Entity<TableState<S>> {
 
     fn set_viewport(&self, viewport: Viewport, cx: &mut App) {
         self.update(cx, |table, _| table.set_viewport(viewport));
+    }
+
+    fn set_anchors(&self, anchors: crate::ScrollAnchors, cx: &mut App) {
+        anchors.set_table(true);
+        self.update(cx, |table, _| table.anchors = Some(anchors));
     }
 
     fn rebuild(&self, cx: &mut App) {

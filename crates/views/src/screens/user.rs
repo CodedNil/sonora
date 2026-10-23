@@ -123,7 +123,12 @@ impl UserView {
                         .w_full()
                         .gap_x(layout.gap)
                         .gap_y_6()
-                        .children(cards),
+                        .children(cards.into_iter().enumerate().map(|(index, card)| {
+                            self.scrollbar
+                                .read(cx)
+                                .anchors()
+                                .mark(("profile-card", index), card)
+                        })),
                 )
             })
     }
@@ -173,14 +178,20 @@ impl Render for UserView {
         div().flex().flex_col().size_full().child(
             Scroller::new("user-page", &self.scrollbar)
                 .bottom_inset(crate::chrome::Chrome::bottom(cx))
-                .p(pad)
+                .px(pad)
+                .pb(pad)
                 .child(
                     div()
                         .flex()
                         .flex_col()
                         .gap_8()
                         .child(self.header(cx))
-                        .child(self.playlists(cx)),
+                        .child(
+                            self.scrollbar
+                                .read(cx)
+                                .anchors()
+                                .mark("playlists", self.playlists(cx)),
+                        ),
                 ),
         )
     }

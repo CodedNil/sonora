@@ -51,7 +51,7 @@ use time::{Month, OffsetDateTime};
 pub use audio::Meter;
 pub use equalizer::Equalizer;
 pub use models::{
-    Album, AlbumCatalogue, AlbumDetail, Artist, ArtistCatalogue, ArtistProfile, ArtistRef,
+    Album, AlbumCatalogue, AlbumDetail, Artist, ArtistCatalogue, ArtistProfile, ArtistRef, Canvas,
     Contributor, Credit, Genre, GenreDetail, GenreItem, GenreSection, HomeFeed, Lyrics, LyricsHit,
     LyricsLane, LyricsLine, LyricsQuery, LyricsWord, PinOutcome, PinTarget, PinTargetKind,
     Playlist, PlaylistDetail, ReleaseType, RomanizedText, SavedArtist, Track, TrackKey, TrackTags,
@@ -179,6 +179,17 @@ pub trait MusicApi: Send + Sync {
         anyhow::bail!("this provider does not support file deletion")
     }
     async fn track_playcount(&self, track_id: &str) -> Result<Option<u64>>;
+
+    /// The song's Canvas, for a provider that has them. `None` when the song has none.
+    async fn canvas(&self, _track_id: &str) -> Result<Option<Canvas>> {
+        Ok(None)
+    }
+
+    /// Everyone credited on the song, writers and producers included, each once with their
+    /// roles joined. Empty when the provider keeps nothing past the track's own `credits`.
+    async fn credits(&self, _track_id: &str) -> Result<Vec<Credit>> {
+        Ok(Vec::new())
+    }
 
     /// Tells the provider's own server whether a track is playing and where it is. It is sent on
     /// every start, pause, seek and stop, and never counts as a listen. A provider that keeps no

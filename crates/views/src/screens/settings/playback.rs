@@ -6,7 +6,7 @@ use i18n::t;
 use music::drm::Origin;
 use music::{Codec, Encoding, Offer, Quality, Transcode};
 use state::{CdmState, Sleep};
-use ui::{ActiveTheme as _, Button, MenuItem, OptionCard, Picker, Scrubber, Switch, Text};
+use ui::{ActiveTheme as _, Button, MenuItem, OptionCard, Picker, Scrubber, Text};
 
 use super::rows::{grid, segmented};
 use super::{Group, SettingsView, Slot};
@@ -66,48 +66,6 @@ impl SettingsView {
     pub(super) fn widevine_detail(&self, cx: &App) -> SharedString {
         let (detail, _) = widevine_copy(self.drm.read(cx).state());
         i18n::lookup(detail, None)
-    }
-
-    pub(super) fn playback_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.playback.read(cx).normalisation();
-
-        self.row(
-            t!("settings-normalisation"),
-            Switch::new("normalisation", on)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.playback
-                        .update(cx, |playback, cx| playback.set_normalisation(!on, cx));
-                }))
-                .into_any_element(),
-        )
-    }
-
-    pub(super) fn gapless_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.playback.read(cx).gapless();
-
-        self.row(
-            t!("settings-gapless"),
-            Switch::new("gapless", on)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.playback
-                        .update(cx, |playback, cx| playback.set_gapless(!on, cx));
-                }))
-                .into_any_element(),
-        )
-    }
-
-    pub(super) fn keep_tracks_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.playback.read(cx).keep_tracks();
-
-        self.row(
-            t!("settings-keep-tracks"),
-            Switch::new("keep-tracks", on)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.playback
-                        .update(cx, |playback, cx| playback.set_keep_tracks(!on, cx));
-                }))
-                .into_any_element(),
-        )
     }
 
     /// How many gigabytes the cache of played tracks may take, as a slider with the size before
@@ -268,20 +226,6 @@ impl SettingsView {
         );
 
         self.row(t!("settings-stream-bitrate"), picker.into_any_element())
-    }
-
-    pub(super) fn stay_awake_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).stay_awake();
-
-        self.row(
-            t!("settings-stay-awake"),
-            Switch::new("stay-awake", on)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_stay_awake(!on, cx));
-                }))
-                .into_any_element(),
-        )
     }
 
     /// The sleep timer as a slider in its row with the time it is set to before it: off at the

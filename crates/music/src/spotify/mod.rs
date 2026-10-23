@@ -2,10 +2,12 @@ pub mod auth;
 
 mod albums;
 mod artists;
+mod canvas;
 mod client;
 mod collection;
 mod collection2;
 mod connect;
+mod credits;
 mod links;
 mod lyrics;
 mod offline;

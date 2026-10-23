@@ -1,33 +1,36 @@
 use std::cell::Cell;
 use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::{collections::HashMap, ops::Range};
 
 use gpui::prelude::*;
 
 use gpui::{
-    Animation, AnimationExt as _, App, Bounds, Context, Div, DragMoveEvent, Entity, FontWeight,
-    MouseDownEvent, MouseUpEvent, Pixels, Point, Render, ScrollHandle, ScrollStrategy,
-    SharedString, Size, SpringConfig, SpringState, Task, UniformListScrollHandle, Window, canvas,
-    div, ease_in_out, px, relative, size, svg, uniform_list,
+    Animation, AnimationExt as _, AnyElement, App, Bounds, Context, Div, DragMoveEvent, Entity,
+    EntityId, FontWeight, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, Render,
+    ScrollHandle, ScrollStrategy, SharedString, Size, SpringConfig, SpringState, Task,
+    UniformListScrollHandle, Window, canvas, div, ease_in_out, px, relative, size, svg,
+    uniform_list,
 };
 use i18n::t;
 use music::{Contributor, Shape, Track, Voice};
 use router::{Destination, LibraryTab, Link as _};
 use state::{
-    AppSettings, Lyrics, LyricsState, Network, Playback, PlaybackState, Queue, RomanizationScripts,
-    Shelf, SideTab, Sonora, Steered, Whence,
+    AppSettings, Cards, Lyrics, LyricsState, Network, Playback, PlaybackState, Queue,
+    RomanizationScripts, Shelf, SideTab, Sonora, Steered, Whence,
 };
 use ui::{
-    ActiveTheme as _, Avatar, Button, Card, DraggedPin, Edge, Initials, Motion, Motioned as _,
-    PREFETCH_REACH, Pin, Pinnable as _, Popup, Scrollbar, Scroller, Spot, Springs, Text, Vacancy,
-    drop_gap, drop_marker, ease_out_cubic, ease_out_expo, eyebrow, faint, mix, prefetch, snapped,
-    vacant,
+    ActiveTheme as _, Avatar, Button, Card, ClipPlayer, DraggedPin, Edge, Ghost, Initials, Menu,
+    MenuItem, Motion, Motioned as _, PREFETCH_REACH, Pin, Pinnable as _, Popup, ScrollAnchors,
+    Scrollbar, Scroller, Spot, Springs, Text, Vacancy, drop_gap, drop_marker, ease_out_cubic,
+    ease_out_expo, faint, mix, prefetch, snapped, vacant,
 };
 
+use crate::chrome::stage::{self, Section};
 use crate::chrome::{Chrome, section_label};
 use crate::shared::effects;
-use crate::shared::menus::ItemMenu;
+use crate::shared::menus::{CardMenu, Item};
 use crate::shared::pins::Pinned as _;
 
 const QUEUE: &str = "queue";
@@ -43,8 +46,8 @@ const BACKGROUND_SINGING_BLUR: Pixels = px(0.75);
 const VEIL: f32 = 0.3;
 const HAZE: f32 = 0.45;
 const VERSE_FADE: f32 = 1.25;
-const PAST: f32 = 0.4;
-const AHEAD: f32 = 0.6;
+const PAST: f32 = 0.72;
+const AHEAD: f32 = 0.88;
 const REVEAL: f32 = 0.6;
 const ACTIVE_VERSE_GROWTH: Pixels = px(2.);
 const FULLSCREEN_VERSE_GROWTH: Pixels = px(3.);
@@ -56,6 +59,9 @@ const LYRICS_FRAME: Size<Pixels> = size(px(1152.), px(648.));
 const LYRICS_FRAME_MOST: f32 = 2.;
 const PINNED_SHARE: f32 = 0.25;
 const PIN: f32 = 0.3;
+/// Where the sung verse sits in the sidebar's small lyrics card instead: near its top, so the card
+/// shows the line being sung and the few after it.
+const PIN_CARD: f32 = 0.025;
 // how far a row falls behind, in verse sizes
 const LAG: f32 = 24.;
 // never past this share
@@ -94,6 +100,28 @@ const LANDING: f32 = 0.2;
 // what a lane row actually takes, plus the gaps between lanes
 const LANE_GAP_REM: f32 = 0.25;
 const LANE_SLACK: f32 = 0.25;
+/// How many of the songs coming up the sidebar's queue lists.
+const UP_NEXT: usize = 3;
+/// How tall the lyrics card is in the sidebar, as a share of the window's height.
+const LYRICS_CARD: f32 = 0.45;
+/// How much of the sidebar's top the backdrop keeps clear before the song's name, as a share of
+/// the window's height.
+const CLEAR: f32 = 0.42;
+
+/// A background source held through the short transition to the next song or Canvas.
+#[derive(Clone)]
+struct Backdrop {
+    still: Option<String>,
+    clip: Option<Entity<ClipPlayer>>,
+}
+
+impl Backdrop {
+    fn same(&self, other: &Self) -> bool {
+        self.still == other.still
+            && self.clip.as_ref().map(Entity::entity_id)
+                == other.clip.as_ref().map(Entity::entity_id)
+    }
+}
 
 fn track(queue: &Queue, position: QueuePosition) -> Option<Track> {
     match position {
@@ -223,6 +251,14 @@ impl Sections {
             }
     }
 
+    /// The list slot for an upcoming occurrence, accounting for the two queue group headings.
+    fn upcoming_index(self, index: usize) -> usize {
+        match index < self.manual {
+            true => self.current_end() + 1 + index,
+            false => self.manual_end() + 1 + index - self.manual,
+        }
+    }
+
     fn current_index(self) -> Option<usize> {
         self.current.then(|| self.past_end() + 1)
     }
@@ -311,6 +347,7 @@ struct RowLook {
     queued: bool,
     /// Whether the row is on another device's queue, which this app shows but cannot change.
     remote: bool,
+    offset: Pixels,
 }
 
 /// The credit under a sheet, resolved once for the answer it names and the language it was read
@@ -337,11 +374,37 @@ struct SheetLayout {
     font: u64,
 }
 
-#[derive(Clone)]
-struct ContextMenuState {
-    track: Track,
-    revision: u64,
-    position: Point<Pixels>,
+/// What the panel draws this frame, worked out once from its cards and where it sits.
+#[derive(Clone, Copy, Default, PartialEq)]
+struct Showing {
+    /// The lyrics sheet is on screen, in its card or filling the panel.
+    lyrics: bool,
+    /// The whole queue list is on screen.
+    queue_list: bool,
+    /// The queue's card of three rows, the one before, the one playing and the one after.
+    queue_card: bool,
+    expanded: Option<SideTab>,
+}
+
+impl Showing {
+    /// The sidebar keeps the queue to its card until it is expanded. Fullscreen has nothing else
+    /// to put beside the cover, so a queue shown alone there is the whole list.
+    fn of(cards: Cards, sidebar: bool) -> Self {
+        let lyrics = match cards.expanded {
+            Some(tab) => tab == SideTab::Lyrics,
+            None => cards.lyrics,
+        };
+        let queue_list = match cards.expanded {
+            Some(tab) => tab == SideTab::Queue,
+            None => !sidebar && cards.queue && !cards.lyrics,
+        };
+        Self {
+            lyrics,
+            queue_list,
+            queue_card: cards.expanded.is_none() && cards.queue && !queue_list,
+            expanded: cards.expanded,
+        }
+    }
 }
 
 impl QueuePosition {
@@ -367,12 +430,62 @@ impl QueuePosition {
     }
 }
 
+/// A header dragged within one sidebar; its chip follows the cursor while sections collapse.
+#[derive(Clone)]
+struct SectionDrag {
+    owner: EntityId,
+    in_menu: bool,
+    section: Section,
+    label: SharedString,
+    position: Point<Pixels>,
+}
+
+impl Render for SectionDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Ghost::new(self.position, self.label.clone())
+    }
+}
+
 pub(crate) struct Aside {
     queue: Entity<Queue>,
     playback: Entity<Playback>,
     lyrics: Entity<Lyrics>,
     settings: Entity<AppSettings>,
-    tab: SideTab,
+    /// What the last frame drew, so a card coming on screen can start from its resting place.
+    showing: Showing,
+    /// Where the sung verse sits, as a share of the sheet's height from its top.
+    pin: f32,
+    /// The scroll the sidebar's cards share while none of them fills it.
+    overview_bar: Entity<Scrollbar>,
+    overview_anchors: ScrollAnchors,
+    /// The Canvas clip playing behind the sidebar and the bytes it was made from.
+    clip: Option<(Arc<[u8]>, Entity<ClipPlayer>)>,
+    backdrop: Option<Backdrop>,
+    outgoing_backdrop: Option<Backdrop>,
+    backdrop_changed: std::time::Instant,
+    lyrics_slot: bool,
+    /// The visible preview stays frozen while the next song’s sheet is loading.
+    preview_hit: Option<music::LyricsHit>,
+    preview_revision: Option<u64>,
+    preview_position: std::time::Duration,
+    overview_extent: Rc<Cell<Pixels>>,
+    overview_song: Option<String>,
+    /// Retains the old scroll range across song changes, releasing excess room on user scroll.
+    overview_floor: Pixels,
+    overview_nudges: u64,
+    /// Whether the credits section lists every credit rather than the first few.
+    all_credits: bool,
+    section_drag: Option<Section>,
+    section_drag_in_menu: bool,
+    section_gap: Option<usize>,
+    section_bar: Entity<Scrollbar>,
+    section_motion: ui::ReorderMotion,
+    section_menu_motion: ui::ReorderMotion,
+    content_width: Pixels,
+    section_menu: Option<Point<Pixels>>,
+    /// Where the overview's title starts within its scrolled content, which places the shared
+    /// frosted overlay behind the title and every section below it.
+    title_at: Rc<Cell<Option<Pixels>>>,
     verse_bar: Entity<Scrollbar>,
     followed: Option<usize>,
     nudges: u64,
@@ -381,9 +494,9 @@ pub(crate) struct Aside {
     verse_of: Option<String>,
     verse_take: u64,
     placing: bool,
-    context_menu: Option<ContextMenuState>,
-    track_menu: ItemMenu,
     drop_gap: Option<usize>,
+    queue_drag: Option<Spot>,
+    queue_motion: ui::ReorderMotion,
     scroll: UniformListScrollHandle,
     scrollbar: Entity<Scrollbar>,
     past_len: usize,
@@ -438,23 +551,12 @@ impl Aside {
     pub(crate) fn new(
         queue: Entity<Queue>,
         playback: Entity<Playback>,
-        tab: SideTab,
         cx: &mut Context<Self>,
     ) -> Self {
-        cx.observe(&queue, |this, queue, cx| {
-            let revision = queue.read(cx).revision();
-            if this
-                .context_menu
-                .as_ref()
-                .is_some_and(|menu| menu.revision != revision)
-            {
-                this.track_menu.reset(cx);
-                this.context_menu = None;
-            }
-            cx.notify();
-        })
-        .detach();
+        cx.observe(&queue, |_, _, cx| cx.notify()).detach();
         cx.observe(&playback, |_, _, cx| cx.notify()).detach();
+        let devices = Sonora::global(cx).devices.clone();
+        cx.observe(&devices, |_, _, cx| cx.notify()).detach();
         let chrome = Chrome::entity(cx);
         cx.observe(&chrome, |_, _, cx| cx.notify()).detach();
 
@@ -462,11 +564,22 @@ impl Aside {
         let scroll = UniformListScrollHandle::new();
         let scrollbar =
             cx.new(|_| Scrollbar::new(scroll.0.borrow().base_handle.clone()).watching(me));
-        let playlist_scrollbar = cx.new(|_| Scrollbar::inset().watching(me));
         let lyrics = Sonora::global(cx).lyrics.clone();
         cx.observe(&lyrics, |_, _, cx| cx.notify()).detach();
         let settings = Sonora::global(cx).settings.clone();
         cx.observe(&settings, |_, _, cx| cx.notify()).detach();
+        let stage = Sonora::global(cx).stage.clone();
+        cx.observe(&stage, |this, _, cx| {
+            this.all_credits = false;
+            cx.notify();
+        })
+        .detach();
+        let cover = Sonora::global(cx).cover.clone();
+        cx.observe(&cover, |_, _, cx| cx.notify()).detach();
+        let library = Sonora::global(cx).library.clone();
+        cx.observe(&library, |_, _, cx| cx.notify()).detach();
+        let overview_bar = cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(me));
+        let overview_anchors = overview_bar.read(cx).anchors();
         let verse_bar = cx.new(|_| {
             Scrollbar::new(ScrollHandle::new())
                 .spring(Springs::LYRICS_SCROLL)
@@ -478,7 +591,32 @@ impl Aside {
             playback,
             lyrics,
             settings,
-            tab,
+            showing: Showing::default(),
+            pin: PIN,
+            overview_bar,
+            overview_anchors,
+            clip: None,
+            backdrop: None,
+            outgoing_backdrop: None,
+            backdrop_changed: std::time::Instant::now(),
+            lyrics_slot: false,
+            preview_hit: None,
+            preview_revision: None,
+            preview_position: std::time::Duration::ZERO,
+            overview_extent: Rc::new(Cell::new(Pixels::ZERO)),
+            overview_song: None,
+            overview_floor: Pixels::ZERO,
+            overview_nudges: 0,
+            all_credits: false,
+            section_drag: None,
+            section_drag_in_menu: false,
+            section_gap: None,
+            section_motion: ui::ReorderMotion::default(),
+            section_menu_motion: ui::ReorderMotion::default(),
+            content_width: Pixels::ZERO,
+            section_bar: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(me)),
+            section_menu: None,
+            title_at: Rc::new(Cell::new(None)),
             verse_bar,
             followed: None,
             nudges: 0,
@@ -487,9 +625,9 @@ impl Aside {
             verse_of: None,
             verse_take: 0,
             placing: false,
-            context_menu: None,
-            track_menu: ItemMenu::new(playlist_scrollbar, cx),
             drop_gap: None,
+            queue_drag: None,
+            queue_motion: ui::ReorderMotion::default(),
             scroll,
             scrollbar,
             past_len: 0,
@@ -535,36 +673,58 @@ impl Aside {
         }
     }
 
+    /// Makes this the fullscreen panel: no title above the lyrics, its cards kept apart from
+    /// the sidebar's, and floating controls lifted clear of the transport underneath.
     pub(crate) fn strip(&mut self) {
         self.titled = false;
     }
 
-    pub(crate) fn tab(&self) -> SideTab {
-        self.tab
-    }
-
-    /// Whether the pointer is parked on the panel's scrollbar. Fullscreen
-    /// reads this to keep its chrome awake while the reader holds it.
-    pub(crate) fn scrollbar_active(&self, cx: &App) -> bool {
-        match self.tab {
-            SideTab::Lyrics => self.verse_bar.read(cx).hovered(),
-            SideTab::Queue => self.scrollbar.read(cx).hovered(),
+    /// The cards this panel shows, as the user last left them here.
+    pub(crate) fn cards(&self, cx: &App) -> Cards {
+        let settings = self.settings.read(cx);
+        match self.titled {
+            true => settings.sidebar_cards(),
+            false => settings.fullscreen_cards(),
         }
     }
 
-    pub(crate) fn show(&mut self, tab: SideTab, cx: &mut Context<Self>) {
-        if self.tab != tab {
-            self.tab = tab;
+    pub(crate) fn set_cards(&self, cards: Cards, cx: &mut App) {
+        let sidebar = self.titled;
+        self.settings.update(cx, |settings, cx| match sidebar {
+            true => settings.set_sidebar_cards(cards, cx),
+            false => settings.set_fullscreen_cards(cards, cx),
+        });
+    }
+
+    /// Whether the pointer is parked on one of the panel's scrollbars. Fullscreen
+    /// reads this to keep its chrome awake while the reader holds it.
+    pub(crate) fn scrollbar_active(&self, cx: &App) -> bool {
+        (self.showing.lyrics && self.verse_bar.read(cx).hovered())
+            || (self.showing.queue_list && self.scrollbar.read(cx).hovered())
+    }
+
+    /// Takes in what this frame shows, starting a card that just came on screen from its
+    /// resting place: the lyrics on the verse being sung, the queue on the track playing.
+    fn settle_showing(&mut self, cx: &App) {
+        let showing = Showing::of(self.cards(cx), self.titled);
+        let pin = match (self.titled, showing.expanded) {
+            (true, None) => PIN_CARD,
+            _ => PIN,
+        };
+        if showing.lyrics && (!self.showing.lyrics || pin != self.pin) {
             self.forget_verse();
             self.anchor_verse();
         }
-        self.anchor = true;
-        cx.notify();
+        if showing.queue_list && !self.showing.queue_list {
+            self.anchor = true;
+        }
+        self.showing = showing;
+        self.pin = pin;
     }
 
     pub(crate) fn dismiss(&mut self, cx: &mut Context<Self>) {
-        self.track_menu.reset(cx);
-        self.context_menu = None;
+        self.section_menu = None;
+        CardMenu::dismiss(cx);
         cx.notify();
     }
 
@@ -818,12 +978,6 @@ impl Aside {
         cx.notify();
     }
 
-    fn dismiss_menu(&mut self, cx: &mut Context<Self>) {
-        self.track_menu.reset(cx);
-        self.context_menu = None;
-        cx.notify();
-    }
-
     fn row(
         track: Track,
         index: usize,
@@ -837,16 +991,16 @@ impl Aside {
             drop_line,
             queued,
             remote,
+            offset,
         } = look;
         let theme = *cx.theme();
         let past_index = position.past().filter(|_| !remote);
         let queue_index = position.upcoming().filter(|_| !remote);
         let similar_index = position.similar().filter(|_| !remote);
         let current = position == QueuePosition::Current;
-        let title = match position {
-            QueuePosition::Past(_) => theme.muted_foreground,
-            QueuePosition::Current => theme.primary,
-            QueuePosition::Upcoming(_) | QueuePosition::Similar(_) => theme.foreground,
+        let title = match current {
+            true => theme.primary,
+            false => theme.foreground,
         };
         let pin = track.pin();
         let menu_track = track.clone();
@@ -867,7 +1021,7 @@ impl Aside {
                         SharedString::from(format!("queue-track-artist-{index}")),
                         track.artist_refs.clone(),
                         track.artists.clone(),
-                        theme.muted_foreground,
+                        theme.foreground,
                     )
                     .text_size(theme.text(Text::Small))
                     .truncate(),
@@ -897,12 +1051,13 @@ impl Aside {
             )
         })
         .menu(cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-            this.track_menu.reset(cx);
-            this.context_menu = Some(ContextMenuState {
-                track: menu_track.clone(),
-                revision: queue_revision,
-                position: event.position,
-            });
+            this.section_menu = None;
+            CardMenu::open(
+                Item::Track(menu_track.clone()),
+                this.playback.clone(),
+                event.position,
+                cx,
+            );
             cx.notify();
         }))
         .when_some(past_index, |this, index| {
@@ -937,22 +1092,6 @@ impl Aside {
                         });
                     })),
             )
-            .on_drag_move(
-                cx.listener(move |this, event: &DragMoveEvent<DraggedPin>, _, cx| {
-                    let Some(gap) = drop_gap(event.bounds, event.event.position, target) else {
-                        return;
-                    };
-                    let gap = match event.drag(cx).spot(QUEUE) {
-                        Some(held) => (gap != held.index && gap != held.index + 1).then_some(gap),
-                        None => Some(gap),
-                    };
-                    if this.drop_gap != gap {
-                        this.drop_gap = gap;
-                        cx.notify();
-                    }
-                }),
-            )
-            .on_drop(cx.listener(|this, dragged: &DraggedPin, _, cx| this.land(dragged, cx)))
         })
         .when_some(similar_index, |this, target| {
             this.press(cx.listener(move |this, _, _, cx| {
@@ -988,31 +1127,404 @@ impl Aside {
             .id(("queue-track-container", index))
             .relative()
             .min_w_0()
-            .child(card)
+            .child(card.relative().top(offset))
+            .when_some(queue_index, |row, target| {
+                row.on_drag_move(cx.listener(
+                    move |this, event: &DragMoveEvent<DraggedPin>, _, cx| {
+                        if !event.bounds.contains(&event.event.position) {
+                            return;
+                        }
+                        let Some(gap) = drop_gap(event.bounds, event.event.position, target) else {
+                            return;
+                        };
+                        let held = event
+                            .drag(cx)
+                            .spot(QUEUE)
+                            .filter(|spot| spot.revision == queue_revision);
+                        let gap = match held {
+                            Some(held) => {
+                                (gap != held.index && gap != held.index + 1).then_some(gap)
+                            }
+                            None => Some(gap),
+                        };
+                        if this.drop_gap != gap || this.queue_drag != held {
+                            this.drop_gap = gap;
+                            this.queue_drag = held;
+                            cx.notify();
+                        }
+                    },
+                ))
+                .when(!remote, |this| {
+                    this.on_drop(
+                        cx.listener(|this, dragged: &DraggedPin, _, cx| this.land(dragged, cx)),
+                    )
+                })
+            })
             .when_some(drop_line, |this, edge| this.child(drop_marker(edge, cx)))
     }
 
-    fn menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let ContextMenuState {
-            track, position, ..
-        } = self.context_menu.clone()?;
+    /// A section’s text is its drag handle; right-clicking it opens the shared arrangement menu.
+    fn section_header(&self, section: Section, cx: &mut Context<Self>) -> AnyElement {
+        self.section_handle(section, false, cx)
+    }
 
+    /// Shares the same heading handle between the sidebar and its arrangement menu.
+    fn section_handle(
+        &self,
+        section: Section,
+        in_menu: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let label = i18n::lookup(section.key(), None);
+        let dragged = SectionDrag {
+            owner: cx.entity_id(),
+            in_menu,
+            section,
+            label: label.clone(),
+            position: Point::default(),
+        };
+        let me = cx.weak_entity();
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .when(in_menu, |header| header.gap_3().child(ui::grip(cx)))
+            .child(
+                match in_menu {
+                    true => ui::menu_label(label, cx),
+                    false => stage::heading(label, cx),
+                }
+                .min_w_0()
+                .truncate(),
+            )
+            .id(SharedString::from(format!(
+                "stage-heading-{}",
+                section.id()
+            )))
+            .min_w_0()
+            .truncate()
+            .cursor_grab()
+            .on_drag(dragged, move |dragged, position, _, cx| {
+                me.update(cx, |this, cx| {
+                    this.section_bar
+                        .read(cx)
+                        .scroll()
+                        .set_offset(Point::default());
+                    this.section_drag = Some(dragged.section);
+                    this.section_drag_in_menu = in_menu;
+                    this.section_gap = None;
+                    if !in_menu {
+                        this.section_menu = None;
+                    }
+                    CardMenu::dismiss(cx);
+                })
+                .ok();
+                cx.new(|_| SectionDrag {
+                    position,
+                    ..dragged.clone()
+                })
+            })
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    CardMenu::dismiss(cx);
+                    this.section_menu = Some(event.position);
+                    cx.notify();
+                }),
+            )
+            .into_any_element()
+    }
+
+    /// Restores the ordinary overview and its scroll position after dropping or cancelling.
+    fn finish_section_drag(&mut self, cx: &mut Context<Self>) {
+        self.section_drag = None;
+        self.section_drag_in_menu = false;
+        self.section_gap = None;
+        cx.notify();
+    }
+
+    /// Updates one shared spring position for each section, used by both reorder surfaces.
+    fn animate_sections(&self, window: &mut Window, cx: &App) {
+        let sections = Section::arranged(cx);
+        let from = sections
+            .iter()
+            .position(|(section, _)| Some(*section) == self.section_drag);
+        let row = cx.theme().metrics.row;
+        self.section_motion.animate(
+            sections.iter().enumerate().map(|(index, (section, _))| {
+                (
+                    section.id().into(),
+                    row * ui::reorder_index(index, from, self.section_gap) as f32,
+                    false,
+                )
+            }),
+            window,
+            cx,
+        );
+    }
+
+    /// Saves the drop only on release, keeping hover previews out of persisted settings.
+    fn drop_section(&mut self, dragged: &SectionDrag, cx: &mut Context<Self>) {
+        if dragged.owner != cx.entity_id() {
+            return;
+        }
+        if let Some(gap) = self.section_gap {
+            dragged.section.move_to(gap, cx);
+        }
+        self.finish_section_drag(cx);
+    }
+
+    /// During a header drag every section becomes one compact row, including hidden sections.
+    fn section_board(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let theme = *cx.theme();
+        self.animate_sections(window, cx);
+        let sections = Section::arranged(cx);
+        let count = sections.len();
+        let rows = sections
+            .into_iter()
+            .enumerate()
+            .map(|(index, (section, shown))| {
+                let edge = match self.section_gap {
+                    Some(gap) if gap == index => Some(Edge::Above),
+                    Some(gap) if gap == count && index + 1 == count => Some(Edge::Below),
+                    _ => None,
+                };
+                div()
+                    .id(SharedString::from(format!(
+                        "stage-reorder-{}",
+                        section.id()
+                    )))
+                    .relative()
+                    .h(theme.metrics.row)
+                    .child(
+                        div()
+                            .relative()
+                            .top(
+                                self.section_motion
+                                    .position(section.id(), theme.metrics.row * index as f32)
+                                    - theme.metrics.row * index as f32,
+                            )
+                            .flex()
+                            .items_center()
+                            .h_full()
+                            .px_2()
+                            .when(!shown || self.section_drag == Some(section), |row| {
+                                row.opacity(0.5)
+                            })
+                            .child(self.section_header(section, cx)),
+                    )
+                    .on_drag_move(cx.listener(
+                        move |this, event: &DragMoveEvent<SectionDrag>, _, cx| {
+                            if event.drag(cx).in_menu
+                                || event.drag(cx).owner != cx.entity_id()
+                                || !event.bounds.contains(&event.event.position)
+                            {
+                                return;
+                            }
+                            let gap = drop_gap(event.bounds, event.event.position, index);
+                            if this.section_gap != gap {
+                                this.section_gap = gap;
+                                cx.notify();
+                            }
+                        },
+                    ))
+                    .when_some(edge, |row, edge| row.child(drop_marker(edge, cx)))
+            })
+            .collect::<Vec<_>>();
+        div()
+            .relative()
+            .size_full()
+            .child(stage::shroud(cx))
+            .child(
+                Scroller::new("stage-reorder-scroll", &self.section_bar)
+                    .free_scroll()
+                    .size_full()
+                    .child(
+                        div()
+                            .id("stage-reorder-list")
+                            .flex()
+                            .flex_col()
+                            .p(theme.metrics.pad * 2.)
+                            .children(rows)
+                            .on_drag_move(cx.listener(
+                                |this, event: &DragMoveEvent<SectionDrag>, _, cx| {
+                                    if !event.bounds.contains(&event.event.position)
+                                        && this.section_gap.take().is_some()
+                                    {
+                                        cx.notify();
+                                    }
+                                },
+                            ))
+                            .on_drop(cx.listener(|this, dragged: &SectionDrag, _, cx| {
+                                if !dragged.in_menu {
+                                    this.drop_section(dragged, cx);
+                                }
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// Drag handles and visibility switches share the arrangement used by Settings.
+    fn section_menu(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        let at = self.section_menu?;
+        let row = cx.theme().metrics.row;
+        // Menu content rows also have the menu’s vertical padding around each slot.
+        let step = row + cx.theme().metrics.pad;
+        let arranged = Section::arranged(cx);
+        let from = arranged
+            .iter()
+            .position(|(section, _)| Some(*section) == self.section_drag);
+        self.section_menu_motion.animate(
+            arranged.iter().enumerate().map(|(index, (section, _))| {
+                (
+                    section.id().into(),
+                    step * ui::reorder_index(index, from, self.section_gap) as f32,
+                    false,
+                )
+            }),
+            window,
+            cx,
+        );
+        let items = arranged
+            .into_iter()
+            .enumerate()
+            .map(|(index, (section, shown))| {
+                let offset = self
+                    .section_menu_motion
+                    .position(section.id(), step * index as f32)
+                    - step * index as f32;
+                MenuItem::new(section.id(), i18n::lookup(section.key(), None)).content(
+                    div()
+                        .id(section.id())
+                        .relative()
+                        .h(row)
+                        .child(
+                            ui::Switch::new(("stage-shown", index), shown)
+                                .on_click(move |_, _, cx| {
+                                    cx.stop_propagation();
+                                    let mut sections = Section::arranged(cx);
+                                    if let Some((_, shown)) =
+                                        sections.iter_mut().find(|(item, _)| *item == section)
+                                    {
+                                        *shown = !*shown;
+                                    }
+                                    Section::save(&sections, cx);
+                                })
+                                .menu_row(self.section_handle(section, true, cx), cx)
+                                .relative()
+                                .top(offset),
+                        )
+                        .on_drag_move(cx.listener(
+                            move |this, event: &DragMoveEvent<SectionDrag>, _, cx| {
+                                if event.drag(cx).owner != cx.entity_id()
+                                    || !event.bounds.contains(&event.event.position)
+                                {
+                                    return;
+                                }
+                                let gap = drop_gap(event.bounds, event.event.position, index);
+                                if this.section_gap != gap {
+                                    this.section_gap = gap;
+                                    cx.notify();
+                                }
+                            },
+                        ))
+                        .on_drop(cx.listener(|this, dragged: &SectionDrag, _, cx| {
+                            this.drop_section(dragged, cx)
+                        })),
+                )
+            })
+            .collect::<Vec<_>>();
         Some(
-            Popup::new(position, self.track_menu.for_track(&track, cx))
-                .on_close(cx.listener(|this, _, _, cx| this.dismiss_menu(cx))),
+            Popup::new(
+                at,
+                Menu::new("stage-menu")
+                    .header(
+                        div()
+                            .px_3()
+                            .py_2()
+                            .child(ui::menu_heading(i18n::lookup("nav-edit-sidebar", None), cx)),
+                    )
+                    .items(items),
+            )
+            .on_close(cx.listener(|this, _, _, cx| {
+                this.section_menu = None;
+                cx.notify();
+            })),
         )
     }
 
-    /// The panel's title and, over this app's own queue, the controls that change it. They go
-    /// while another device has playback, since its queue is shown read only.
-    fn header(
+    /// The bar across the top of a card: its name, and the button that lets it fill the panel
+    /// or puts it back. Once the whole queue shows, its radio switch and its reset and clear
+    /// buttons come first.
+    fn card_header(
         &self,
+        tab: SideTab,
         sections: Sections,
         remote: bool,
         window: &Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> Div {
         let theme = *cx.theme();
+        let filling = self.showing.expanded == Some(tab);
+        let quiet = |id: &'static str| Button::new(id).ghost().small().tint(theme.muted_foreground);
+        let controls = (tab == SideTab::Queue && self.showing.queue_list && !remote).then(|| {
+            // The radio switch only where a station exists to keep the queue going.
+            let radio = Sonora::global(cx).session.read(cx).capabilities().radio;
+            [
+                radio.then(|| {
+                    quiet("toggle-radio")
+                        .icon("icons/radio.svg")
+                        .tooltip("queue-radio")
+                        .when(self.playback.read(cx).radio(), |this| {
+                            this.tint(theme.primary)
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.playback
+                                .update(cx, |playback, cx| playback.toggle_radio(cx));
+                        }))
+                }),
+                Some(
+                    quiet("reset-queue")
+                        .label(t!("queue-reset"))
+                        .tooltip("queue-reset-help")
+                        .disabled(!self.queue.read(cx).reordered())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.queue.update(cx, |queue, cx| queue.reset(cx));
+                        })),
+                ),
+                Some(
+                    quiet("clear-queue")
+                        .label(t!("queue-clear"))
+                        .tooltip("queue-clear-help")
+                        .disabled(sections.upcoming == 0)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.queue.update(cx, |queue, cx| queue.clear_upcoming(cx));
+                        })),
+                ),
+            ]
+        });
+        let expand = quiet(match tab {
+            SideTab::Lyrics => "lyrics-expand",
+            SideTab::Queue => "queue-expand",
+        })
+        .icon(match filling {
+            true => "icons/minimize.svg",
+            false => "icons/maximize.svg",
+        })
+        .tooltip(match filling {
+            true => "card-collapse",
+            false => "card-expand",
+        })
+        .on_click(cx.listener(move |this, _, _, cx| {
+            let cards = this.cards(cx).expand(tab);
+            this.set_cards(cards, cx);
+        }));
 
         div()
             .flex()
@@ -1022,74 +1534,35 @@ impl Aside {
             .gap_2()
             .h(snapped(theme.metrics.header, window))
             .px_2()
-            .when(self.titled, |this| {
-                this.border_b_1().border_color(theme.border).child(eyebrow(
-                    match self.tab {
-                        SideTab::Queue => t!("queue-title"),
-                        SideTab::Lyrics => t!("lyrics-title"),
+            .child(match self.titled {
+                true => self.section_header(
+                    match tab {
+                        SideTab::Lyrics => Section::Lyrics,
+                        SideTab::Queue => Section::Queue,
                     },
                     cx,
-                ))
-            })
-            .when(!self.titled, |this| {
-                this.justify_end().pr(theme.metrics.control + px(8.))
-            })
-            .when(self.tab == SideTab::Queue && !remote, |this| {
-                this.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        // Only where a station exists to keep the queue going.
-                        .when(
-                            Sonora::global(cx).session.read(cx).capabilities().radio,
-                            |this| {
-                                this.child(
-                                    Button::new("toggle-radio")
-                                        .ghost()
-                                        .small()
-                                        .icon("icons/radio.svg")
-                                        .tooltip("queue-radio")
-                                        .tint(match self.playback.read(cx).radio() {
-                                            true => theme.primary,
-                                            false => theme.muted_foreground,
-                                        })
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.playback.update(cx, |playback, cx| {
-                                                playback.toggle_radio(cx)
-                                            });
-                                        })),
-                                )
-                            },
-                        )
-                        .child(
-                            Button::new("reset-queue")
-                                .ghost()
-                                .small()
-                                .label(t!("queue-reset"))
-                                .tint(theme.muted_foreground)
-                                .disabled(!self.queue.read(cx).reordered())
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.queue.update(cx, |queue, cx| queue.reset(cx));
-                                })),
-                        )
-                        .child(
-                            Button::new("clear-queue")
-                                .ghost()
-                                .small()
-                                .label(t!("queue-clear"))
-                                .tint(theme.muted_foreground)
-                                .disabled(sections.upcoming == 0)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.queue.update(cx, |queue, cx| queue.clear_upcoming(cx));
-                                })),
-                        ),
+                ),
+                false => stage::heading(
+                    match tab {
+                        SideTab::Lyrics => t!("lyrics-title"),
+                        SideTab::Queue => t!("queue-title"),
+                    },
+                    cx,
                 )
+                .into_any_element(),
             })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .children(controls.into_iter().flatten().flatten())
+                    .child(expand),
+            )
     }
 
     fn follow(&self, cx: &mut Context<Self>) -> Option<Div> {
-        if self.tab != SideTab::Lyrics || self.pinned {
+        if !self.showing.lyrics || self.pinned {
             return None;
         }
 
@@ -1114,7 +1587,7 @@ impl Aside {
     /// The trip back to the now-playing row, or to the top while nothing is playing, once the
     /// queue has drifted far enough from it to want one.
     fn recall(&self, sections: Sections, window: &Window, cx: &mut Context<Self>) -> Option<Div> {
-        if self.tab != SideTab::Queue {
+        if !self.showing.queue_list {
             return None;
         }
         let goal = self.resting_offset(sections, window, cx)?;
@@ -1127,30 +1600,20 @@ impl Aside {
         Some(self.raised(perch, cx))
     }
 
-    /// Keeps floating controls above the workspace player bar and the strip over it, or above
-    /// the fullscreen transport.
-    fn raised(&self, perch: Div, cx: &App) -> Div {
+    /// Keeps fullscreen controls above its transport; workspace sidebars already end above it.
+    fn raised(&self, perch: Div, _cx: &App) -> Div {
         match self.titled {
-            true => match self.bottom(cx) > Pixels::ZERO {
-                true => perch.bottom(self.bottom(cx) + cx.theme().metrics.pad * 1.5),
-                false => perch,
-            },
+            true => perch,
             false => perch.bottom_16(),
-        }
-    }
-
-    /// Only workspace asides sit behind the player bar; fullscreen keeps its own clearance.
-    fn bottom(&self, cx: &App) -> Pixels {
-        match self.titled {
-            true => Chrome::bottom(cx),
-            false => Pixels::ZERO,
         }
     }
 
     fn verses(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *cx.theme();
+        let pin = self.pin;
+        let preview = self.titled && self.showing.expanded.is_none();
         let playback = self.playback.read(cx);
-        let (position, singing) = match playback.steered(cx) {
+        let (mut position, mut singing) = match playback.steered(cx) {
             Some(steered) => (steered.position, steered.playing),
             None => (
                 playback.live_position(),
@@ -1158,13 +1621,33 @@ impl Aside {
             ),
         };
         let lyrics = self.lyrics.read(cx);
-        let state = lyrics.state().clone();
-        let shown = lyrics.current().is_some();
-        let lines = match (&state, lyrics.current().map(|hit| &hit.lyrics)) {
+        let holding =
+            preview && matches!(lyrics.state(), LyricsState::Loading) && self.preview_hit.is_some();
+        let state = match holding {
+            true => LyricsState::Ready,
+            false => lyrics.state().clone(),
+        };
+        if preview && !holding {
+            if self.preview_revision != Some(lyrics.revision()) {
+                self.preview_hit = lyrics.current().cloned();
+                self.preview_revision = Some(lyrics.revision());
+            }
+            self.preview_position = position;
+        }
+        if holding {
+            position = self.preview_position;
+            singing = false;
+        }
+        let hit = match holding {
+            true => self.preview_hit.clone(),
+            false => lyrics.current().cloned(),
+        };
+        let shown = hit.is_some();
+        let lines = match (&state, hit.as_ref().map(|hit| &hit.lyrics)) {
             (LyricsState::Ready, Some(music::Lyrics::Synced { lines })) => Some(lines.clone()),
             _ => None,
         };
-        if let Some(hit) = lyrics.current() {
+        if let Some(hit) = &hit {
             let language = i18n::language();
             let fresh = self.credit.as_ref().is_some_and(|credit| {
                 credit.source == hit.source
@@ -1180,9 +1663,12 @@ impl Aside {
                 });
             }
         }
-        let following = (self.verse_of.as_deref() != lyrics.following())
+        let following = (!holding && self.verse_of.as_deref() != lyrics.following())
             .then(|| lyrics.following().map(str::to_owned));
-        let take = lyrics.revision();
+        let take = match holding {
+            true => self.verse_take,
+            false => lyrics.revision(),
+        };
         let (karaoke_lyrics, romanization_scripts) = {
             let settings = self.settings.read(cx);
             (
@@ -1362,14 +1848,22 @@ impl Aside {
                         if singing && instrumental_line == Some(index) {
                             window.request_animation_frame();
                         }
-                        let notes_along = viewport_along(&scroll, notes_row, view, drag.downward);
+                        let notes_along =
+                            viewport_along(&scroll, notes_row, view, drag.downward, pin);
                         let notes_drift = self.dragged(notes_row, notes_along, drag);
                         drifting |= notes_drift.is_some();
                         let notes_translation = presentation + notes_drift.unwrap_or_default();
                         let softness = match hazing && instrumental_line != Some(index) {
                             true => clearing(
                                 notes_touch,
-                                viewport_haze(&scroll, notes_row, view, blur, notes_translation),
+                                viewport_haze(
+                                    &scroll,
+                                    notes_row,
+                                    view,
+                                    blur,
+                                    notes_translation,
+                                    pin,
+                                ),
                             ),
                             false => 0.,
                         };
@@ -1412,7 +1906,7 @@ impl Aside {
                     }
 
                     let row = rendered.len();
-                    let along = viewport_along(&scroll, row, view, drag.downward);
+                    let along = viewport_along(&scroll, row, view, drag.downward, pin);
                     let drift = self.dragged(row, along, drag);
                     drifting |= drift.is_some();
                     let translation = presentation + drift.unwrap_or_default();
@@ -1437,7 +1931,7 @@ impl Aside {
                     let settled =
                         !active && !departing && !karaoke && !self.handled(Warm::Verse(index));
                     let spared = (measured && settled && self.was_settled.get(row) == Some(&true))
-                        .then(|| viewport_place(&scroll, row, view, translation))
+                        .then(|| viewport_place(&scroll, row, view, translation, pin))
                         .flatten()
                         .filter(|place| {
                             place.top + place.height < -view.size.height
@@ -1459,10 +1953,10 @@ impl Aside {
                         || line_has_passed(line, position);
                     let worded = karaoke_effects && line.worded() && line.words.is_some();
                     let shade = |singing: bool| match (singing, line_has_ended) {
-                        (true, _) if worded => theme.muted_foreground,
+                        (true, _) if worded => theme.foreground.opacity(AHEAD),
                         (true, _) => theme.foreground,
-                        (false, true) => theme.muted_foreground.opacity(PAST),
-                        (false, false) => theme.muted_foreground.opacity(AHEAD),
+                        (false, true) => theme.foreground.opacity(PAST),
+                        (false, false) => theme.foreground.opacity(AHEAD),
                     };
                     let tint = shade(Some(index) == active_line);
 
@@ -1585,7 +2079,7 @@ impl Aside {
                         });
 
                     let softness = match hazing && Some(index) != active_line {
-                        true => haze(viewport_haze(&scroll, row, view, blur, translation)),
+                        true => haze(viewport_haze(&scroll, row, view, blur, translation, pin)),
                         false => 0.,
                     };
                     let row_blur = match background_line_singing(line, active, position) {
@@ -1643,31 +2137,27 @@ impl Aside {
 
                 rendered
             }
-            (None, LyricsState::Ready) => {
-                match self.lyrics.read(cx).current().map(|hit| &hit.lyrics) {
-                    Some(music::Lyrics::Plain { text, romanized }) => vec![
-                        div()
-                            .w_full()
-                            .max_w(reach)
-                            .px_2()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .text_size(lane_size)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.muted_foreground)
-                            .child(SharedString::from(text.clone()))
-                            .when_some(
-                                selected_romanization(romanized, romanization_scripts),
-                                |this, text| {
-                                    this.child(romanized_lyrics_lane(text, lane_size, &theme))
-                                },
-                            )
-                            .into_any_element(),
-                    ],
-                    _ => vec![wordless("lyrics-missing", "icons/mic-off.svg")],
-                }
-            }
+            (None, LyricsState::Ready) => match hit.as_ref().map(|hit| &hit.lyrics) {
+                Some(music::Lyrics::Plain { text, romanized }) => vec![
+                    div()
+                        .w_full()
+                        .max_w(reach)
+                        .px_2()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .text_size(lane_size)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.muted_foreground)
+                        .child(SharedString::from(text.clone()))
+                        .when_some(
+                            selected_romanization(romanized, romanization_scripts),
+                            |this, text| this.child(romanized_lyrics_lane(text, lane_size, &theme)),
+                        )
+                        .into_any_element(),
+                ],
+                _ => vec![wordless("lyrics-missing", "icons/mic-off.svg")],
+            },
             (None, LyricsState::Idle) => vec![empty("lyrics-idle", cx)],
             (None, LyricsState::Loading) => vec![empty("lyrics-loading", cx)],
             (None, LyricsState::Instrumental) => {
@@ -1689,7 +2179,7 @@ impl Aside {
             && let Some((from, by)) = self.credit.as_ref().map(|credit| credit.lines.clone())
         {
             let credit = body.len();
-            let along = viewport_along(&scroll, credit, scroll.bounds(), drag.downward);
+            let along = viewport_along(&scroll, credit, scroll.bounds(), drag.downward, pin);
             let drift = self.dragged(credit, along, drag);
             drifting |= drift.is_some();
             let translation = match lines.is_some() {
@@ -1715,11 +2205,17 @@ impl Aside {
 
         let (over, under) = match &lines {
             Some(lines) => self.verse_slack(lyric_row_count(lines), window, cx),
-            None => (px(REST), px(REST)),
+            None => (
+                match preview {
+                    true => theme.metrics.pad,
+                    false => px(REST),
+                },
+                px(REST),
+            ),
         };
 
         let sheet = Scroller::new("lyrics", &self.verse_bar)
-            .bottom_inset(self.bottom(cx))
+            .free_scroll()
             .when(lines.is_some(), Scroller::manual_presentation)
             .when(lines.is_some(), |this| {
                 this.capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, _, cx| {
@@ -1743,7 +2239,11 @@ impl Aside {
             .pb(under)
             .when(effects(), |this| {
                 let fade = verse * VERSE_FADE;
-                this.fade_edges(fade, fade)
+                let top = match preview {
+                    true => theme.metrics.pad,
+                    false => fade,
+                };
+                this.fade_edges(top, fade)
             })
             .children(body);
 
@@ -1775,9 +2275,13 @@ impl Aside {
     fn verse_slack(&self, count: usize, window: &Window, cx: &App) -> (Pixels, Pixels) {
         let scroll = self.verse_bar.read(cx).scroll().clone();
         let view = scroll.bounds().size.height;
+        let top = match self.titled && self.showing.expanded.is_none() {
+            true => cx.theme().metrics.pad,
+            false => px(REST),
+        };
         if view <= px(0.) {
             window.request_animation_frame();
-            return (px(REST), px(REST));
+            return (top, px(REST));
         }
         let tail = count
             .checked_sub(1)
@@ -1785,8 +2289,8 @@ impl Aside {
             .map_or(px(0.), |item| item.size.height);
 
         (
-            snapped((view * PIN).max(px(REST)), window),
-            snapped((view * (1. - PIN) - tail).max(px(REST)), window),
+            snapped((view * self.pin).max(top), window),
+            snapped((view * (1. - self.pin) - tail).max(px(REST)), window),
         )
     }
 
@@ -1865,6 +2369,7 @@ impl Aside {
             item.origin.y,
             view.size.height,
             scroll.max_offset().y,
+            self.pin,
         );
         self.flown(goal, scroll.offset().y);
         match std::mem::take(&mut self.placing) || cx.reduce_motion() {
@@ -1960,13 +2465,10 @@ impl Aside {
             Listing::Own(_) => matches!(self.playback.read(cx).state(), PlaybackState::Playing),
             Listing::Steered { playing, .. } => *playing,
         };
-        // A uniform list only draws rows inside its padding, so the space under a see-through
-        // player bar is made of blank rows, which keeps the songs scrolling under it drawn.
-        let under = (self.bottom(cx) / cx.theme().metrics.list_row).ceil() as usize;
-
+        let motion = self.queue_motion.clone();
         uniform_list(
             "queue-rows",
-            sections.len() + under + TAIL_ROWS,
+            sections.len() + TAIL_ROWS,
             cx.processor(move |_, range: Range<usize>, window, cx| {
                 let reach = (range.len() as f32 * PREFETCH_REACH).ceil() as usize;
                 let near = (range.start.saturating_sub(reach)..range.start)
@@ -2010,10 +2512,14 @@ impl Aside {
                                         div()
                                             .flex_none()
                                             .text_size(cx.theme().text(Text::Small))
-                                            .text_color(cx.theme().muted_foreground)
+                                            .text_color(cx.theme().foreground)
                                             .child(BULLET),
                                     )
-                                    .child(faint(cx).child(t!("queue-from")))
+                                    .child(
+                                        faint(cx)
+                                            .text_color(cx.theme().foreground)
+                                            .child(t!("queue-from")),
+                                    )
                                     .child(source_link(name, place, cx))
                                     .into_any_element(),
                                 _ => label.into_any_element(),
@@ -2032,11 +2538,21 @@ impl Aside {
                             let playing = audible && position == QueuePosition::Current;
                             let queued =
                                 matches!(position, QueuePosition::Upcoming(at) if at < manual);
+                            let normal = cx.theme().metrics.list_row * index as f32;
+                            let offset = match position
+                                .upcoming()
+                                .filter(|_| !remote)
+                                .and_then(|at| queue.read(cx).upcoming_keys().nth(at))
+                            {
+                                Some(key) => motion.position(key, normal) - normal,
+                                None => Pixels::ZERO,
+                            };
                             let look = RowLook {
                                 playing,
                                 drop_line,
                                 queued,
                                 remote,
+                                offset,
                             };
                             Self::row(found, index, position, revision, look, cx).into_any_element()
                         }
@@ -2047,6 +2563,7 @@ impl Aside {
                     let look = RowLook {
                         playing: false,
                         drop_line: None,
+                        offset: Pixels::ZERO,
                         queued: matches!(position, QueuePosition::Upcoming(at) if at < manual),
                         remote,
                     };
@@ -2062,8 +2579,9 @@ impl Aside {
 impl Render for Aside {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.scrollbar.read(cx).sync();
+        self.settle_showing(cx);
         let steered = self.playback.read(cx).steered(cx);
-        let (listing, sections) = match &steered {
+        let (_, sections) = match &steered {
             Some(steered) => Listing::steered(steered),
             None => {
                 let queue = self.queue.read(cx);
@@ -2077,10 +2595,13 @@ impl Render for Aside {
                 (Listing::Own(self.queue.clone()), sections)
             }
         };
-        let remote = listing.remote();
         let empty = sections.len() == 0;
         if !cx.has_active_drag() {
+            self.queue_drag = None;
             self.drop_gap = None;
+            if self.section_drag.is_some() {
+                self.finish_section_drag(cx);
+            }
         }
 
         if self.past_len != sections.past {
@@ -2094,12 +2615,92 @@ impl Render for Aside {
             self.remote_track = remote_track;
             self.anchor = true;
         }
-        if self.anchor && self.tab == SideTab::Queue {
+        if self.anchor && self.showing.queue_list {
             self.pin(sections, window, cx);
         }
 
+        let row = cx.theme().metrics.list_row;
+        let queue = self.queue.read(cx);
+        let from = self
+            .queue_drag
+            .filter(|spot| spot.revision == queue.revision())
+            .map(|spot| spot.index);
+        self.queue_motion.animate(
+            queue.upcoming_keys().enumerate().map(|(index, key)| {
+                let target = ui::reorder_index(index, from, self.drop_gap);
+                (
+                    SharedString::from(key.to_owned()),
+                    row * sections.upcoming_index(target) as f32,
+                    false,
+                )
+            }),
+            window,
+            cx,
+        );
+        let showing = self.showing;
+        let body = match self.section_drag.is_some() && !self.section_drag_in_menu && self.titled {
+            true => self.section_board(window, cx),
+            false => match (showing.expanded, self.titled) {
+                (Some(tab), false) => self
+                    .card(tab, sections, empty, window, cx)
+                    .size_full()
+                    .into_any_element(),
+                // In the sidebar the song's artwork or Canvas keeps playing behind the card, under a
+                // dark frost that keeps it out of the way.
+                (Some(tab), true) => div()
+                    .relative()
+                    .size_full()
+                    .child(self.backdrop(window, cx))
+                    .child(stage::shroud(cx))
+                    .child(
+                        self.card(tab, sections, empty, window, cx)
+                            .relative()
+                            .size_full(),
+                    )
+                    .into_any_element(),
+                (None, true) => self.overview(sections, empty, window, cx),
+                (None, false) => {
+                    let lyrics = showing.lyrics.then(|| {
+                        self.card(SideTab::Lyrics, sections, empty, window, cx)
+                            .flex_1()
+                    });
+                    let queue = (showing.queue_list || showing.queue_card).then(|| {
+                        self.card(SideTab::Queue, sections, empty, window, cx)
+                            .when(showing.queue_list, |this| this.flex_1())
+                    });
+                    div()
+                        .flex()
+                        .flex_col()
+                        .size_full()
+                        .min_h_0()
+                        .gap_2()
+                        .children(lyrics)
+                        .children(queue)
+                        .into_any_element()
+                }
+            },
+        };
+        // Only the sidebar shows the Canvas, so fullscreen holds it paused.
+        if !self.titled {
+            self.pause_clip(cx);
+        }
+
+        let me = cx.weak_entity();
         div()
+            .on_children_prepainted(move |bounds, _, cx| {
+                if let Some(bounds) = bounds.first() {
+                    let width = bounds.size.width;
+                    me.update(cx, |this, cx| {
+                        if this.content_width != width {
+                            this.content_width = width;
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                }
+            })
             .id("aside")
+            .relative()
             .flex()
             .flex_col()
             .size_full()
@@ -2110,50 +2711,28 @@ impl Render for Aside {
                     cx.notify();
                 }
             }))
-            .when(self.titled || self.tab == SideTab::Queue, |this| {
-                this.child(self.header(sections, remote, window, cx))
+            .when(self.titled, |this| {
+                this.on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                        CardMenu::dismiss(cx);
+                        this.section_menu = Some(event.position);
+                        cx.notify();
+                    }),
+                )
             })
             .child(
                 div()
-                    .id("queue-drop")
                     .relative()
-                    .flex()
-                    .flex_col()
                     .flex_1()
                     .min_h_0()
-                    .when(self.tab == SideTab::Queue && !remote, |this| {
-                        this.on_drop(
-                            cx.listener(|this, dragged: &DraggedPin, _, cx| this.land(dragged, cx)),
-                        )
-                    })
-                    .when(self.tab == SideTab::Lyrics, |this| {
-                        this.child(self.verses(window, cx)).child(self.witness())
-                    })
-                    .when(self.tab == SideTab::Queue && empty, |this| {
-                        this.child(vacant(t!("queue-empty"), cx).flex_1())
-                    })
-                    .when(self.tab == SideTab::Queue && !empty, |this| {
-                        this.child(
-                            div().flex_1().min_h_0().child(
-                                Scroller::listing("queue-rows", &self.scrollbar)
-                                    .bottom_inset(self.bottom(cx))
-                                    .when(effects(), |this| {
-                                        this.fade_edges(px(FADE * 0.5), Pixels::ZERO)
-                                    })
-                                    .child(
-                                        self.rows(listing, sections, cx)
-                                            .px_2()
-                                            .pt(px(FADE * 0.5))
-                                            .track_scroll(&self.scroll)
-                                            .size_full(),
-                                    ),
-                            ),
-                        )
-                    })
-                    .children(self.follow(cx))
-                    .children(self.recall(sections, window, cx)),
+                    .min_w_0()
+                    .w_full()
+                    .rounded(cx.theme().radius)
+                    .overflow_hidden()
+                    .child(body),
             )
-            .children(self.menu(cx))
+            .children(self.section_menu(window, cx))
     }
 }
 
@@ -2176,6 +2755,412 @@ fn adder(added: &Contributor, theme: ui::Theme) -> Div {
         .child(t!("queue-added-by", name = added.name.as_str()))
 }
 
+impl Aside {
+    /// A card: its header over the lyrics, the whole queue list, or the queue's three rows.
+    fn card(
+        &mut self,
+        tab: SideTab,
+        sections: Sections,
+        empty: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let remote = self.playback.read(cx).steered(cx).is_some();
+        let header = self.card_header(tab, sections, remote, window, cx);
+        let body = self.card_body(tab, sections, empty, window, cx);
+        div()
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .when(self.titled, |card| {
+                card.px(cx.theme().metrics.pad).py(cx.theme().metrics.pad
+                    * match self.showing.expanded == Some(tab) {
+                        true => 1.,
+                        false => 2.,
+                    })
+            })
+            .child(header)
+            .child(body)
+    }
+
+    /// What a card holds under its header: the lyrics, the whole queue list, or the queue's
+    /// three rows.
+    fn card_body(
+        &mut self,
+        tab: SideTab,
+        sections: Sections,
+        empty: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let steered = self.playback.read(cx).steered(cx);
+        let listing = match steered.as_ref() {
+            Some(steered) => Listing::steered(steered).0,
+            None => Listing::Own(self.queue.clone()),
+        };
+        let remote = listing.remote();
+        match tab {
+            SideTab::Lyrics => div()
+                .relative()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .child(self.verses(window, cx))
+                .child(self.witness())
+                .children(self.follow(cx))
+                .into_any_element(),
+            SideTab::Queue if self.showing.queue_list => div()
+                .id("queue-drop")
+                .relative()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .when(!remote, |this| {
+                    this.on_drop(
+                        cx.listener(|this, dragged: &DraggedPin, _, cx| this.land(dragged, cx)),
+                    )
+                })
+                .when(empty, |this| {
+                    this.child(vacant(t!("queue-empty"), cx).flex_1())
+                })
+                .when(!empty, |this| {
+                    this.child(
+                        Scroller::listing("queue-rows", &self.scrollbar)
+                            .free_scroll()
+                            .when(effects(), |this| {
+                                this.fade_edges(cx.theme().metrics.pad, px(FADE))
+                            })
+                            .child(
+                                self.rows(listing, sections, cx)
+                                    .px_2()
+                                    .pt(cx.theme().metrics.pad)
+                                    .track_scroll(&self.scroll)
+                                    .size_full(),
+                            ),
+                    )
+                })
+                .children(self.recall(sections, window, cx))
+                .into_any_element(),
+            SideTab::Queue => self.queue_rows(sections, cx).into_any_element(),
+        }
+    }
+
+    /// The queue around the song playing: the one before under Previous, and the next few under
+    /// Up next, the hand-queued ones first and similar tracks after. The song playing is the
+    /// rest of the panel.
+    fn queue_rows(&self, sections: Sections, cx: &mut Context<Self>) -> Div {
+        let upcoming = (0..sections.upcoming).map(QueuePosition::Upcoming);
+        let similar = (0..sections.similar).map(QueuePosition::Similar);
+        let groups = [
+            (
+                t!("queue-previous"),
+                sections
+                    .past
+                    .checked_sub(1)
+                    .map(QueuePosition::Past)
+                    .into_iter()
+                    .collect(),
+            ),
+            (
+                t!("queue-up-next"),
+                upcoming.chain(similar).take(UP_NEXT).collect::<Vec<_>>(),
+            ),
+        ];
+        let queue = self.queue.read(cx);
+        let revision = queue.revision();
+        let listing = match self.playback.read(cx).steered(cx) {
+            Some(steered) => Listing::steered(&steered).0,
+            None => Listing::Own(self.queue.clone()),
+        };
+        let look = RowLook {
+            queued: false,
+            remote: listing.remote(),
+            playing: false,
+            drop_line: None,
+            offset: Pixels::ZERO,
+        };
+        let mut index = 0;
+        let mut column = div().flex().flex_col().gap_2();
+        if sections.len() == 0 {
+            column = column.child(
+                div()
+                    .px_2()
+                    .text_color(cx.theme().foreground)
+                    .child(t!("queue-empty")),
+            );
+        }
+        for (label, positions) in groups {
+            let rows: Vec<_> = positions
+                .into_iter()
+                .filter_map(|position| {
+                    let track = listing.track(position, cx)?;
+                    index += 1;
+                    let look = RowLook {
+                        queued: matches!(position, QueuePosition::Upcoming(at) if at < sections.manual),
+                        ..look
+                    };
+                    Some(Self::row(track, index, position, revision, look, cx))
+                })
+                .collect();
+            if !rows.is_empty() {
+                column = column.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(stage::heading(label, cx).px_2())
+                        .children(rows),
+                );
+            }
+        }
+        column
+    }
+
+    /// The sidebar with no card filling it: the song's artwork or Canvas behind everything,
+    /// where it plays from pinned in the corner, and under a clear stretch of the backdrop the
+    /// song's name, then its lyrics, its artist, its credits and the queue's card on a frost
+    /// they share, in one scroll.
+    fn overview(
+        &mut self,
+        sections: Sections,
+        empty: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let height = window.viewport_size().height;
+        let track = self.playback.read(cx).shown_track(cx);
+        let backdrop = self.backdrop(window, cx);
+        // One frosted layer follows the title as the scroll moves, then continues behind every
+        // section below it. Its fade starts at the title rather than making a second title panel.
+        let scroll = self.overview_bar.read(cx).scroll().clone();
+        let song = track.as_ref().and_then(|track| track.id.clone());
+        let nudges = self.overview_bar.read(cx).nudges();
+        let visible_end = -scroll.offset().y + scroll.bounds().size.height;
+        if song != self.overview_song {
+            self.overview_song = song;
+            self.overview_floor = self.overview_extent.get().max(visible_end);
+            if track.is_none() {
+                self.preview_hit = None;
+                self.preview_revision = None;
+                self.overview_floor = Pixels::ZERO;
+            }
+        } else if nudges != self.overview_nudges {
+            self.overview_floor = self
+                .overview_floor
+                .min(self.overview_extent.get().max(visible_end));
+        }
+        self.overview_nudges = nudges;
+        let offset = scroll.offset().y + self.overview_bar.read(cx).presentation().y;
+        let frost = self.title_at.get().map(|at| {
+            let target = -offset / at.max(cx.theme().metrics.pad);
+            let blurred_background = self.backdrop(window, cx);
+            stage::frost(
+                at + offset,
+                target,
+                scroll.bounds().size.height,
+                blurred_background,
+            )
+        });
+        let title_at = self.title_at.clone();
+        let witnessing = scroll.clone();
+        let witness = canvas(
+            move |bounds, window, _| {
+                let at = bounds.top() - witnessing.bounds().top() - witnessing.offset().y;
+                if title_at.replace(Some(at)) != Some(at) {
+                    window.request_animation_frame();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .w_full()
+        .h_0();
+        let lyrics = self.lyrics.read(cx);
+        if !matches!(lyrics.state(), LyricsState::Loading) {
+            self.lyrics_slot = lyrics.current().is_some_and(|hit| !hit.lyrics.is_empty());
+        }
+        let mut sections_shown = Vec::new();
+        for (section, shown) in Section::arranged(cx) {
+            if !shown {
+                continue;
+            }
+            let header = self.section_header(section, cx);
+            let element = match section {
+                // The wheel over the self-following lyrics moves the overview instead.
+                Section::Lyrics => (self.showing.lyrics && self.lyrics_slot).then(|| {
+                    div()
+                        .relative()
+                        .flex()
+                        .flex_col()
+                        .h(snapped(height * LYRICS_CARD, window))
+                        .child(self.card_body(SideTab::Lyrics, sections, empty, window, cx))
+                        .child(ui::wheel_to(&self.overview_bar))
+                        .into_any_element()
+                }),
+                Section::Queue => self
+                    .showing
+                    .queue_card
+                    .then(|| self.queue_rows(sections, cx).into_any_element()),
+                Section::About => stage::about(header, window, cx),
+                Section::Popular => stage::popular(header, self.content_width, window, cx),
+                Section::Album => stage::album(header, cx),
+                Section::Related => stage::related(header, self.content_width, window, cx),
+                Section::Credits => {
+                    let me = cx.entity().downgrade();
+                    stage::credits(
+                        header,
+                        self.all_credits,
+                        move |_, cx| {
+                            me.update(cx, |this, cx| {
+                                this.all_credits = !this.all_credits;
+                                cx.notify();
+                            })
+                            .ok();
+                        },
+                        cx,
+                    )
+                }
+            };
+            if let Some(element) = element {
+                sections_shown.push(
+                    div()
+                        .child(self.overview_anchors.mark(section.id(), element))
+                        .id(section.id())
+                        .into_any_element(),
+                );
+            }
+        }
+        let sheet = stage::sheet(sections_shown, cx);
+        let extent = self.overview_extent.clone();
+        let measuring = scroll.clone();
+
+        div()
+            .relative()
+            .size_full()
+            .child(backdrop)
+            .children(frost)
+            .child(
+                Scroller::new("aside-overview", &self.overview_bar)
+                    .size_full()
+                    .pt(cx.theme().radius.max(cx.theme().metrics.pad))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .min_h(self.overview_floor)
+                            .pt(snapped(height * CLEAR, window))
+                            .on_children_prepainted(move |bounds, _, _| {
+                                if let Some(last) = bounds.last() {
+                                    extent.set(
+                                        last.bottom()
+                                            - measuring.bounds().top()
+                                            - measuring.offset().y,
+                                    );
+                                }
+                            })
+                            .child(witness)
+                            .children(track.as_ref().map(|track| {
+                                self.overview_anchors.mark("title", stage::title(track, cx))
+                            }))
+                            .child(sheet),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// Holds the Canvas clip on its frame while nothing shows it, as while the sidebar is closed.
+    pub(crate) fn pause_clip(&self, cx: &mut App) {
+        if let Some((_, player)) = &self.clip {
+            player.update(cx, |player, _| player.set_paused(true));
+        }
+        for background in self.backdrop.iter().chain(self.outgoing_backdrop.iter()) {
+            if let Some(player) = &background.clip {
+                player.update(cx, |player, _| player.set_paused(true));
+            }
+        }
+    }
+
+    /// The song's artwork or Canvas the sidebar sits on, whatever fills it.
+    fn backdrop(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let sonora = Sonora::global(cx);
+        let track = self.playback.read(cx).shown_track(cx);
+        let still = (sonora.stage.read(cx).canvas().cloned())
+            .filter(|canvas| !canvas.video)
+            .map(|canvas| canvas.url)
+            .or_else(|| {
+                sonora.stage.read(cx).album().and_then(|detail| {
+                    detail
+                        .album
+                        .cover_large
+                        .clone()
+                        .or_else(|| detail.album.cover.clone())
+                })
+            })
+            .or_else(|| {
+                let album = track.as_ref()?.album_id.as_deref()?;
+                sonora.cover.read(cx).large_for(album).map(str::to_owned)
+            })
+            .or_else(|| track.and_then(|track| track.cover));
+        let clip = self.clip_player(cx);
+        let source = Backdrop { clip, still };
+        if self
+            .backdrop
+            .as_ref()
+            .is_none_or(|held| !held.same(&source))
+        {
+            self.outgoing_backdrop = self.backdrop.replace(source);
+            self.backdrop_changed = std::time::Instant::now();
+        }
+        let progress = match cx.reduce_motion() {
+            true => 1.,
+            false => (self.backdrop_changed.elapsed().as_secs_f32()
+                / Motion::Slow.span().as_secs_f32())
+            .min(1.),
+        };
+        if progress < 1. && self.outgoing_backdrop.is_some() {
+            cx.on_next_frame(window, |_, _, cx| cx.notify());
+        } else {
+            self.outgoing_backdrop = None;
+        }
+        let held = self.backdrop.as_ref().expect("background source is set");
+        div()
+            .absolute()
+            .inset_0()
+            .children(
+                self.outgoing_backdrop
+                    .as_ref()
+                    .map(|old| stage::backdrop(old.clip.clone(), old.still.clone(), window, cx)),
+            )
+            .child(
+                stage::backdrop(held.clip.clone(), held.still.clone(), window, cx).opacity(
+                    match self.outgoing_backdrop.is_some() {
+                        true => ui::ease_in_out_cubic(progress),
+                        false => 1.,
+                    },
+                ),
+            )
+    }
+
+    /// The player for the song's Canvas clip, made once the clip has downloaded and kept while
+    /// the same clip plays.
+    fn clip_player(&mut self, cx: &mut Context<Self>) -> Option<Entity<ClipPlayer>> {
+        let Some(bytes) = Sonora::global(cx).stage.read(cx).clip() else {
+            self.clip = None;
+            return None;
+        };
+        if let Some((held, player)) = &self.clip
+            && Arc::ptr_eq(held, &bytes)
+        {
+            player.update(cx, |player, _| player.set_paused(false));
+            return Some(player.clone());
+        }
+        let player = cx.new(|cx| ClipPlayer::new(bytes.clone(), "canvas".into(), cx));
+        self.clip = Some((bytes, player.clone()));
+        Some(player)
+    }
+}
+
 fn source_link(name: SharedString, to: Destination, cx: &App) -> impl IntoElement {
     let theme = *cx.theme();
 
@@ -2185,7 +3170,7 @@ fn source_link(name: SharedString, to: Destination, cx: &App) -> impl IntoElemen
         .flex_shrink(1.)
         .truncate()
         .text_size(theme.text(Text::Small))
-        .text_color(theme.muted_foreground)
+        .text_color(theme.foreground)
         .font_weight(FontWeight::SEMIBOLD)
         .cursor_pointer()
         .hover(|style| style.text_color(theme.foreground).underline())
@@ -2220,10 +3205,10 @@ pub(crate) fn verse(
     let ended = line_has_passed(line, position);
     let worded = karaoke && line.worded() && line.words.is_some();
     let tint = match (look.active, ended) {
-        (true, _) if worded => theme.muted_foreground,
+        (true, _) if worded => theme.foreground.opacity(AHEAD),
         (true, _) => theme.foreground,
-        (false, true) => theme.muted_foreground.opacity(PAST),
-        (false, false) => theme.muted_foreground.opacity(AHEAD),
+        (false, true) => theme.foreground.opacity(PAST),
+        (false, false) => theme.foreground.opacity(AHEAD),
     };
     let sung = Sung {
         karaoke,
@@ -2495,10 +3480,10 @@ fn secondary_lyrics_lane(
             secondary_karaoke_visible(lane, singing, position) && sung.karaoke && lane.worded();
 
         match (active, passed, karaoke) {
-            (_, _, true) => theme.muted_foreground,
+            (_, _, true) => theme.foreground.opacity(AHEAD),
             (true, _, false) => theme.foreground,
-            (false, true, false) => theme.muted_foreground.opacity(PAST),
-            (false, false, false) => theme.muted_foreground.opacity(AHEAD),
+            (false, true, false) => theme.foreground.opacity(PAST),
+            (false, false, false) => theme.foreground.opacity(AHEAD),
         }
     };
     let tint = shade(line_active);
@@ -2956,8 +3941,14 @@ fn wrap_fragment_widths(widths: &[Pixels], breaks: &[bool], width: Pixels) -> Ve
     rows
 }
 
-fn anchored_lyrics_offset(view: Pixels, item: Pixels, height: Pixels, reach: Pixels) -> Pixels {
-    let delta = view - item + height * PIN;
+fn anchored_lyrics_offset(
+    view: Pixels,
+    item: Pixels,
+    height: Pixels,
+    reach: Pixels,
+    pin: f32,
+) -> Pixels {
+    let delta = view - item + height * pin;
     delta.clamp(-reach, px(0.))
 }
 
@@ -3113,6 +4104,7 @@ fn viewport_place(
     row: usize,
     view: Bounds<Pixels>,
     shift: Pixels,
+    pin: f32,
 ) -> Option<Place> {
     let height = view.size.height;
     let item = scroll.bounds_for_item(row)?;
@@ -3120,11 +4112,11 @@ fn viewport_place(
         return None;
     }
     let top = item.origin.y - view.origin.y + scroll.offset().y + shift;
-    let travel = top - height * PIN;
+    let travel = top - height * pin;
     let reach = height
         * match travel >= px(0.) {
-            true => 1. - PIN,
-            false => PIN,
+            true => 1. - pin,
+            false => pin,
         };
     Some(Place {
         top,
@@ -3140,8 +4132,9 @@ fn viewport_haze(
     view: Bounds<Pixels>,
     margin: Pixels,
     drift: Pixels,
+    pin: f32,
 ) -> f32 {
-    let Some(place) = viewport_place(scroll, row, view, drift) else {
+    let Some(place) = viewport_place(scroll, row, view, drift, pin) else {
         return 0.;
     };
     if place.top + place.height + margin < px(0.) || place.top - margin > view.size.height {
@@ -3169,8 +4162,14 @@ fn lag_spring(along: f32) -> SpringConfig {
 }
 
 // incoming rows last
-fn viewport_along(scroll: &ScrollHandle, row: usize, view: Bounds<Pixels>, downward: bool) -> f32 {
-    let Some(place) = viewport_place(scroll, row, view, px(0.)) else {
+fn viewport_along(
+    scroll: &ScrollHandle,
+    row: usize,
+    view: Bounds<Pixels>,
+    downward: bool,
+    pin: f32,
+) -> f32 {
+    let Some(place) = viewport_place(scroll, row, view, px(0.), pin) else {
         return 0.;
     };
     match downward {
@@ -3231,9 +4230,9 @@ fn instrumental_row(progress: f32, past: bool, verse: Pixels, theme: &ui::Theme)
         .children((0..3).map(|index| {
             let note_progress = (progress * 3. - index as f32).clamp(0., 1.);
             let tint = match past {
-                true => theme.muted_foreground.opacity(PAST),
+                true => theme.foreground.opacity(PAST),
                 false => mix(
-                    theme.muted_foreground.opacity(AHEAD),
+                    theme.foreground.opacity(AHEAD),
                     theme.primary,
                     note_progress,
                 ),
@@ -3449,14 +4448,14 @@ mod tests {
 
     #[test]
     fn lyrics_follow_uses_unscrolled_item_bounds() {
-        let offset = anchored_lyrics_offset(px(0.), px(200.), px(100.), px(500.));
+        let offset = anchored_lyrics_offset(px(0.), px(200.), px(100.), px(500.), super::PIN);
 
         assert_eq!(offset, px(-170.));
     }
 
     #[test]
     fn lyrics_follow_preserves_a_subpixel_target() {
-        let offset = anchored_lyrics_offset(px(0.25), px(200.125), px(100.5), px(500.));
+        let offset = anchored_lyrics_offset(px(0.25), px(200.125), px(100.5), px(500.), super::PIN);
 
         assert!((offset.as_f32() - -169.725).abs() < 0.001);
     }

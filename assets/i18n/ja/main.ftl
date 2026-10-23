@@ -240,7 +240,6 @@ devices-jam-invite-detail = { $count ->
    *[other] この Jam にはすでに{ $count }人が参加しています。
 }
 devices-jam-invite-join = 参加
-devices-elsewhere-banner = { $device } で再生中
 devices-elsewhere-here = ここで再生
 fullscreen-artwork = アートワーク
 
@@ -529,7 +528,6 @@ settings-group-protected = 保護されたコンテンツ
 settings-group-output = 出力
 settings-group-status = ステータス
 settings-group-startup = 起動
-settings-group-context-menus = コンテキストメニュー
 key-ctrl = Ctrl
 key-super = Super
 key-alt = Alt
@@ -594,9 +592,6 @@ settings-font-value = { $size } px
 settings-startup = 起動時に表示
 settings-startup-detail = 起動時に Sonora が開く画面
 settings-startup-no-guest = ゲストモードでは利用できません
-settings-entries = サイドバー項目
-settings-entries-detail = サイドバーに表示するセクション
-settings-entries-pick = 項目を選ぶ
 settings-language = 言語
 settings-language-detail = インターフェース全体で Sonora が使う言語
 settings-language-system = システム
@@ -948,8 +943,6 @@ settings-group-text = テキスト
 settings-group-motion = モーション
 settings-group-streaming = ストリーミング
 settings-group-spotify-connect = Spotify Connect
-settings-adaptive-menu = アダプティブコンテキストメニュー
-settings-adaptive-menu-detail = アルバムやアーティストなど、行に既に表示されている項目を省く
 settings-accounts = アカウント管理
 settings-accounts-detail = このデバイスで再生に使えるサービス
 settings-provider-current = このサービスから再生中

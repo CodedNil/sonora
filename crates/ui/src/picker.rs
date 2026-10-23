@@ -19,6 +19,7 @@ pub struct Picker {
     key: &'static str,
     group: Popovers,
     face: Face,
+    button: Option<Button>,
     /// A small element drawn before the current choice on the trigger.
     leading: Option<AnyElement>,
     tooltip: Option<&'static str>,
@@ -48,6 +49,7 @@ impl Picker {
             key,
             group: group.clone(),
             face: Face::Label(current.into()),
+            button: None,
             leading: None,
             tooltip: None,
             above: false,
@@ -79,6 +81,12 @@ impl Picker {
             face: Face::Plain(label.into()),
             ..Self::new(key, group, "")
         }
+    }
+
+    /// Uses a caller-styled trigger while retaining the shared picker menu and interactions.
+    pub fn button(mut self, button: Button) -> Self {
+        self.button = Some(button);
+        self
     }
 
     /// Draws `leading` before the current choice on the trigger, as the menu's items may draw
@@ -180,6 +188,7 @@ impl RenderOnce for Picker {
             key,
             group,
             face,
+            button,
             leading,
             tooltip,
             above,
@@ -202,7 +211,7 @@ impl RenderOnce for Picker {
             false => theme.metrics.control,
         } + TRIGGER_GAP;
 
-        let button = match face {
+        let button = button.unwrap_or_else(|| match face {
             Face::Label(current) => Button::new(SharedString::from(format!("{key}-picker")))
                 .label(current)
                 .trailing("icons/chevron-down.svg")
@@ -213,7 +222,7 @@ impl RenderOnce for Picker {
             Face::Icon(icon) => Button::new(SharedString::from(format!("{key}-picker")))
                 .icon(icon)
                 .ghost(),
-        };
+        });
         let button = button
             .when(small, Button::small)
             .when_some(leading, Button::leading)

@@ -3,7 +3,7 @@ use gpui::{App, ClickEvent, Context, Entity, Window, div};
 use i18n::t;
 use music::connect::{Command, DeviceKind};
 use state::{Devices, Sonora};
-use ui::{ActiveTheme as _, MenuItem, Picker, Popovers};
+use ui::{ActiveTheme as _, Button, MenuItem, Picker, Popovers, Text};
 
 use crate::chrome::jam;
 
@@ -153,6 +153,45 @@ impl Render for DevicePicker {
         }
 
         Picker::icon("devices", &self.popovers, "icons/monitor-speaker.svg")
+            .when_some(elsewhere.as_ref(), |picker, elsewhere| {
+                let controls = self.devices.clone();
+                picker.large().button(
+                    Button::new("devices-remote")
+                        .ghost()
+                        .icon("icons/monitor-speaker.svg")
+                        .h_auto()
+                        .px(theme.metrics.pad)
+                        .py(theme.metrics.pad * 0.5)
+                        .gap(theme.metrics.pad)
+                        .leading(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .text_size(theme.text(Text::Small))
+                                .child(
+                                    div()
+                                        .max_w(Picker::NARROW)
+                                        .truncate()
+                                        .child(elsewhere.device.name.clone()),
+                                )
+                                .child(
+                                    Button::new("devices-play-here")
+                                        .ghost()
+                                        .small()
+                                        .h_auto()
+                                        .p_0()
+                                        .text_size(theme.text(Text::Tiny))
+                                        .tint(theme.muted_foreground)
+                                        .label(t!("devices-elsewhere-here"))
+                                        .on_click(move |_, _, cx| {
+                                            cx.stop_propagation();
+                                            controls.read(cx).transfer_here();
+                                        }),
+                                ),
+                        ),
+                )
+            })
             .tooltip_above("player-devices")
             .selected(elsewhere.is_some())
             .tint(match elsewhere.is_some() {

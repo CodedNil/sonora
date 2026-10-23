@@ -1,13 +1,16 @@
 use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{App, ClickEvent, Entity, MouseDownEvent, Pixels, SharedString, Window, div};
+use gpui::{
+    AnyElement, App, ClickEvent, Entity, EntityId, Pixels, Point, ScrollHandle, SharedString,
+    Window, div,
+};
 use music::{GenreItem, Track};
 use state::Playback;
-use ui::{ActiveTheme as _, Button, Card, eyebrow, heading, snapped, vacant};
+use ui::{ActiveTheme as _, Button, Card, Glide, heading, snapped, vacant};
 
 use crate::shared::cards;
-use crate::shared::track_card::{ContextHandler, StartHandler, TrackCard};
+use crate::shared::track_card::{StartHandler, TrackCard};
 
 const ROWS: usize = 5;
 const MAX_COLUMNS: usize = 3;
@@ -40,11 +43,40 @@ impl Shape {
     }
 }
 
+/// Persistent paging motion, using the same glide as horizontal card rails.
+pub(crate) struct PicksMotion {
+    scroll: ScrollHandle,
+    glide: Glide,
+}
+
+impl PicksMotion {
+    pub(crate) fn new(host: EntityId) -> Rc<Self> {
+        let mut glide = Glide::default();
+        glide.watch(host);
+        Rc::new(Self {
+            scroll: ScrollHandle::new(),
+            glide,
+        })
+    }
+}
+
 /// What the deck lists: a run of tracks that queue together, or shelf items of any kind that
 /// each stand alone.
-enum Rows {
+pub(crate) enum Rows {
     Tracks(Rc<Vec<Track>>),
     Mixed(Rc<Vec<GenreItem>>),
+}
+
+impl From<Rc<Vec<Track>>> for Rows {
+    fn from(tracks: Rc<Vec<Track>>) -> Self {
+        Self::Tracks(tracks)
+    }
+}
+
+impl From<Rc<Vec<GenreItem>>> for Rows {
+    fn from(items: Rc<Vec<GenreItem>>) -> Self {
+        Self::Mixed(items)
+    }
 }
 
 impl Rows {
@@ -56,12 +88,11 @@ impl Rows {
     }
 }
 
-/// A framed deck of list rows in up to three columns, paged with the arrows in its head.
+/// A deck of list rows in up to three columns, paged with the arrows in its head.
 #[derive(IntoElement)]
 pub(crate) struct Picks {
     id: &'static str,
     title: &'static str,
-    eyebrow: Option<SharedString>,
     vacancy: &'static str,
     rows: Rows,
     playback: Entity<Playback>,
@@ -71,24 +102,26 @@ pub(crate) struct Picks {
     loading: bool,
     on_previous: Option<ClickHandler>,
     on_next: Option<ClickHandler>,
-    on_context_menu: Option<ContextHandler>,
     on_start: Option<StartHandler>,
+    controls: Option<AnyElement>,
+    motion: Rc<PicksMotion>,
 }
 
 impl Picks {
+    /// Track rows queue together; mixed shelf items each open or play independently.
     pub(crate) fn new(
         id: &'static str,
-        tracks: Rc<Vec<Track>>,
+        rows: impl Into<Rows>,
         playback: Entity<Playback>,
         width: Pixels,
         page: usize,
+        motion: &Rc<PicksMotion>,
     ) -> Self {
         Self {
             id,
             title: "",
-            eyebrow: None,
             vacancy: "",
-            rows: Rows::Tracks(tracks),
+            rows: rows.into(),
             playback,
             width,
             page,
@@ -96,46 +129,20 @@ impl Picks {
             loading: false,
             on_previous: None,
             on_next: None,
-            on_context_menu: None,
             on_start: None,
+            controls: None,
+            motion: motion.clone(),
         }
     }
 
-    /// A deck of shelf items rather than tracks: each row plays or opens on its own, so
-    /// `on_start` goes unused, and `on_context_menu` still names the row by its place.
-    pub(crate) fn mixed(
-        id: &'static str,
-        items: Rc<Vec<GenreItem>>,
-        playback: Entity<Playback>,
-        width: Pixels,
-        page: usize,
-    ) -> Self {
-        Self {
-            id,
-            title: "",
-            eyebrow: None,
-            vacancy: "",
-            rows: Rows::Mixed(items),
-            playback,
-            width,
-            page,
-            detailed: false,
-            loading: false,
-            on_previous: None,
-            on_next: None,
-            on_context_menu: None,
-            on_start: None,
-        }
+    /// Adds section-specific controls alongside the paging buttons.
+    pub(crate) fn controls(mut self, controls: impl IntoElement) -> Self {
+        self.controls = Some(controls.into_any_element());
+        self
     }
 
     pub(crate) fn title(mut self, key: &'static str) -> Self {
         self.title = key;
-        self
-    }
-
-    /// The small line over the title, already worded: a key looked up at render, or a name.
-    pub(crate) fn eyebrow(mut self, label: impl Into<SharedString>) -> Self {
-        self.eyebrow = Some(label.into());
         self
     }
 
@@ -170,14 +177,6 @@ impl Picks {
         self
     }
 
-    pub(crate) fn on_context_menu(
-        mut self,
-        handler: impl Fn(usize, &MouseDownEvent, &mut Window, &mut App) + 'static,
-    ) -> Self {
-        self.on_context_menu = Some(Rc::new(handler));
-        self
-    }
-
     pub(crate) fn on_start(mut self, handler: impl Fn(usize, &mut App) + 'static) -> Self {
         self.on_start = Some(Rc::new(handler));
         self
@@ -189,7 +188,15 @@ impl RenderOnce for Picks {
         let theme = *cx.theme();
         let shape = Shape::new(self.width, self.rows.len());
         let page = self.page.min(shape.pages.saturating_sub(1));
-        let start = page * shape.slots();
+        let motion = &self.motion;
+        motion.glide.sync(&motion.scroll);
+        let goal = Point {
+            x: -self.width * page as f32,
+            y: Pixels::ZERO,
+        };
+        if (motion.glide.goal(&motion.scroll).x - goal.x).abs() > gpui::px(0.5) {
+            motion.glide.aim(&motion.scroll, goal, window);
+        }
         let row = snapped(theme.metrics.list_row, window);
         let rows = self.rows;
         let empty = rows.len() == 0;
@@ -197,7 +204,6 @@ impl RenderOnce for Picks {
         let id = self.id;
         let on_previous = self.on_previous;
         let on_next = self.on_next;
-        let on_context_menu = self.on_context_menu;
         let on_start = self.on_start;
 
         div()
@@ -205,26 +211,18 @@ impl RenderOnce for Picks {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .rounded(theme.radius)
-            .border_1()
-            .border_color(theme.border)
             .child(
                 div()
                     .flex()
                     .items_end()
                     .justify_between()
                     .gap_4()
-                    .px_4()
-                    .pt_4()
                     .pb_3()
-                    .border_b_1()
-                    .border_color(theme.border)
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .gap_0()
-                            .children(self.eyebrow.map(|label| eyebrow(label, cx)))
                             .child(heading(i18n::lookup(self.title, None), cx)),
                     )
                     .child(
@@ -233,6 +231,7 @@ impl RenderOnce for Picks {
                             .items_center()
                             .gap_1()
                             .pb_1()
+                            .children(self.controls)
                             .child(
                                 Button::new(SharedString::from(format!("{id}-previous")))
                                     .small()
@@ -265,69 +264,53 @@ impl RenderOnce for Picks {
                 this.child(vacant(i18n::lookup(self.vacancy, None), cx))
             })
             .when(!barren, |this| {
-                this.child(div().flex().gap_2().p_2().when_else(
-                    empty,
-                    |this| {
-                        this.children((0..shape.columns).map(|column| {
-                            column_shell(column, theme.border)
-                                .children((0..ROWS).map(|slot| skeleton(id, column * ROWS + slot)))
-                        }))
-                    },
-                    |this| {
-                        this.children((0..shape.columns).map(|column| {
-                            column_shell(column, theme.border).children((0..ROWS).map(|slot| {
-                                let place = start + column * ROWS + slot;
-
-                                match &rows {
-                                    Rows::Tracks(tracks) if place < tracks.len() => TrackCard::new(
-                                        id,
-                                        place,
-                                        tracks.clone(),
-                                        self.playback.clone(),
-                                    )
-                                    .detailed(self.detailed)
-                                    .context(on_context_menu.clone())
-                                    .start(on_start.clone())
-                                    .render(cx)
-                                    .into_any_element(),
-
-                                    Rows::Mixed(items) if place < items.len() => {
-                                        let context = on_context_menu.clone();
-
-                                        cards::listed(
+                let viewport = div()
+                    .id(SharedString::from(format!("{id}-pages")))
+                    .w_full()
+                    .overflow_x_hidden()
+                    .track_scroll(&self.motion.scroll)
+                    .child(div().flex().children((0..shape.pages).map(|page| {
+                        let start = page * shape.slots();
+                        div().flex().flex_none().w(self.width).gap_4().children(
+                            (0..shape.columns).map(|column| {
+                                column_shell().children((0..ROWS).map(|slot| {
+                                    let place = start + column * ROWS + slot;
+                                    match &rows {
+                                        _ if empty => {
+                                            skeleton(id, column * ROWS + slot).into_any_element()
+                                        }
+                                        Rows::Tracks(tracks) if place < tracks.len() => {
+                                            TrackCard::new(
+                                                id,
+                                                place,
+                                                tracks.clone(),
+                                                self.playback.clone(),
+                                            )
+                                            .detailed(self.detailed)
+                                            .start(on_start.clone())
+                                            .render(cx)
+                                            .into_any_element()
+                                        }
+                                        Rows::Mixed(items) if place < items.len() => cards::listed(
                                             (id, place),
                                             &items[place],
                                             &self.playback,
                                             cx,
                                         )
-                                        .when_some(context, |card, handler| {
-                                            card.menu(move |event, window, cx| {
-                                                handler(place, event, window, cx)
-                                            })
-                                        })
-                                        .into_any_element()
+                                        .into_any_element(),
+                                        _ => div().flex_none().h(row).into_any_element(),
                                     }
-
-                                    _ => div().flex_none().h(row).into_any_element(),
-                                }
-                            }))
-                        }))
-                    },
-                ))
+                                }))
+                            }),
+                        )
+                    })));
+                this.child(viewport)
             })
     }
 }
 
-fn column_shell(column: usize, border: gpui::Hsla) -> gpui::Div {
-    div()
-        .flex()
-        .flex_1()
-        .min_w_0()
-        .flex_col()
-        .gap_1()
-        .when(column > 0, |this| {
-            this.border_l_1().border_color(border).pl_2()
-        })
+fn column_shell() -> gpui::Div {
+    div().flex().flex_1().min_w_0().flex_col().gap_1()
 }
 
 fn skeleton(id: &'static str, place: usize) -> impl IntoElement {

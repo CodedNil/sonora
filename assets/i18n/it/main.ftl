@@ -283,7 +283,6 @@ devices-jam-invite-detail = { $count ->
    *[other] { $count } persone sono già in questa Jam.
 }
 devices-jam-invite-join = Unisciti
-devices-elsewhere-banner = In riproduzione su { $device }
 devices-elsewhere-here = Riproduci qui
 fullscreen-artwork = Copertina
 
@@ -578,7 +577,6 @@ settings-group-protected = Riproduzione protetta
 settings-group-output = Uscita
 settings-group-status = Stato
 settings-group-startup = Avvio
-settings-group-context-menus = Menu contestuali
 key-ctrl = Ctrl
 key-super = Super
 key-alt = Alt
@@ -644,9 +642,6 @@ settings-font-value = { $size } px
 settings-startup = Mostra all'avvio
 settings-startup-detail = La schermata che Sonora apre all'avvio
 settings-startup-no-guest = Non disponibile in modalità ospite
-settings-entries = Voci barra laterale
-settings-entries-detail = Le sezioni elencate nella barra laterale
-settings-entries-pick = Scegli voci
 settings-language = Lingua
 settings-language-detail = La lingua usata da Sonora nell'interfaccia
 settings-language-system = Sistema
@@ -1002,8 +997,6 @@ settings-group-text = Testo
 settings-group-motion = Movimento
 settings-group-streaming = Streaming
 settings-group-spotify-connect = Spotify Connect
-settings-adaptive-menu = Menu contestuale adattivo
-settings-adaptive-menu-detail = Omette le voci che la riga mostra già, come l'album o l'artista
 settings-accounts = Gestisci account
 settings-accounts-detail = I servizi da cui questo dispositivo può riprodurre
 settings-provider-current = Riproduzione da questo servizio

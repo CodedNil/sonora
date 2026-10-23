@@ -14,6 +14,7 @@ pub enum LibraryTab {
     Artists,
 }
 
+/// A navigation entry or toolbar control group that can be placed in app chrome.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavEntry {
     Home,
@@ -22,16 +23,20 @@ pub enum NavEntry {
     History,
     Local,
     Pins,
+    Settings,
+    Transport,
 }
 
 impl NavEntry {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
+        Self::Transport,
         Self::Home,
         Self::Search,
         Self::Library,
-        Self::History,
         Self::Local,
+        Self::History,
         Self::Pins,
+        Self::Settings,
     ];
 
     pub fn id(self) -> &'static str {
@@ -42,6 +47,8 @@ impl NavEntry {
             Self::History => "history",
             Self::Local => "local",
             Self::Pins => "sidebar-pins",
+            Self::Settings => "settings",
+            Self::Transport => "transport",
         }
     }
 
@@ -53,6 +60,101 @@ impl NavEntry {
             Self::History => "nav-history",
             Self::Local => "nav-local",
             Self::Pins => "nav-pinned",
+            Self::Settings => "nav-settings",
+            Self::Transport => "nav-transport",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Home => "icons/house.svg",
+            Self::Search => "icons/search.svg",
+            Self::Library => "icons/library-big.svg",
+            Self::History => "icons/rotate-ccw-clock.svg",
+            Self::Local => "icons/file-music.svg",
+            Self::Pins => "icons/pin.svg",
+            Self::Settings => "icons/settings.svg",
+            Self::Transport => "icons/chevron-left.svg",
+        }
+    }
+
+    /// Where the entry leads, or `None` for the pins, which are a list rather than a page.
+    pub fn destination(self) -> Option<Destination> {
+        match self {
+            Self::Home => Some(Destination::Home),
+            Self::Search => Some(Destination::Search),
+            Self::Library => Some(Destination::Library(LibraryTab::Songs)),
+            Self::History => Some(Destination::History),
+            Self::Local => Some(Destination::Local(LibraryTab::Songs)),
+            Self::Pins | Self::Transport => None,
+            Self::Settings => Some(Destination::Settings(SettingsPage::General)),
+        }
+    }
+
+    /// Where the entry sits until the user moves it.
+    pub fn default_place(self) -> Place {
+        match self {
+            Self::Home | Self::Search => Place::Top,
+            Self::Settings => Place::TopRight,
+            Self::Transport => Place::TopLeft,
+            _ => Place::Sidebar,
+        }
+    }
+
+    /// The places the entry can go. The pins are a whole list, which only the sidebar holds.
+    pub fn places(self) -> &'static [Place] {
+        match self {
+            Self::Pins => &[Place::Sidebar, Place::Hidden],
+            Self::Transport => &[Place::TopLeft, Place::Top, Place::TopRight, Place::Hidden],
+            _ => &Place::ALL,
+        }
+    }
+}
+
+/// Where a navigation entry is shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    Sidebar,
+    /// The centered toolbar region. The legacy stored id `top` also maps here.
+    Top,
+    TopLeft,
+    TopRight,
+    Hidden,
+}
+
+impl Place {
+    pub const ALL: [Self; 5] = [
+        Self::TopLeft,
+        Self::Top,
+        Self::TopRight,
+        Self::Sidebar,
+        Self::Hidden,
+    ];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Sidebar => "sidebar",
+            Self::Top => "top-center",
+            Self::TopLeft => "top-left",
+            Self::TopRight => "top-right",
+            Self::Hidden => "hidden",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "top" => Some(Self::Top),
+            _ => Self::ALL.into_iter().find(|place| place.id() == id),
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Sidebar => "nav-place-sidebar",
+            Self::Top => "nav-place-top-center",
+            Self::TopLeft => "nav-place-top-left",
+            Self::TopRight => "nav-place-top-right",
+            Self::Hidden => "nav-place-hidden",
         }
     }
 }

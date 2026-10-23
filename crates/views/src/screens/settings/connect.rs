@@ -2,7 +2,7 @@ use gpui::prelude::*;
 use gpui::{AnyElement, App, Context, div};
 use i18n::t;
 use state::{ConnectName, Sonora};
-use ui::{MenuItem, Picker, Switch};
+use ui::{MenuItem, Picker};
 
 use super::{Group, SettingsView, Slot};
 
@@ -25,20 +25,6 @@ impl SettingsView {
             }
         }
         vec![Group::new("settings-group-spotify-connect", "icons/speaker.svg").rows(slots)]
-    }
-
-    pub(super) fn spotify_connect_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).spotify_connect();
-
-        self.row(
-            t!("settings-spotify-connect"),
-            Switch::new("spotify-connect", on)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_spotify_connect(!on, cx));
-                }))
-                .into_any_element(),
-        )
     }
 
     pub(super) fn spotify_connect_name_row(&self, cx: &mut Context<Self>) -> AnyElement {

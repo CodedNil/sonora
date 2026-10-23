@@ -7,6 +7,56 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- The right sidebar shows artwork or Spotify Canvas behind song details, lyrics, queue, album,
+  artist biography, credits and recommendations. Reorder, show or hide its sections by dragging
+  their headings or using the sidebar menu; expand lyrics or queue to fill the panel.
+  From the album appears above the queue by default.
+- Arrange navigation between the left sidebar and top bar from their right-click menus.
+  Library and Local Music open menus for all four pages when placed in the top bar.
+  Sidebars resize into a compact rail or close when dragged to the window edge.
+- An Up next preview appears in the left sidebar or floats above the player bar, with a
+  countdown during the final 20 seconds and a click to skip ahead.
+- Magnetic scrolling gently settles near section headings, table rows and card rows after
+  input slows, following the scroll direction without pulling back to a point you left or
+  stopping you reaching either end.
+
+### Changed
+
+- Home Quick picks and artist track lists use open, unframed sections. Artist view controls sit
+  beside the section they change, and list paging animates like card rails.
+- Main pages use consistent top alignment and the artist page’s wider side margins; Quick picks
+  starts directly at its heading. Top-bar navigation icons
+  share one size. Sidebars use consistent island spacing. The compact sidebar uses an
+  artwork-only playlist rail, while its expanded view keeps the usual artwork size.
+- The right sidebar crossfades artwork and Canvas, with tint layers matching its rounded outline,
+  blur confined to its own background and brighter secondary text. Queue history and upcoming
+  songs use consistent title colors, with the current song highlighted. Previous details and lyrics
+  stay visible until their replacements are ready, preserving scroll position; unchanged artists
+  and albums stay in place. The smaller lyrics preview
+  puts the current line higher and stays hidden when lyrics are unavailable.
+- Song, artist and collection menus share actions and styling across tables, cards and player
+  credits. Links to the current page are always omitted, replacing Adaptive context menus.
+- Search fields stay visible. Active filters use compact duration ranges and icons in a pill;
+  track lists also offer Collaborations and release-year ranges when dates are available.
+  Filters omit single-value ranges and single-track lists, and refresh their bounds when lists change.
+  Search, filters and view controls live in page headers, replacing the configurable Page Tools
+  group. Album, playlist, History and Library headers become a compact persistent row as you
+  scroll, with icon-only playback controls and table column headings underneath.
+- Choose table columns from their header menu and drag to reorder with a live preview.
+  Tables follow the rounded-corner preference and offer optional release year,
+  tags and popularity columns alongside play counts where available. A scrollbar marker shows
+  where the current song sits in the sorted and filtered table; click it to scroll to the song.
+  Scrollbars on overflowing tables fade smoothly and stay faintly visible when idle.
+  History remembers its layout and sorting, and
+  recent Date added values use relative times. Reordering controls share spring animations. Explicitly enabled columns take priority as
+  tables make room by narrowing columns before hiding lower-priority defaults.
+- Home, Search and Settings live in the top bar by default. Centred Search aligns with the
+  whole window when space permits; navigation groups meet without overlapping as sidebars widen.
+  The right sidebar reaches the top beside the navigation bar. A narrow search field uses a shorter hint. Typing opens results,
+  Down enters them, Ctrl+L, Ctrl+K or / focuses search, and F5 refreshes supported pages.
+
 ### Fixed
 
 - Playing YouTube Music videos and looking up lyrics no longer fills your YouTube search history
@@ -15,6 +65,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   audio, instead of freezing until Sonora is restarted.
 - An album or playlist page shows Pause only when you are playing from that album or playlist,
   not whenever the current song happens to be on it. Pressing Play there starts it.
+- Remote playback shows the correct song details and artwork throughout the right sidebar.
+- Remote device names and Play here sit beside the player bar’s device icon, replacing the
+  separate playback banner. Up next clears Jam notices; the compact sidebar fills its space.
+- Rearranging navigation opens preview space only where an item is moving.
+- Expanded lyrics and queue headers use balanced top and side padding. Queue Reset and Clear
+  controls explain their actions in tooltips.
+- Dragging or resizing table columns no longer changes sorting.
+- Artist biographies display punctuation correctly. Matching album copyright and recording
+  notices share one line, keeping both symbols.
 
 ## [0.44.1] - 2026-10-22
 

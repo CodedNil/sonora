@@ -16,6 +16,8 @@ use crate::shared::hero::{HeroMetaStrip, PageHero};
 use crate::shared::page;
 use crate::shared::tracks::{HISTORY_COLUMNS, TrackSource, Tracks, drop_picked};
 
+const SECTION: &str = "history";
+
 struct HistoryTracks(Entity<History>);
 
 impl Tracks for HistoryTracks {
@@ -62,7 +64,11 @@ impl HistoryView {
             .with_history(history.clone())
             .with_liked(Sonora::global(cx).library.clone())
             .table(cx.weak_entity());
-            TableState::new(TableDelegate::new(source, width, cx), cx).follow(scroll)
+            let settings = Sonora::global(cx).settings.read(cx);
+            let mut delegate = TableDelegate::new(source, width, cx);
+            delegate.set_layout(settings.table(SECTION), cx);
+            delegate.set_sorting(settings.sorting(SECTION).flatten(), cx);
+            TableState::new(delegate, cx).follow(scroll)
         });
 
         cx.observe(&history, |this, _, cx| {
@@ -89,7 +95,10 @@ impl HistoryView {
                 page::play_or_toggle(&this.table, &this.playback, *display, cx);
             }
             TableEvent::Removed => drop_picked(&this.table, cx),
-            _ => {}
+            _ => {
+                let settings = Sonora::global(cx).settings.clone();
+                page::store(&settings, &this.table, SECTION, SECTION, cx);
+            }
         })
         .detach();
 
@@ -120,7 +129,7 @@ impl HistoryView {
         }
     }
 
-    fn header(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn header(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
         let (count, duration) = {
             let history = self.history.read(cx);
             let tracks = history.tracks();
@@ -133,22 +142,28 @@ impl HistoryView {
         }
 
         PageHero::new("history-hero", t!("nav-history"))
+            .compact(compact)
             .fallback("icons/rotate-ccw-clock.svg")
             .accent()
             .eyebrow(t!("detail-playlist"))
             .meta(strip)
             .actions(
-                div().flex().items_center().child(
-                    Button::new("clear-history")
-                        .outline()
-                        .icon("icons/trash-2.svg")
-                        .label(t!("history-clear"))
-                        .disabled(count == 0)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.clearing = true;
-                            cx.notify();
-                        })),
-                ),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Button::new("clear-history")
+                            .outline()
+                            .icon("icons/trash-2.svg")
+                            .label(t!("history-clear"))
+                            .disabled(count == 0)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.clearing = true;
+                                cx.notify();
+                            })),
+                    )
+                    .child(self.toolbar.clone()),
             )
             .into_any_element()
     }
@@ -184,29 +199,32 @@ impl Render for HistoryView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.table.claim(cx);
         let inset = cx.theme().metrics.inset;
-        let width = cells::content_width(window, Pixels::ZERO, cx);
-        if (width - self.width).abs() >= gpui::px(0.5) {
-            self.width = width;
-            self.table.set_width(width, cx);
-        }
+        page::resize(&self.table, &mut self.width, inset, window, cx);
 
         let scroll = self.scrollbar.read(cx).scroll().clone();
-        let viewport = page::viewport(&scroll, inset, window);
+        let sticky = page::sticky(&self.scrollbar, cx);
+        let viewport = page::viewport(&scroll, sticky, window);
+        let anchors = self.scrollbar.read(cx).anchors();
+        self.table.set_anchors(anchors, cx);
         self.table
             .update(cx, |table, _| table.set_viewport(viewport));
 
         let note = self.note(cx);
         let page = Scroller::new("history-page", &self.scrollbar)
             .bottom_inset(crate::chrome::Chrome::bottom(cx))
-            .pt(inset)
+            .px(inset)
             .pb(inset)
-            .child(div().px(inset).child(self.header(cx)))
+            .child(div().child(self.header(false, cx)))
             .child(table(&self.table))
             .when_some(note, |this, note| this.child(vacant(note, cx)));
 
         div()
+            .relative()
             .size_full()
             .child(page)
+            .when(sticky > Pixels::ZERO, |this| {
+                this.child(page::header(self.header(true, cx), inset, cx))
+            })
             .when(self.clearing, |this| this.child(self.confirmation(cx)))
     }
 }

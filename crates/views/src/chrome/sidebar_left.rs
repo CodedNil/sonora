@@ -1,66 +1,28 @@
 use std::rc::Rc;
+use std::time::Instant;
 
 use ui::{
-    ActiveTheme as _, Card, Deck, DraggedPin, Edge, MenuItem, Panel, Picker, Pin, Pinnable as _,
-    Popup, SNUG, Scroller, Shield, Side, Spot, Tabs, Text, Vacancy, drop_gap, drop_marker,
+    ActiveTheme as _, Button, Card, Deck, DraggedPin, Edge, MenuItem, Panel, Picker, Pin,
+    Pinnable as _, SNUG, Scroller, Side, Spot, Tabs, Text, Vacancy, drop_gap, drop_marker,
 };
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, DragMoveEvent, ElementId, Entity, MouseButton, MouseDownEvent,
-    Pixels, Point, Render, ScrollHandle, svg,
+    AnyElement, App, Context, DragMoveEvent, ElementId, Entity, Hsla, MouseButton, MouseDownEvent,
+    MouseUpEvent, Pixels, Render, ScrollHandle, SharedString, SpringConfig, SpringState, svg,
 };
 use gpui::{Window, div, px};
-use router::{
-    Destination, LibraryTab, NavEntry, Navigation, NavigationEvent, SettingsPage, navigate,
-    open_settings,
-};
+use router::{Destination, NavEntry, Navigation, Place, navigate, open_settings};
 use state::{AppSettings, Library, Origin, PinSort, Pins, Playback, Session, Shelf, Sonora};
 
-use crate::shared::menus::{ItemMenu, item_menu};
+use super::LIBRARY_TABS;
+use super::UpNext;
+use super::sidebar_motion::{FLING, HELD, KNOCK, POP, POP_SPRING, rubber, settle};
+use crate::shared::menus::{CardMenu, Item};
 use crate::shared::nav::nav_row;
 
 /// The one drag list the pinned section keeps, so a pin dropped anywhere in it lands in order.
 const PINS: &str = "sidebar-pins";
-
-/// The sidebar's navigation rows in order: the entry that can hide each, its icon and where it goes.
-/// Settings has no entry, so it is always shown, and it opens on the settings page last visited
-/// rather than on the one named here.
-pub(crate) const NAV: [(Option<NavEntry>, &str, Destination); 6] = [
-    (Some(NavEntry::Home), "icons/house.svg", Destination::Home),
-    (
-        Some(NavEntry::Search),
-        "icons/search.svg",
-        Destination::Search,
-    ),
-    (
-        Some(NavEntry::Library),
-        "icons/library-big.svg",
-        Destination::Library(LibraryTab::Songs),
-    ),
-    (
-        Some(NavEntry::Local),
-        "icons/file-music.svg",
-        Destination::Local(LibraryTab::Songs),
-    ),
-    (
-        Some(NavEntry::History),
-        "icons/rotate-ccw-clock.svg",
-        Destination::History,
-    ),
-    (
-        None,
-        "icons/settings.svg",
-        Destination::Settings(SettingsPage::General),
-    ),
-];
-
-const LIBRARY_TABS: [(&str, LibraryTab); 4] = [
-    ("nav-songs", LibraryTab::Songs),
-    ("nav-albums", LibraryTab::Albums),
-    ("nav-artists", LibraryTab::Artists),
-    ("nav-playlists", LibraryTab::Playlists),
-];
 
 const MIN_WIDTH: Pixels = px(160.);
 const MAX_WIDTH: Pixels = px(400.);
@@ -68,8 +30,13 @@ const HINT_HEIGHT: Pixels = px(42.);
 const VACANCY_HEIGHT: Pixels = px(88.);
 /// How far the pin mark on a library row falls back from the accent.
 const PIN_MARK: f32 = 0.7;
-/// The space between two pinned entries, the same as the `gap_1` between the rows above them.
-const ROW_GAP: Pixels = px(4.);
+/// How much larger a cover is on the rail than in the full list.
+const RAIL_ART: f32 = 1.5;
+/// The fraction of a compact pin slot occupied by playlist artwork.
+const COMPACT_PLAYLIST_ART: f32 = 0.8;
+/// How tall a navigation entry on the rail is, in field heights: roomier than a row in the
+/// full list, but well short of the square slot a pin takes.
+const RAIL_ROW: f32 = 1.2;
 
 /// The two navigation entries that expand into tabs rather than navigate.
 #[derive(Clone, Copy, PartialEq)]
@@ -88,13 +55,46 @@ impl Group {
     }
 }
 
+/// A drag of the edge in progress.
+#[derive(Clone, Copy)]
+struct Hold {
+    /// What a fold partway through the drag added to the width the pointer asks for, so the
+    /// drag carries on from the folded edge rather than from where it started.
+    shift: Pixels,
+    /// Whether the pull has gone past the limit and not come back.
+    strained: bool,
+}
+
 pub(crate) struct SidebarLeft {
+    up_next: Entity<UpNext>,
     settings: Entity<AppSettings>,
     session: Entity<Session>,
     trail: Entity<Navigation>,
     at: Destination,
     width: Pixels,
     open: bool,
+    /// A close preview remains reversible until the resize drag is released.
+    closing: bool,
+    /// Folded down to a rail of icons rather than the full list, by choice.
+    compact: bool,
+    /// Folded down to the rail for now, because the window has no room for the full list but
+    /// does for the rail. This is never saved, so a wider window brings the full list back.
+    squeezed: bool,
+    /// Whether a frame has been drawn yet, so the first one places the edge without sliding it.
+    drawn: bool,
+    /// How far the edge is drawn from where it rests, sprung so a pull past a limit gives and
+    /// wiggles, and a fold bounces into place.
+    give: SpringState,
+    /// Where the give is heading: the stretch under the pointer while held, nothing once let go.
+    pull: Pixels,
+    spring: SpringConfig,
+    hold: Option<Hold>,
+    ticked: Instant,
+    /// The width drawn this frame, give included.
+    shown: Pixels,
+    /// The side of one square slot on the rail, a cover and the inset round it, which every
+    /// icon on the rail fills too.
+    slot: Pixels,
     cramped: bool,
     forced: Option<bool>,
     library_open: bool,
@@ -102,17 +102,17 @@ pub(crate) struct SidebarLeft {
     pinned_open: bool,
     dropping: bool,
     drop_gap: Option<usize>,
+    pin_drag: Option<usize>,
+    pin_motion: ui::ReorderMotion,
     playback: Entity<Playback>,
     pins: Entity<Pins>,
     library: Entity<Library>,
-    track_menu: ItemMenu,
-    context_menu: Option<(Pin, Point<Pixels>)>,
     scrollbar: Entity<ui::Scrollbar>,
     popovers: ui::Popovers,
 }
 
 impl SidebarLeft {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(up_next: Entity<UpNext>, cx: &mut Context<Self>) -> Self {
         let settings = Sonora::global(cx).settings.clone();
         let session = Sonora::global(cx).session.clone();
         let playback = Sonora::global(cx).playback.clone();
@@ -121,36 +121,44 @@ impl SidebarLeft {
         cx.observe(&library, |_, _, cx| cx.notify()).detach();
         cx.observe(&pins, |_, _, cx| cx.notify()).detach();
         cx.observe(&playback, |_, _, cx| cx.notify()).detach();
+        cx.observe(&up_next, |_, _, cx| cx.notify()).detach();
         let chrome = super::Chrome::entity(cx);
         cx.observe(&chrome, |_, _, cx| cx.notify()).detach();
         let me = cx.entity_id();
-        let playlist_scrollbar = cx.new(|_| ui::Scrollbar::inset().watching(me));
         let scrollbar = cx.new(|_| ui::Scrollbar::new(ScrollHandle::new()).watching(me));
         let width = sidebar_width(settings.read(cx));
         let open = settings.read(cx).sidebar_open();
+        let compact = settings.read(cx).sidebar_compact();
         let pinned_open = settings.read(cx).sidebar_pinned_open();
         let trail = router::trail(cx);
 
         cx.observe(&session, |_, _, cx| cx.notify()).detach();
         cx.observe(&settings, |_, _, cx| cx.notify()).detach();
         cx.observe(&trail, |_, _, cx| cx.notify()).detach();
-        cx.subscribe(&trail, |this, _, _: &NavigationEvent, cx| {
-            this.dismiss(cx);
-            cx.notify();
-        })
-        .detach();
 
         let at = trail.read(cx).current();
         let library_open = matches!(at, Destination::Library(_));
         let local_open = matches!(at, Destination::Local(_));
 
         Self {
+            up_next,
             settings,
             session,
             trail,
             at,
             width,
             open,
+            closing: false,
+            compact,
+            squeezed: false,
+            drawn: false,
+            give: SpringState::default(),
+            pull: Pixels::ZERO,
+            spring: HELD,
+            hold: None,
+            ticked: Instant::now(),
+            shown: width,
+            slot: Pixels::ZERO,
             forced: None,
             cramped: false,
             library_open,
@@ -158,11 +166,11 @@ impl SidebarLeft {
             pinned_open,
             dropping: false,
             drop_gap: None,
+            pin_drag: None,
+            pin_motion: ui::ReorderMotion::default(),
             playback,
             pins,
             library,
-            track_menu: ItemMenu::new(playlist_scrollbar, cx),
-            context_menu: None,
             scrollbar,
             popovers: ui::Popovers::default(),
         }
@@ -178,53 +186,27 @@ impl SidebarLeft {
         self.local_open |= local;
     }
 
-    fn dismiss_menu(&mut self, cx: &mut Context<Self>) {
-        self.track_menu.reset(cx);
-        self.context_menu = None;
-        cx.notify();
-    }
-
-    fn menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let (pin, position) = self.context_menu.clone()?;
-        let menu = item_menu(&pin, &self.track_menu, self.playback.clone(), cx);
-
-        Some(
-            Popup::new(position, menu)
-                .on_close(cx.listener(|this, _, _, cx| this.dismiss_menu(cx))),
-        )
-    }
-
+    /// Whether the sidebar is shown. A window too narrow even for the rail hides it until it is
+    /// toggled open for now, and then it shows as the rail beside the page, never over it.
     pub fn is_open(&self) -> bool {
         self.forced.unwrap_or(self.open && !self.cramped)
     }
 
-    pub fn overlays(&self) -> bool {
-        self.cramped && self.is_open()
-    }
-
-    pub fn overlay_width(&self) -> Pixels {
-        match self.overlays() {
-            true => self.width,
-            false => Pixels::ZERO,
-        }
-    }
-
-    fn dismiss(&mut self, cx: &mut Context<Self>) {
-        if !self.overlays() {
-            return;
-        }
-        self.forced = Some(false);
-        cx.notify();
-    }
-
     pub fn occupied_width(&self) -> Pixels {
-        match self.is_open() && !self.overlays() {
-            true => self.width,
-            false => Pixels::ZERO,
+        match self.cramped && !self.is_open() {
+            true => Pixels::ZERO,
+            false => self.shown,
         }
+    }
+
+    /// Whether the normal-width sidebar holds the next-track preview above its bottom inset.
+    pub(crate) fn embeds_up_next(&self) -> bool {
+        self.is_open() && !self.folded()
     }
 
     pub fn toggle(&mut self, cx: &mut Context<Self>) {
+        let drawn = self.shown;
+        self.closing = false;
         match self.cramped {
             true => self.forced = Some(!self.is_open()),
             false => {
@@ -232,51 +214,246 @@ impl SidebarLeft {
                 self.persist(cx);
             }
         }
+        self.snap(drawn, cx);
         cx.notify();
     }
 
-    fn ceiling(&self, window: &Window, cx: &Context<Self>) -> Pixels {
-        let reserved = match self.overlays() {
-            true => Pixels::ZERO,
-            false => SNUG + super::Chrome::reserved_right(cx),
+    /// Starts an open or close snap from the edge currently on screen.
+    fn snap(&mut self, drawn: Pixels, cx: &App) {
+        self.give = SpringState {
+            position: (drawn - self.rest(cx)).as_f32(),
+            velocity: match self.is_open() && !self.closing {
+                true => FLING,
+                false => -FLING,
+            },
         };
+        self.pull = Pixels::ZERO;
+        self.spring = POP_SPRING;
+    }
 
+    fn ceiling(&self, window: &Window, cx: &Context<Self>) -> Pixels {
+        let reserved = SNUG + super::Chrome::reserved_right(cx);
         super::cap(MIN_WIDTH, MAX_WIDTH, reserved, window)
     }
 
-    /// Flips into or out of the cramped state from the room the window leaves
-    /// once `right` pixels are held back for the right sidebar. This runs inside
-    /// a render, where a notify schedules nothing, so a flip asks for a full
-    /// window refresh instead. That effect lands once the draw is over.
-    pub fn adapt(&mut self, right: Pixels, window: &Window, cx: &mut App) {
+    /// Fits the sidebar to the room the window leaves once `right` pixels are
+    /// held back for the right sidebar: the full list where it fits, the rail
+    /// where only that fits, and nothing where not even the rail does. It also
+    /// steps the edge's spring to the width this frame draws. This runs inside a
+    /// render, where a notify schedules nothing, so a flip asks for a full window
+    /// refresh instead. That effect lands once the draw is over.
+    pub fn adapt(&mut self, right: Pixels, window: &mut Window, cx: &mut Context<Self>) {
         self.width = ui::snapped(self.width, window);
+        let metrics = cx.theme().metrics;
+        self.slot = ui::snapped((metrics.list_row - metrics.pad * 2.) * RAIL_ART, window)
+            + metrics.pad * 2.;
+        if self.hold.is_some() && !cx.has_active_drag() {
+            if self.closing {
+                self.closing = false;
+                self.snap(self.shown, cx);
+            }
+            self.release(cx);
+        }
 
-        let space_left = window.viewport_size().width - self.width - right;
-        let cramped = space_left < SNUG;
+        let room = window.viewport_size().width - right;
+        let cramped = room - self.rail(cx) < SNUG;
+        let squeezed = !self.compact && !cramped && room - self.width < SNUG;
+        if squeezed != self.squeezed {
+            let before = self.rest(cx);
+            self.squeezed = squeezed;
+            // Slide from the old width to the new one rather than jump, unless the sidebar
+            // is not on screen to see it.
+            if self.drawn && !cramped && !self.cramped {
+                let after = self.rest(cx);
+                self.give.position += (before - after).as_f32();
+                self.spring = POP_SPRING;
+            }
+            cx.refresh_windows();
+        }
         if cramped != self.cramped {
             self.cramped = cramped;
             self.forced = None;
             cx.refresh_windows();
         }
+
+        let rest = self.rest(cx);
+        let give = settle(
+            &mut self.give,
+            &mut self.ticked,
+            self.pull,
+            self.spring,
+            window,
+            cx,
+        );
+        let minimum = match self.closing {
+            true => cx.theme().metrics.pad * 2.,
+            false => Pixels::ZERO,
+        };
+        self.shown = ui::snapped((rest + give).max(minimum), window);
+        self.drawn = true;
+    }
+
+    /// Whether the sidebar shows as the rail, by choice or for lack of room.
+    fn folded(&self) -> bool {
+        self.compact || self.forced_fold()
+    }
+
+    /// Whether the window, not the user, keeps the sidebar on the rail.
+    fn forced_fold(&self) -> bool {
+        self.squeezed || self.cramped
+    }
+
+    /// The width of the rail: one slot, the padding either side of it inside the island, and
+    /// the island's inset either side of that.
+    fn rail(&self, cx: &App) -> Pixels {
+        self.slot + cx.theme().metrics.pad * 4.
+    }
+
+    /// Where the edge sits when nothing pulls on it.
+    fn rest(&self, cx: &App) -> Pixels {
+        if !self.is_open() || self.closing {
+            return Pixels::ZERO;
+        }
+        match self.folded() {
+            true => self.rail(cx),
+            false => self.width,
+        }
+    }
+
+    /// Follows the edge under the pointer. In full the edge resizes freely above the minimum
+    /// and gives grudgingly below it; on the rail it only gives. A pull `POP` past either limit
+    /// folds or unfolds the sidebar, and the drag carries on from the new edge. A rail the
+    /// window forced only gives, since the full list has no room to unfold into.
+    fn stretch(&mut self, asked: Pixels, window: &Window, cx: &mut Context<Self>) {
+        if !self.is_open() {
+            return;
+        }
+        let closing = asked <= cx.theme().metrics.pad * 2.;
+        if closing != self.closing {
+            let drawn = self.shown;
+            self.closing = closing;
+            self.snap(drawn, cx);
+        }
+        if closing {
+            self.hold.get_or_insert(Hold {
+                shift: Pixels::ZERO,
+                strained: false,
+            });
+            cx.notify();
+            return;
+        }
+        let mut hold = self.hold.unwrap_or(Hold {
+            shift: Pixels::ZERO,
+            strained: false,
+        });
+        let asked = asked + hold.shift;
+        let rest = self.rest(cx);
+        let (over, inward) = match self.folded() {
+            false => (MIN_WIDTH - asked, -1.),
+            true => match asked < rest {
+                true => (rest - asked, -1.),
+                false => (asked - rest, 1.),
+            },
+        };
+
+        if over >= POP && !self.forced_fold() && (!self.folded() || inward > 0.) {
+            self.fold(!self.compact, asked, &mut hold, cx);
+            self.hold = Some(hold);
+            cx.notify();
+            return;
+        }
+
+        if !self.folded() {
+            let width = ui::snapped(asked.clamp(MIN_WIDTH, self.ceiling(window, cx)), window);
+            if width != self.width {
+                self.width = width;
+                self.persist(cx);
+            }
+        }
+
+        let over = over.max(Pixels::ZERO);
+        let strained = over > Pixels::ZERO;
+        if strained && !hold.strained {
+            self.spring = HELD;
+            self.give.velocity += KNOCK * inward;
+        }
+        hold.strained = strained;
+        self.pull = rubber(over) * inward;
+        self.hold = Some(hold);
+        cx.notify();
+    }
+
+    /// Folds the sidebar down to its rail or out to its minimum, keeping the edge where it was
+    /// drawn and flinging it towards its new place so it overshoots and settles there.
+    fn fold(&mut self, compact: bool, asked: Pixels, hold: &mut Hold, cx: &mut Context<Self>) {
+        let drawn = self.rest(cx) + px(self.give.position);
+        self.compact = compact;
+        if !compact {
+            self.width = MIN_WIDTH;
+        }
+        let rest = self.rest(cx);
+        hold.shift += rest - asked;
+        hold.strained = false;
+        self.give = SpringState {
+            position: (drawn - rest).as_f32(),
+            velocity: match compact {
+                true => -FLING,
+                false => FLING,
+            },
+        };
+        self.pull = Pixels::ZERO;
+        self.spring = POP_SPRING;
+        self.settings
+            .update(cx, |settings, cx| settings.set_sidebar_compact(compact, cx));
+        self.persist(cx);
+    }
+
+    /// Lets go of the edge, which springs back from any give to where it rests.
+    fn release(&mut self, cx: &mut Context<Self>) {
+        if self.closing {
+            self.closing = false;
+            self.open = false;
+            self.forced = self.forced.map(|_| false);
+            self.hold = None;
+            self.snap(self.shown, cx);
+            self.persist(cx);
+            cx.notify();
+            return;
+        }
+        if self.hold.take().is_some_and(|hold| hold.strained) {
+            self.spring = HELD;
+        }
+        self.pull = Pixels::ZERO;
+        cx.notify();
     }
 
     /// The navigation entries, each followed by its tabs while its group is open.
-    fn navigation(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn navigation(&self, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         // A shelf with rows on it belongs in the sidebar even before the session has restored,
         // since a snapshot fills it while the provider is still answering.
         let stocked = self.session.read(cx).authenticated()
             || self.library.read(cx).stocked(Shelf::Streaming);
         let mut rows = Vec::new();
-        for (index, (entry, _, destination)) in NAV.iter().enumerate() {
-            if entry.is_some_and(|entry| !self.settings.read(cx).nav_shown(entry.id())) {
+        for entry in super::ordered_navigation(cx) {
+            if super::place(entry, cx) != Place::Sidebar {
                 continue;
             }
-            let group = Group::of(destination);
+            if entry == NavEntry::Pins {
+                rows.extend(self.pins(window, cx));
+                continue;
+            }
+            let Some(destination) = entry.destination() else {
+                continue;
+            };
+            let group = Group::of(&destination);
             if group == Some(Group::Library) && !stocked {
                 continue;
             }
-            rows.push(self.nav(index, cx));
-            if let Some(group) = group.filter(|group| self.opened(*group)) {
+            match group.filter(|_| self.folded()) {
+                Some(group) => rows.push(self.compact_tabs(group, cx)),
+                None => rows.push(self.nav(entry, cx)),
+            }
+            if let Some(group) = group.filter(|group| !self.folded() && self.opened(*group)) {
                 rows.push(self.tabs(group, cx));
             }
         }
@@ -286,12 +463,15 @@ impl SidebarLeft {
     /// The pinned section: its header, and its entries once it is expanded. The entries are a
     /// `Deck`, so only the ones on screen are ever built.
     fn pins(&self, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        if !self.settings.read(cx).nav_shown(NavEntry::Pins.id()) {
+        if super::place(NavEntry::Pins, cx) != Place::Sidebar {
             return Vec::new();
         }
 
-        let mut rows = vec![self.pins_header(cx)];
-        if !self.pinned_open {
+        let mut rows = match self.folded() {
+            true => Vec::new(),
+            false => vec![self.pins_header(cx)],
+        };
+        if !self.pinned_open && !self.folded() {
             return rows;
         }
 
@@ -302,6 +482,9 @@ impl SidebarLeft {
             false => Rc::new(Vec::new()),
         };
         if pinned.is_empty() && rest.is_empty() {
+            if self.folded() {
+                return rows;
+            }
             rows.push(match self.dropping {
                 true => hint(cx),
                 false => vacancy(),
@@ -311,18 +494,59 @@ impl SidebarLeft {
 
         let held = pinned.len();
         let count = held + rest.len();
-        let row = ui::snapped(cx.theme().metrics.list_row, window);
+        let gap = cx.theme().metrics.pad;
+        let heights = pinned
+            .iter()
+            .chain(rest.iter())
+            .map(|pin| match self.folded() {
+                true => self.pin_art(pin),
+                false => ui::snapped(cx.theme().metrics.list_row, window),
+            })
+            .collect::<Vec<_>>();
+        let mut order = (0..count).collect::<Vec<_>>();
+        order.sort_by_key(|&index| match index < held {
+            true => ui::reorder_index(index, self.pin_drag, self.drop_gap),
+            false => index,
+        });
+        let mut targets = vec![Pixels::ZERO; count];
+        let mut cursor = Pixels::ZERO;
+        for index in order {
+            targets[index] = cursor;
+            cursor += heights[index] + gap;
+        }
+        let mut cursor = Pixels::ZERO;
+        let positions = heights
+            .iter()
+            .map(|height| {
+                let position = cursor;
+                cursor += *height + gap;
+                position
+            })
+            .collect::<Vec<_>>();
+        self.pin_motion.animate(
+            pinned
+                .iter()
+                .chain(rest.iter())
+                .enumerate()
+                .map(|(index, pin)| {
+                    let key = SharedString::from(format!("{}:{}", pin.kind.key(), pin.id));
+                    (key, targets[index], false)
+                }),
+            window,
+            cx,
+        );
         rows.push(
             Deck::new("sidebar-pins-deck")
-                .rows((0..count).map(|_| row))
-                .gap(ROW_GAP)
+                .overflow_rows()
+                .rows(heights)
+                .gap(gap)
                 .draw(cx.processor(move |this, index: usize, _, cx| {
                     let pin = match index < held {
                         true => pinned.get(index),
                         false => rest.get(index - held),
                     };
                     match pin {
-                        Some(pin) => this.pin_row(index, pin.clone(), held, cx),
+                        Some(pin) => this.pin_row(index, pin.clone(), held, positions[index], cx),
                         None => div().into_any_element(),
                     }
                 }))
@@ -461,9 +685,25 @@ impl SidebarLeft {
         .into_any_element()
     }
 
+    /// The compact artwork height also determines its row height, leaving one gap between covers.
+    fn pin_art(&self, pin: &Pin) -> Pixels {
+        match pin.kind {
+            ui::PinKind::Playlist => self.slot * COMPACT_PLAYLIST_ART,
+            _ => self.slot,
+        }
+    }
+
     /// One entry. The first `count` of them are the pins, which carry the drop slots. The rest
     /// is the library underneath, which can be dragged up into the pins but holds no slot.
-    fn pin_row(&self, index: usize, pin: Pin, count: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn pin_row(
+        &self,
+        index: usize,
+        pin: Pin,
+        count: usize,
+        position: Pixels,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let art = self.pin_art(&pin);
         let theme = *cx.theme();
         let accent = theme.sidebar_accent;
         let destination = Destination::from(&pin);
@@ -485,33 +725,58 @@ impl SidebarLeft {
             .cover(pin.cover.clone())
             .fallback(pin.kind.icon())
             .when(pin.kind.round(), Card::circle)
-            .play(
-                playing,
-                cx.listener(move |this, _, _, cx| {
-                    this.playback
-                        .update(cx, |playback, cx| playback.toggle_origin(&origin, cx));
-                }),
-            )
+            // On the rail the artwork is all there is to click, so it opens the pin rather than
+            // carrying a play button over the whole of it.
+            .when(!self.folded(), |card| {
+                card.play(
+                    playing,
+                    cx.listener(move |this, _, _, cx| {
+                        this.playback
+                            .update(cx, |playback, cx| playback.toggle_origin(&origin, cx));
+                    }),
+                )
+            })
             .tint(match active {
                 true => theme.foreground,
                 false => theme.muted_foreground,
             })
             .meta(caption(pin.kind.key(), marked, cx))
-            .when(active, |card| card.bg(accent))
-            .hover(move |style| style.bg(accent))
+            .when(self.folded(), |card| {
+                card.bare_art().flat().art(art).flex_none().w_full().h(art)
+            })
+            .when(!self.folded(), |card| {
+                card.when(active, |card| card.bg(accent))
+                    .hover(move |style| style.bg(accent))
+            })
             .press(move |_, _, cx| navigate(destination.clone(), cx))
             .menu(cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                this.track_menu.reset(cx);
-                this.context_menu = Some((opened.clone(), event.position));
-                cx.notify();
+                CardMenu::open(
+                    Item::Pin(opened.clone()),
+                    this.playback.clone(),
+                    event.position,
+                    cx,
+                );
             }))
             .when_else(
                 held,
                 |card| card.pin_from(pin.clone(), Spot::new(PINS, index)),
                 |card| card.pin(pin.clone()),
-            )
+            );
+
+        let key = format!("{}:{}", pin.kind.key(), pin.id);
+        let offset = self.pin_motion.position(&key, position) - position;
+        div()
+            .id(("pinned-slot", index))
+            .relative()
+            .flex_none()
+            .w_full()
+            .min_w_0()
+            .child(card.relative().top(offset))
             .on_drag_move(
                 cx.listener(move |this, event: &DragMoveEvent<DraggedPin>, _, cx| {
+                    if !event.bounds.contains(&event.event.position) {
+                        return;
+                    }
                     let Some(gap) = drop_gap(event.bounds, event.event.position, index) else {
                         return;
                     };
@@ -524,26 +789,21 @@ impl SidebarLeft {
                         cx.notify();
                     }
                 }),
-            );
-
-        div()
-            .id(("pinned-slot", index))
-            .relative()
-            .flex_none()
-            .w_full()
-            .min_w_0()
-            .child(card)
+            )
             .when_some(edge, |this, edge| this.child(drop_marker(edge, cx)))
             .into_any_element()
     }
 
     /// One navigation entry. An expandable one flips its group open and shut, any other one
     /// navigates and is lit while its section is current.
-    fn nav(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn nav(&self, entry: NavEntry, cx: &mut Context<Self>) -> AnyElement {
         let theme = *cx.theme();
         let accent = theme.sidebar_accent;
-        let (entry, icon, destination) = NAV[index].clone();
-        let key = entry.map_or("nav-settings", NavEntry::key);
+        let index = entry as usize;
+        let (key, icon) = (entry.key(), entry.icon());
+        let Some(destination) = entry.destination() else {
+            return div().into_any_element();
+        };
         let current = self.trail.read(cx).current();
         let group = Group::of(&destination);
         let active = match group {
@@ -554,6 +814,15 @@ impl SidebarLeft {
             true => theme.foreground,
             false => theme.muted_foreground,
         };
+        if self.folded() {
+            return rail_row(index, key, tint, accent)
+                .icon(icon)
+                .icon_size(theme.text(Text::Title))
+                .h((theme.metrics.field * RAIL_ROW).round())
+                .when(active, |button| button.bg(accent))
+                .on_click(move |_, _, cx| navigate(destination.clone(), cx))
+                .into_any_element();
+        }
         let row = nav_row(index, key, tint, accent).icon(icon);
 
         match group {
@@ -571,6 +840,95 @@ impl SidebarLeft {
                 }),
         }
         .into_any_element()
+    }
+
+    /// The compact library's four destinations, always reachable without expanding a group.
+    fn compact_tabs(&self, group: Group, cx: &mut Context<Self>) -> AnyElement {
+        let theme = *cx.theme();
+        let current = self.trail.read(cx).current();
+        let stocked = self.session.read(cx).authenticated()
+            || self.library.read(cx).stocked(Shelf::Streaming);
+        let show_group_labels = stocked
+            && super::place(NavEntry::Library, cx) == Place::Sidebar
+            && super::place(NavEntry::Local, cx) == Place::Sidebar;
+        let icons = [
+            "icons/music.svg",
+            "icons/disc-3.svg",
+            "icons/user-round.svg",
+            "icons/list-music.svg",
+        ];
+        let labels = match group {
+            Group::Library => [
+                "nav-library-songs",
+                "nav-library-albums",
+                "nav-library-artists",
+                "nav-library-playlists",
+            ],
+            Group::Local => [
+                "nav-local-songs",
+                "nav-local-albums",
+                "nav-local-artists",
+                "nav-local-playlists",
+            ],
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .when(show_group_labels, |this| {
+                this.child(
+                    ui::eyebrow(
+                        i18n::lookup(
+                            match group {
+                                Group::Library => "nav-compact-library",
+                                Group::Local => "nav-compact-local",
+                            },
+                            None,
+                        ),
+                        cx,
+                    )
+                    .w_full()
+                    .text_center(),
+                )
+            })
+            .children(LIBRARY_TABS.chunks(2).enumerate().map(|(row, tabs)| {
+                div()
+                    .flex()
+                    .gap_1()
+                    .children(tabs.iter().enumerate().map(|(column, &(_, tab))| {
+                        let index = row * 2 + column;
+                        let destination = match group {
+                            Group::Library => Destination::Library(tab),
+                            Group::Local => Destination::Local(tab),
+                        };
+                        let active = current == destination;
+                        let tint = match active {
+                            true => theme.foreground,
+                            false => theme.muted_foreground,
+                        };
+                        rail_row(
+                            (
+                                match group {
+                                    Group::Library => "compact-library",
+                                    Group::Local => "compact-local",
+                                },
+                                index,
+                            ),
+                            labels[index],
+                            tint,
+                            theme.sidebar_accent,
+                        )
+                        .icon(icons[index])
+                        .flex_1()
+                        .min_w_0()
+                        .w_auto()
+                        .px_0()
+                        .h(theme.metrics.control)
+                        .when(active, |button| button.bg(theme.sidebar_accent))
+                        .on_click(move |_, _, cx| navigate(destination.clone(), cx))
+                    }))
+            }))
+            .into_any_element()
     }
 
     /// The tabs under an expanded group.
@@ -591,19 +949,22 @@ impl SidebarLeft {
                 .on_click(move |_, _, cx| navigate(destination.clone(), cx))
         };
 
-        match group {
-            Group::Library => Tabs::new().items(
+        Tabs::new()
+            .items(
                 LIBRARY_TABS
                     .into_iter()
-                    .map(|(name, tab_id)| tab(name.into(), name, Destination::Library(tab_id))),
-            ),
-            Group::Local => Tabs::new().items(LIBRARY_TABS.into_iter().enumerate().map(
-                |(slot, (name, tab_id))| {
-                    tab(("local-tab", slot).into(), name, Destination::Local(tab_id))
-                },
-            )),
-        }
-        .into_any_element()
+                    .enumerate()
+                    .map(|(slot, (name, tab_id))| {
+                        let (id, destination) = match group {
+                            Group::Library => (name.into(), Destination::Library(tab_id)),
+                            Group::Local => {
+                                (("local-tab", slot).into(), Destination::Local(tab_id))
+                            }
+                        };
+                        tab(id, name, destination)
+                    }),
+            )
+            .into_any_element()
     }
 
     fn persist(&self, cx: &mut Context<Self>) {
@@ -617,46 +978,76 @@ impl SidebarLeft {
 impl Render for SidebarLeft {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *cx.theme();
-        let sidebar_bg = theme.sidebar;
-        let sidebar_border = theme.sidebar_border;
 
         let current = self.trail.read(cx).current();
         self.follow(&current);
         self.adapt(super::Chrome::reserved_right(cx), window, cx);
+        let pad = theme.metrics.pad;
+        let up_next = match self.embeds_up_next() {
+            true => self.up_next.read(cx).inline(window, cx),
+            false => None,
+        };
 
         if !cx.has_active_drag() {
             self.dropping = false;
             self.drop_gap = None;
+            self.pin_drag = None;
         }
 
-        let mut rows = self.navigation(cx);
-        rows.extend(self.pins(window, cx));
+        let rows = self.navigation(window, cx);
 
-        let overlaid = self.overlays();
-        let panel = Panel::new("sidebar-left", Side::Left, self.width)
-            .limits(MIN_WIDTH, MAX_WIDTH)
-            .reach(self.ceiling(window, cx))
+        // The panel is given no limits, so its grip reports the width the pointer asks for and
+        // `stretch` decides how much of it the edge follows.
+        Panel::new("sidebar-left", Side::Left, self.shown)
+            .content_width(match self.folded() {
+                true => self.rail(cx),
+                false => self.width,
+            })
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.release(cx)),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.release(cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|_, event: &MouseDownEvent, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    CardMenu::dismiss(cx);
+                    super::LayoutEditor::open(event.position, cx);
+                    cx.notify();
+                }),
+            )
             .clears_scrollbar()
-            .grip_above(super::Chrome::bottom(cx))
-            .on_resize(cx.listener(|this, width: &Pixels, _, cx| {
-                this.width = *width;
-                this.persist(cx);
-                cx.notify();
-            }))
-            .on_drag_move(cx.listener(|this, _: &DragMoveEvent<DraggedPin>, _, cx| {
-                if this.dropping {
-                    return;
-                }
-                this.dropping = true;
-                // A drag has nowhere to land while the section is closed, so open it.
-                if !this.pinned_open {
-                    this.pinned_open = true;
-                    this.settings.update(cx, |settings, cx| {
-                        settings.set_sidebar_pinned_open(true, cx)
-                    });
-                }
-                cx.notify();
-            }))
+            .when(self.is_open(), |panel| {
+                panel.on_resize(cx.listener(|this, width: &Pixels, window, cx| {
+                    this.stretch(*width, window, cx);
+                }))
+            })
+            .on_drag_move(
+                cx.listener(|this, event: &DragMoveEvent<DraggedPin>, _, cx| {
+                    let from = event.drag(cx).spot(PINS).map(|spot| spot.index);
+                    if this.pin_drag != from {
+                        this.pin_drag = from;
+                        cx.notify();
+                    }
+                    if this.dropping {
+                        return;
+                    }
+                    this.dropping = true;
+                    // A drag has nowhere to land while the section is closed, so open it.
+                    if !this.pinned_open {
+                        this.pinned_open = true;
+                        this.settings.update(cx, |settings, cx| {
+                            settings.set_sidebar_pinned_open(true, cx)
+                        });
+                    }
+                    cx.notify();
+                }),
+            )
             .on_drop(cx.listener(|this, dragged: &DraggedPin, _, cx| {
                 let gap = this.drop_gap.take();
                 this.dropping = false;
@@ -664,69 +1055,44 @@ impl Render for SidebarLeft {
                 this.pins.update(cx, |pins, cx| pins.place(pin, gap, cx));
                 cx.notify();
             }))
-            .when(!self.is_open(), |this| this.hidden())
-            .when(!theme.transparent, |this| this.bg(sidebar_bg))
-            .border_color(sidebar_border)
-            .when(overlaid, |this| {
-                this.occlude().absolute().left_0().top_0().bottom_0()
-            })
+            .when(self.shown <= Pixels::ZERO, |this| this.hidden())
+            .overflow_hidden()
+            .island()
             .child(
                 div()
                     .relative()
+                    .flex()
+                    .flex_col()
                     .flex_1()
                     .min_h_0()
+                    // GPUI clips to rectangles, so keep the scroll viewport inside the
+                    // island’s rounded ends even when its first row has scrolled away.
+                    .pt(pad)
+                    .overflow_hidden()
                     .child(
                         Scroller::new("sidebar-left-rows", &self.scrollbar)
-                            .bottom_inset(super::Chrome::bottom(cx))
-                            .size_full()
+                            .flex_1()
+                            .min_h_0()
+                            .w_full()
                             .child(
                                 div()
                                     .flex()
                                     .flex_col()
                                     .gap_1()
                                     .w_full()
-                                    .p_3()
-                                    // Leave the last row somewhere to go, clear of the
-                                    // button that floats over the bottom.
-                                    .pb(ui::perch_room(cx))
-                                    .children(rows),
+                                    .px(pad)
+                                    .pb(pad)
+                                    .children(rows.into_iter().enumerate().map(|(index, row)| {
+                                        self.scrollbar
+                                            .read(cx)
+                                            .anchors()
+                                            .mark(("navigation", index), row)
+                                    })),
                             ),
                     )
-                    .children(
-                        ui::return_top("sidebar-return-top", &self.scrollbar, cx).map(|perch| {
-                            match super::Chrome::bottom(cx) > Pixels::ZERO {
-                                true => perch
-                                    .bottom(super::Chrome::bottom(cx) + theme.metrics.pad * 1.5),
-                                false => perch,
-                            }
-                        }),
-                    ),
+                    .children(ui::return_top("sidebar-return-top", &self.scrollbar, cx))
+                    .children(up_next),
             )
-            .children(self.menu(cx));
-
-        match overlaid {
-            false => panel.into_any_element(),
-            true => div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .right_0()
-                .bottom_0()
-                .child(
-                    Shield::new("sidebar-shield")
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .right_0()
-                        .bottom_0()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _: &MouseDownEvent, _, cx| this.dismiss(cx)),
-                        ),
-                )
-                .child(panel)
-                .into_any_element(),
-        }
     }
 }
 
@@ -804,6 +1170,17 @@ fn chevron(open: bool) -> &'static str {
         true => "icons/chevron-down.svg",
         false => "icons/chevron-right.svg",
     }
+}
+
+/// One icon on the rail, filling its width, with its name in a tooltip.
+fn rail_row(id: impl Into<ElementId>, key: &'static str, tint: Hsla, accent: Hsla) -> Button {
+    Button::new(id)
+        .ghost()
+        .tooltip(key)
+        .tint(tint)
+        .w_full()
+        .hover(move |style| style.bg(accent))
+        .active(move |style| style.bg(accent))
 }
 
 #[cfg(test)]

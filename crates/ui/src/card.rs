@@ -50,8 +50,10 @@ pub struct Card {
     fallback: Option<SharedString>,
     accent: bool,
     art: Option<Pixels>,
+    list_art: Option<Pixels>,
     art_radius: Option<Pixels>,
     circle: bool,
+    centered: bool,
     tint: Option<Hsla>,
     explicit: bool,
     fill: bool,
@@ -64,6 +66,7 @@ pub struct Card {
     underline: bool,
     playing: bool,
     chosen: bool,
+    bare_art: bool,
     action: Option<AnyElement>,
     drag_start: Option<DragStart>,
     menu: Option<Summon>,
@@ -85,8 +88,10 @@ impl Card {
             fallback: None,
             accent: false,
             art: None,
+            list_art: None,
             art_radius: None,
             circle: false,
+            centered: false,
             tint: None,
             explicit: false,
             fill: true,
@@ -99,6 +104,7 @@ impl Card {
             underline: false,
             playing: false,
             chosen: false,
+            bare_art: false,
             action: None,
             drag_start: None,
             menu: None,
@@ -178,8 +184,20 @@ impl Card {
         self
     }
 
+    /// Sizes a listed cover while keeping the card in its full-width row layout.
+    pub fn list_art(mut self, art: Pixels) -> Self {
+        self.list_art = Some(art);
+        self
+    }
+
     pub fn art_radius(mut self, radius: Pixels) -> Self {
         self.art_radius = Some(radius);
+        self
+    }
+
+    /// Centres artwork and captions together, including the explicit badge beside the title.
+    pub fn centered(mut self) -> Self {
+        self.centered = true;
         self
     }
 
@@ -257,6 +275,13 @@ impl Card {
         self.chosen = chosen;
         self
     }
+
+    /// Shows a listed card as its artwork alone, centred, with the title in a tooltip, for a
+    /// rail too narrow to hold any text.
+    pub fn bare_art(mut self) -> Self {
+        self.bare_art = true;
+        self
+    }
 }
 
 impl Styled for Card {
@@ -293,8 +318,10 @@ impl RenderOnce for Card {
             fallback,
             accent,
             art,
+            list_art,
             art_radius,
             circle,
+            centered,
             tint,
             explicit,
             fill,
@@ -307,6 +334,7 @@ impl RenderOnce for Card {
             underline,
             playing,
             chosen,
+            bare_art,
             action,
             drag_start,
             menu,
@@ -315,13 +343,16 @@ impl RenderOnce for Card {
         let theme = *cx.theme();
         let inset = theme.metrics.pad;
         let height = snapped(theme.metrics.list_row, window);
-        let listed = art.is_none() && tile.is_none();
+        let listed = tile.is_none() && (art.is_none() || list_art.is_some());
         // The play button wears the cover's own colours once the cache has the art,
         // and the theme's primary until then.
         let play_fill =
             theme.cover_fill(cover.as_deref().and_then(|cover| cover_palette(cover, cx)));
         let art_radius = art_radius.or_else(|| tile.map(|_| theme.radius));
-        let art = art.or(tile).unwrap_or(snapped(height - inset * 2., window));
+        let art = list_art
+            .or(art)
+            .or(tile)
+            .unwrap_or(snapped(height - inset * 2., window));
         let hovered = match (hovered, fill) {
             (Some(style), _) => Some(style),
             (None, true) => Some(StyleRefinement::default().bg(theme.table_hover)),
@@ -444,6 +475,8 @@ impl RenderOnce for Card {
             }
         };
 
+        // The title the artwork is named by when it stands alone.
+        let named = (bare_art && !title.is_empty()).then(|| title.clone());
         let title = div()
             .id("card-title")
             .min_w_0()
@@ -466,6 +499,7 @@ impl RenderOnce for Card {
             true => div()
                 .flex()
                 .items_center()
+                .when(centered, |this| this.justify_center())
                 .gap(px(3.))
                 .min_w_0()
                 .child(title)
@@ -491,8 +525,14 @@ impl RenderOnce for Card {
                 |this| this.items_center().gap_3().px(inset),
             )
             .rounded(theme.radius)
+            .when(centered, |this| this.items_center().text_center())
             .when(listed, |this| {
-                this.flex_none().h(height).py(inset).w_full().min_w_0()
+                this.flex_none()
+                    .h(height)
+                    .when(list_art.is_some(), |this| this.p_0())
+                    .when(list_art.is_none(), |this| this.py(inset))
+                    .w_full()
+                    .min_w_0()
             })
             .when(chosen, |this| this.bg(theme.table_active))
             .when_some(hovered.filter(|_| !chosen), |this, style| {
@@ -508,6 +548,13 @@ impl RenderOnce for Card {
                     cx.stop_propagation();
                     menu(event, window, cx);
                 })
+            })
+            // Artwork alone sits centred, named by a tooltip, with nothing beside it.
+            .when(bare_art, |this| {
+                this.justify_center()
+                    .p_0()
+                    .gap_0()
+                    .when_some(named, |this, named| this.tip_label(named, Perch::Pointer))
             })
             .child(match drag_start.clone() {
                 Some(drag_start) => div()
@@ -526,6 +573,7 @@ impl RenderOnce for Card {
                     .flex_1()
                     .min_w_0()
                     .overflow_hidden()
+                    .when(bare_art, |this| this.hidden())
                     .line_height(relative(LEADING))
                     .when(tile.is_some(), |this| this.w_full().flex_none())
                     .when_else(
@@ -558,8 +606,12 @@ impl RenderOnce for Card {
                         },
                     ),
             )
-            .children(trailing.map(|trailing| div().flex_none().child(trailing)))
-            .children(action.map(|action| {
+            .children(
+                trailing
+                    .filter(|_| !bare_art)
+                    .map(|trailing| div().flex_none().child(trailing)),
+            )
+            .children(action.filter(|_| !bare_art).map(|action| {
                 div()
                     .id("card-action")
                     .flex_none()

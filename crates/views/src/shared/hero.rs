@@ -30,13 +30,35 @@ pub(crate) fn copyright_notice(text: &str) -> SharedString {
 }
 
 /// The notices an album page prints under its tracks: the provider's copyright lines, or the
-/// label behind ℗ when the provider names only that. Empty when it names neither.
+/// label behind ℗ when the provider names only that. Matching © and ℗ bodies share a line.
 pub(crate) fn copyright_notices(album: &Album) -> Vec<SharedString> {
     if !album.copyrights.is_empty() {
-        return album
-            .copyrights
-            .iter()
-            .map(|line| copyright_notice(line))
+        let mut notices: Vec<(String, bool, bool)> = Vec::new();
+        for line in &album.copyrights {
+            let text = line.trim();
+            let recording = text.starts_with('℗');
+            let body = text.trim_start_matches(['©', '℗']).trim();
+            if body.is_empty() {
+                continue;
+            }
+            if let Some((_, copyright, phonogram)) =
+                notices.iter_mut().find(|(known, _, _)| known == body)
+            {
+                *copyright |= !recording;
+                *phonogram |= recording;
+            } else {
+                notices.push((body.to_owned(), !recording, recording));
+            }
+        }
+        return notices
+            .into_iter()
+            .map(
+                |(body, copyright, recording)| match (copyright, recording) {
+                    (true, true) => t!("album-copyright-combined", notice = &body),
+                    (false, true) => t!("album-label", label = &body),
+                    _ => copyright_notice(&body),
+                },
+            )
             .collect();
     }
     match album.label.trim() {
@@ -162,6 +184,7 @@ pub(crate) struct HeroPlayButton {
     listing: Listing,
     from: Option<Origin>,
     shuffled: bool,
+    compact: bool,
     playback: Entity<Playback>,
 }
 
@@ -178,8 +201,15 @@ impl HeroPlayButton {
             listing: Listing::Owned(tracks),
             from: None,
             shuffled: false,
+            compact: false,
             playback,
         }
+    }
+
+    /// Uses an icon-only transport in a compact persistent header.
+    pub(crate) fn compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
     }
 
     pub(crate) fn from(mut self, origin: Option<Origin>) -> Self {
@@ -224,6 +254,7 @@ impl HeroPlayButton {
             listing: Listing::Listed(table.clone()),
             from: None,
             shuffled: false,
+            compact: false,
             playback,
         }
     }
@@ -275,7 +306,13 @@ impl RenderOnce for HeroPlayButton {
 
         div().flex().child(
             Button::new(self.id)
-                .label(label)
+                .when(!self.compact, |button| button.label(label))
+                .when(self.compact, |button| {
+                    button.tooltip(match playing {
+                        Some(true) => "play-pause",
+                        _ => "play-resume",
+                    })
+                })
                 .icon(icon)
                 .primary()
                 .disabled(disabled)
@@ -310,6 +347,7 @@ pub(crate) struct PageHero {
     drag_start: Option<DragStart>,
     pin: Option<Pin>,
     pending: bool,
+    compact: bool,
 }
 
 impl PageHero {
@@ -328,7 +366,14 @@ impl PageHero {
             drag_start: None,
             pin: None,
             pending: false,
+            compact: false,
         }
+    }
+
+    /// Renders the same title, artwork, metadata and actions as one persistent row.
+    pub(crate) fn compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
     }
 
     pub(crate) fn pin(mut self, pin: Option<Pin>) -> Self {
@@ -395,6 +440,45 @@ impl PageHero {
 impl RenderOnce for PageHero {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = *cx.theme();
+
+        if self.compact {
+            return div()
+                .id(self.id)
+                .when_some(self.pin, |hero, pin| hero.pin(pin))
+                .when_some(self.drag_start, |hero, handler| {
+                    hero.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                        handler(event, window, cx)
+                    })
+                })
+                .flex()
+                .items_center()
+                .gap_3()
+                .w_full()
+                .min_w_0()
+                .overflow_hidden()
+                .h(theme.metrics.control + theme.metrics.pad * 2.)
+                .child(
+                    Artwork::new(self.cover)
+                        .size(theme.metrics.control)
+                        .when_some(self.fallback, Artwork::fallback)
+                        .when(self.accent, Artwork::accent)
+                        .when(self.circle, Artwork::circle),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(theme.text(Text::Large))
+                        .font_weight(FontWeight::BOLD)
+                        .child(self.title),
+                )
+                .children(
+                    self.actions.map(|actions| {
+                        div().flex().flex_1().min_w_0().justify_end().child(actions)
+                    }),
+                );
+        }
 
         let art = theme.metrics.cover;
         let drag_start = self.drag_start.map(Rc::from);

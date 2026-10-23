@@ -464,6 +464,7 @@ mod tests {
                 duration: Duration::ZERO,
                 added_at: None,
                 added_by: None,
+                year: 0,
                 playcount: None,
                 popularity: 0,
                 explicit: false,

@@ -7,7 +7,10 @@ use std::rc::Rc;
 
 use music::{GenreItem, GenreSection};
 use state::Playback;
-use ui::{ActiveTheme as _, Button, Card, Deck, Glide, Mode, Skeleton, Text, heading, snapped};
+use ui::{
+    ActiveTheme as _, Button, Card, Deck, Glide, Mode, ScrollAnchors, Skeleton, Text, heading,
+    snapped,
+};
 
 use crate::shared::album_grid::CardGrid;
 use crate::shared::cards;
@@ -29,6 +32,7 @@ pub(crate) struct Shelves {
     host: EntityId,
     playback: Entity<Playback>,
     rails: Vec<(ScrollHandle, Glide)>,
+    anchors: Option<ScrollAnchors>,
 }
 
 impl Shelves {
@@ -38,7 +42,14 @@ impl Shelves {
             host,
             playback,
             rails: Vec::new(),
+            anchors: None,
         }
+    }
+
+    /// Marks each shelf's heading for the page's shared magnetic scroller.
+    pub(crate) fn magnetic(mut self, anchors: ScrollAnchors) -> Self {
+        self.anchors = Some(anchors);
+        self
     }
 
     fn tag(&self, kind: &str, place: usize) -> SharedString {
@@ -112,9 +123,13 @@ impl Shelves {
                 let holder = view.downgrade();
                 let shelves = view.read(cx);
 
-                match mode {
+                let shelf = match mode {
                     Mode::Grid => shelves.rail(place, &sections, width, &holder, window, cx),
                     Mode::List => shelves.lane(place, section, width, window, cx),
+                };
+                match &shelves.anchors {
+                    Some(anchors) => anchors.mark(("shelf", place), shelf).into_any_element(),
+                    None => shelf,
                 }
             });
 
@@ -329,6 +344,7 @@ pub(crate) fn plate(
 pub(crate) fn grid(
     id: &'static str,
     genres: Rc<Vec<music::Genre>>,
+    anchors: ScrollAnchors,
     width: Pixels,
     window: &Window,
     cx: &App,
@@ -338,6 +354,7 @@ pub(crate) fn grid(
     let rows = genres.len().div_ceil(lanes);
 
     Deck::new(id)
+        .magnetic(anchors)
         .rows((0..rows).map(|_| row))
         .gap(LANE_GAP)
         .draw(move |place, _, cx| {

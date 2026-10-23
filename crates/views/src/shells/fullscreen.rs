@@ -4,23 +4,24 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
-    AnyView, App, Bounds, ClickEvent, Context, Entity, FocusHandle, FontWeight, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    Render, ScrollWheelEvent, SharedString, SpringState, Task, TextShadow,
+    App, Bounds, ClickEvent, Context, Entity, FocusHandle, FontWeight, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render,
+    ScrollWheelEvent, SharedString, SpringState, Task, TextShadow,
 };
 use gpui::{Window, canvas, deferred, div, phi, px, relative};
 use i18n::t;
 use input::{ToggleFullscreen, ToggleWindowFullscreen, WORKSPACE_CONTEXT};
 use router::{Destination, navigate};
-use state::{AppSettings, Cover, FullscreenControlsAutohide, Playback, Queue, SideTab, Sonora};
+use state::{
+    AppSettings, Cards, Cover, FullscreenControlsAutohide, Playback, Queue, SideTab, Sonora,
+};
 use ui::{
-    ActiveTheme as _, Artwork, Button, ExplicitBadge, InlineLink, InlineLinks, Motion,
-    Motioned as _, Popup, Room, Scrollbar, Scrubber, ScrubberState, Springs, TabBar, Text,
-    Visualizer, clock, glass, snapped,
+    ActiveTheme as _, Artwork, Button, ExplicitBadge, Motion, Motioned as _, Room, Scrubber,
+    ScrubberState, Springs, TabBar, Text, Visualizer, clock, glass, snapped,
 };
 
 use crate::chrome::{Aside, TitleBarOptions};
-use crate::shared::menus::ItemMenu;
+use crate::shared::menus::CardMenu;
 use crate::shared::transport::{NOTCH, fraction, like, moved, percent, transport, volume_icon};
 use crate::shared::visualizer::VisualizerDrive;
 use crate::shared::{self, ambient};
@@ -85,7 +86,6 @@ pub struct FullscreenView {
     cover: Entity<Cover>,
     settings: Entity<AppSettings>,
     aside: Entity<Aside>,
-    panel: Option<SideTab>,
     seek: ScrubberState,
     pending: Option<f32>,
     over_seek: Option<f32>,
@@ -100,8 +100,6 @@ pub struct FullscreenView {
     muted: Option<f32>,
     large: Option<SharedString>,
     revision: usize,
-    track_menu: ItemMenu,
-    context_menu: Option<(music::Track, Point<Pixels>)>,
     last_moved: Instant,
     /// Where the pointer was when it last woke the controls, which motion is measured from.
     last_pos: Option<Point<Pixels>>,
@@ -128,12 +126,8 @@ impl FullscreenView {
         cx.observe(&library, |_, _, cx| cx.notify()).detach();
         let settings = Sonora::global(cx).settings.clone();
         cx.observe(&settings, |_, _, cx| cx.notify()).detach();
-        let panel = settings.read(cx).fullscreen_tab();
-        let shown = panel.unwrap_or(SideTab::Lyrics);
-        let aside = cx.new(|cx| Aside::new(queue.clone(), playback.clone(), shown, cx));
+        let aside = cx.new(|cx| Aside::new(queue.clone(), playback.clone(), cx));
         aside.update(cx, |aside, _| aside.strip());
-        let me = cx.entity_id();
-        let playlist_scrollbar = cx.new(|_| Scrollbar::inset().watching(me));
 
         Self {
             playback,
@@ -141,7 +135,6 @@ impl FullscreenView {
             cover,
             settings,
             aside,
-            panel,
             seek: ScrubberState::new("fullscreen-seek"),
             pending: None,
             over_seek: None,
@@ -156,8 +149,6 @@ impl FullscreenView {
             muted: None,
             large: None,
             revision: 0,
-            track_menu: ItemMenu::new(playlist_scrollbar, cx),
-            context_menu: None,
             last_moved: Instant::now(),
             last_pos: None,
             inside: true,
@@ -183,6 +174,7 @@ impl FullscreenView {
     /// Starts the idle clock as the view opens and stops it as the view closes, so it never
     /// hides the cursor over the workspace. Either way the view next shows with its controls up.
     pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        CardMenu::dismiss(cx);
         self.flip(true);
         self.hidden = SpringState {
             position: 0.,
@@ -196,13 +188,14 @@ impl FullscreenView {
         cx.notify();
     }
 
-    fn show(&mut self, panel: Option<SideTab>, cx: &mut Context<Self>) {
-        self.panel = panel;
+    /// Whether any card shows beside the cover. With none, the artwork has the view alone.
+    fn panel_open(&self, cx: &App) -> bool {
+        self.settings.read(cx).fullscreen_cards().any()
+    }
+
+    fn show(&mut self, cards: Cards, cx: &mut Context<Self>) {
         self.settings
-            .update(cx, |settings, cx| settings.set_fullscreen_tab(panel, cx));
-        if let Some(tab) = panel {
-            self.aside.update(cx, |aside, cx| aside.show(tab, cx));
-        }
+            .update(cx, |settings, cx| settings.set_fullscreen_cards(cards, cx));
         self.stir(cx);
     }
 
@@ -279,7 +272,7 @@ impl FullscreenView {
         (self.inside && parked)
             || self.volume_held
             || self.pending.is_some()
-            || self.context_menu.is_some()
+            || CardMenu::is_open(cx)
             || Sonora::global(cx).devices.read(cx).invite().is_some()
     }
 
@@ -303,7 +296,7 @@ impl FullscreenView {
     /// rest-expiry time, so no subscription is needed: a parked pointer simply
     /// re-arms the timer instead of letting the chrome go idle under it.
     fn scrollbar_held(&self, cx: &App) -> bool {
-        self.panel.is_some() && self.aside.read(cx).scrollbar_active(cx)
+        self.panel_open(cx) && self.aside.read(cx).scrollbar_active(cx)
     }
 
     fn flip(&mut self, awake: bool) {
@@ -460,17 +453,6 @@ impl FullscreenView {
             )
     }
 
-    fn open_context_menu(
-        &mut self,
-        track: music::Track,
-        position: Point<Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        self.track_menu.reset(cx);
-        self.context_menu = Some((track, position));
-        cx.notify();
-    }
-
     fn meta(&self, hide: f32, lift: Pixels, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *cx.theme();
         let frosted = ambient::shown(cx);
@@ -556,17 +538,7 @@ impl FullscreenView {
                                     .hover(|style| style.underline())
                                     .on_click(move |_, _, cx| open_album(&album, cx))
                             })
-                            .on_mouse_down(
-                                MouseButton::Right,
-                                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                    let Some(track) = this.playback.read(cx).shown_track(cx) else {
-                                        return;
-                                    };
-                                    window.prevent_default();
-                                    this.open_context_menu(track, event.position, cx);
-                                    cx.stop_propagation();
-                                }),
-                            )
+                            .on_mouse_down(MouseButton::Right, CardMenu::playing)
                             .when(effects, |this| this.text_shadow(shadow))
                             .child(title),
                     )
@@ -575,21 +547,15 @@ impl FullscreenView {
             .when_some(track, |this, track| {
                 this.child(
                     div().flex().w_full().min_w_0().justify_center().child(
-                        InlineLinks::new(
+                        crate::shared::cells::artist_links(
                             "fullscreen-artists",
-                            track.artist_refs.iter().map(|artist| {
-                                InlineLink::new(
-                                    artist.name.clone(),
-                                    artist.id.clone().map(Into::into),
-                                )
-                            }),
+                            track.artist_refs.clone(),
                             track.artists.clone(),
                             theme.muted_foreground,
                         )
                         .text_size(theme.text(Text::Body))
                         .truncate()
-                        .when(effects, |this| this.text_shadow(shadow))
-                        .on_click(|id, cx| navigate(Destination::Artist(id), cx)),
+                        .when(effects, |this| this.text_shadow(shadow)),
                     ),
                 )
             })
@@ -647,21 +613,7 @@ impl FullscreenView {
                                             .hover(|style| style.underline())
                                             .on_click(move |_, _, cx| open_album(&album, cx))
                                     })
-                                    .on_mouse_down(
-                                        MouseButton::Right,
-                                        cx.listener(
-                                            move |this, event: &MouseDownEvent, window, cx| {
-                                                let Some(track) =
-                                                    this.playback.read(cx).shown_track(cx)
-                                                else {
-                                                    return;
-                                                };
-                                                window.prevent_default();
-                                                this.open_context_menu(track, event.position, cx);
-                                                cx.stop_propagation();
-                                            },
-                                        ),
-                                    )
+                                    .on_mouse_down(MouseButton::Right, CardMenu::playing)
                                     .child(title),
                             )
                             .when(explicit, |this| {
@@ -673,20 +625,14 @@ impl FullscreenView {
                     )
                     .when_some(track, |this, track| {
                         this.child(
-                            InlineLinks::new(
+                            crate::shared::cells::artist_links(
                                 "strip-artists",
-                                track.artist_refs.iter().map(|artist| {
-                                    InlineLink::new(
-                                        artist.name.clone(),
-                                        artist.id.clone().map(Into::into),
-                                    )
-                                }),
+                                track.artist_refs.clone(),
                                 track.artists.clone(),
                                 theme.muted_foreground,
                             )
                             .text_size(theme.text(Text::Small))
-                            .truncate()
-                            .on_click(|id, cx| navigate(Destination::Artist(id), cx)),
+                            .truncate(),
                         )
                     }),
             )
@@ -752,7 +698,7 @@ impl FullscreenView {
     /// corner to the leave button.
     fn controls(&self, room: Room, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *cx.theme();
-        let inline = self.panel.is_none();
+        let inline = !self.panel_open(cx);
         let clear = match room.fits(Room::Roomy) {
             true => Pixels::ZERO,
             false => theme.metrics.control_small,
@@ -833,8 +779,21 @@ impl FullscreenView {
             }
             cx.notify();
         });
+        let cards = self.settings.read(cx).fullscreen_cards();
+        // The artwork button clears both cards; the other two each show or hide their own.
         let tab = move |id: &'static str, icon: &'static str, hint: &'static str, panel| {
-            let showing = self.panel == panel;
+            let showing = match panel {
+                None => !cards.any(),
+                Some(tab) => cards.shows(tab),
+            };
+            let next = match panel {
+                None => Cards {
+                    lyrics: false,
+                    queue: false,
+                    expanded: None,
+                },
+                Some(tab) => cards.toggled(tab),
+            };
 
             Button::new(id)
                 .ghost()
@@ -848,7 +807,7 @@ impl FullscreenView {
                     true => theme.foreground,
                     false => theme.muted_foreground,
                 })
-                .on_click(cx.listener(move |this, _, _, cx| this.show(panel, cx)))
+                .on_click(cx.listener(move |this, _, _, cx| this.show(next, cx)))
         };
 
         div()
@@ -1014,19 +973,6 @@ impl FullscreenView {
             )
     }
 
-    fn menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let (track, position) = self.context_menu.clone()?;
-
-        Some(
-            Popup::new(position, self.track_menu.for_track(&track, cx)).on_close(cx.listener(
-                |this, _, _, cx| {
-                    this.context_menu = None;
-                    cx.notify();
-                },
-            )),
-        )
-    }
-
     /// The leave button in the bottom right corner, centred on a player bar's height at every
     /// width, so the breakpoint that stacks the chrome player bar cannot move it, and nudged
     /// down by `LEAVE_DROP` to sit level with the volume button's glyph. It sinks and
@@ -1069,14 +1015,13 @@ fn open_album(album: &str, cx: &mut App) {
 }
 
 impl Shell for FullscreenView {
-    fn title_bar(&self, _content: Option<AnyView>, cx: &App) -> TitleBarOptions {
+    fn title_bar(&self, cx: &App) -> TitleBarOptions {
         TitleBarOptions {
             navigation: false,
             sidebar_open: false,
             sidebar_right: None,
-            offset: Pixels::ZERO,
+            tall: false,
             border: false,
-            content: None,
             transparent: ambient::shown(cx),
         }
     }
@@ -1087,7 +1032,7 @@ impl Render for FullscreenView {
         let theme = *cx.theme();
         let viewport = window.viewport_size();
         let room = Room::of(viewport.width);
-        let split = room.fits(Room::Wide) && self.panel.is_some();
+        let split = room.fits(Room::Wide) && self.panel_open(cx);
         self.watch(window, cx);
         let idle = self.hidden(window, cx);
         let hide = match self.settings.read(cx).fullscreen_controls_autohide() {
@@ -1157,11 +1102,11 @@ impl Render for FullscreenView {
         let raster_side = snapped(far, window);
         let cover_scale = presentation_scale(presented_side, raster_side);
         let lift = (presented_side - side) / 2.;
-        let staged = self.panel.is_none() || split;
+        let staged = !self.panel_open(cx) || split;
 
         let style = self.settings.read(cx).visualizer_style();
         let visualizer_on =
-            self.panel.is_none() && style.shown() && self.playback.read(cx).steered(cx).is_none();
+            !self.panel_open(cx) && style.shown() && self.playback.read(cx).steered(cx).is_none();
         match visualizer_on
             .then(|| self.playback.read(cx).spectrum(cx))
             .flatten()
@@ -1295,7 +1240,7 @@ impl Render for FullscreenView {
                                 }),
                         )
                     })
-                    .when(self.panel.is_some(), |this| {
+                    .when(self.panel_open(cx), |this| {
                         this.child(
                             div()
                                 .id("fullscreen-panel")
@@ -1312,14 +1257,14 @@ impl Render for FullscreenView {
                         )
                     }),
             )
-            .when(!split && self.panel.is_some(), |this| {
+            .when(!split && self.panel_open(cx), |this| {
                 this.child(self.strip(hide, window, cx))
             })
             .when(!split, |this| {
                 this.child(self.dock(theme.metrics.player_bar * DOCK_FULL, hide, room, cx))
             })
             .when(idle < 1., |this| this.child(self.leave(idle, window, cx)))
-            .children(self.menu(cx))
+            .child(CardMenu::entity(cx))
     }
 }
 
