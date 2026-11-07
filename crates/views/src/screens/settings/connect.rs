@@ -18,7 +18,7 @@ impl SettingsView {
 
         let settings = self.settings.read(cx);
         let mut slots = vec![Slot::SpotifyConnect];
-        if settings.spotify_connect() {
+        if settings.spotify_connect() && !Sonora::global(cx).devices.read(cx).companion_selected() {
             slots.push(Slot::SpotifyConnectName);
             if settings.spotify_connect_name() == ConnectName::Custom {
                 slots.push(Slot::SpotifyConnectCustom);
@@ -29,11 +29,13 @@ impl SettingsView {
 
     pub(super) fn spotify_connect_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let on = self.settings.read(cx).spotify_connect();
+        let companion = Sonora::global(cx).devices.read(cx).companion_selected();
 
         self.row(
             t!("settings-spotify-connect"),
-            Switch::new("spotify-connect", on)
+            Switch::new("spotify-connect", on || companion)
                 .name(t!("settings-spotify-connect"))
+                .disabled(companion)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.settings
                         .update(cx, |settings, cx| settings.set_spotify_connect(!on, cx));

@@ -15,6 +15,13 @@ const SOUND: &str = "settings-equalizer-sound";
 
 impl SettingsView {
     pub(super) fn sound_groups(&self, cx: &App) -> Vec<Group> {
+        if state::Sonora::global(cx)
+            .devices
+            .read(cx)
+            .companion_selected()
+        {
+            return Vec::new();
+        }
         let match_rate = self.outputs.read(cx).match_rate_supported();
         let failed = self.outputs.read(cx).failure().is_some();
         // with nothing open there is no rate or buffer to show

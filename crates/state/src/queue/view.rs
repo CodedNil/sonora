@@ -119,7 +119,7 @@ impl QueueView {
     ) -> Self {
         let (source, sections, playing) = match remote {
             Some((devices, remote)) => {
-                let sections = devices.read(cx).queue_sections();
+                let sections = devices.read(cx).queue_sections(&remote.state);
                 (Source::Remote(devices), sections, remote.state.playing)
             }
             None => {

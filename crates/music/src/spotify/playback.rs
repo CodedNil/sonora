@@ -14,6 +14,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 
 use crate::audio::{Chain, Volume};
+use crate::companion::Companion as _;
 
 use crate::sink::Cue;
 use crate::spectrum::Spectrum;
@@ -131,6 +132,9 @@ impl Factory {
 
 impl PlaybackFactory for Factory {
     fn start(&self, config: PlaybackConfig) -> (Box<dyn MusicPlayer>, Box<dyn PlaybackEvents>) {
+        if super::soloist::Soloist::new(&self.0).enabled() {
+            return super::soloist::guarded();
+        }
         let (engine, events) = Engine::start(self.0.clone(), config);
         (Box::new(engine), Box::new(events))
     }

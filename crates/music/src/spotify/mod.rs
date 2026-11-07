@@ -18,6 +18,7 @@ mod profiles;
 mod radio;
 mod search;
 mod sink;
+mod soloist;
 mod wire;
 
 use std::sync::Arc;

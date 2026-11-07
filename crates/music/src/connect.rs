@@ -239,6 +239,8 @@ pub struct Invite {
 }
 
 pub enum Event {
+    /// A command to an explicitly selected player failed; never start a different backend.
+    ControlFailed,
     Command(Command),
     Roster(Roster),
     /// Saved collections or the account's playlist list changed in another client.
@@ -270,6 +272,8 @@ pub enum Request {
     Transfer(String),
     /// A refused start returns as a command to play locally.
     Control(String, Command),
+    /// Like Control, but a refused start must not fall back to the local engine.
+    ControlStrict(String, Command),
     Join(String),
     Peek(String),
     Start,

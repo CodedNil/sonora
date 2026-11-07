@@ -48,13 +48,16 @@ impl SessionsButton {
         let mut items = vec![
             MenuItem::new("device-here", t!("devices-this-computer"))
                 .icon(icon(DeviceKind::Computer))
-                .selected(elsewhere.is_none())
+                .selected(elsewhere.is_none_or(|remote| state.is_companion(&remote.device.id)))
                 .on_click({
                     let devices = devices.clone();
-                    move |_, _, cx| devices.read(cx).transfer_here()
+                    move |_, _, cx| devices.update(cx, |devices, cx| devices.transfer_here(cx))
                 }),
         ];
         for device in state.devices() {
+            if state.is_companion(&device.id) {
+                continue;
+            }
             let id = device.id.clone();
             let playing = elsewhere.is_some_and(|elsewhere| elsewhere.device.id == device.id);
             items.push(

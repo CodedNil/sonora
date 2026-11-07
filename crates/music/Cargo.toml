@@ -56,6 +56,9 @@ symphonia.workspace = true
 tempfile.workspace = true
 time.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
+tar.workspace = true
+zip.workspace = true
 widevine.workspace = true
 ytmusic.workspace = true
 

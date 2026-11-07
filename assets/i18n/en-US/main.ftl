@@ -1431,3 +1431,37 @@ response-graph-readout = { $frequency } · { $direction ->
         [down] -{ $gain }
        *[flat] { $gain }
     } dB
+
+# Optional Spotify playback through Spotify's separately installed player.
+settings-soloist = Spotify Soloist
+settings-soloist-detail = Optional playback using Spotify’s own player. Librespot remains the default. Spotify Premium and a personal Soloist API key are required.
+settings-soloist-off = Using the built-in player (librespot).
+settings-soloist-downloading = Downloading Soloist from Spotify…
+settings-soloist-starting = Starting Soloist…
+settings-soloist-pairing = Waiting for you to connect in Spotify.
+settings-soloist-verifying = Waiting for Soloist to appear in your Spotify account.
+settings-soloist-ready = Using Spotify Soloist.
+settings-soloist-expired = This Soloist build has expired. Download an update to continue.
+settings-soloist-failed = Soloist needs attention. Try again, download an update, or use the built-in player.
+settings-soloist-key = 1. Get your personal API key
+settings-soloist-get-key = Open Spotify for Developers
+settings-soloist-personal-key = Personal Soloist API key
+settings-soloist-key-hint = Paste your Soloist API key
+settings-soloist-download = 2. Download Spotify’s player
+settings-soloist-install = Download and use Soloist
+settings-soloist-update = Download update
+settings-soloist-download-detail = Downloads directly from Spotify under Spotify’s terms. Your key is saved privately on this computer. Soloist builds expire after 90 days; return here to update. Leave the key blank to reuse a saved key.
+settings-soloist-pair = 3. Connect in Spotify
+settings-soloist-open-spotify = Open Spotify
+settings-soloist-pair-detail = In Spotify’s desktop app, signed into the same account on the same network, play a song and select “{ $name }” from the device picker. If it is missing, check your firewall, VPN and local network access. Pairing is normally needed only once.
+settings-soloist-builtin = Use the built-in player
+settings-soloist-guide = Setup guide
+settings-soloist-retry = Try again
+settings-soloist-limitations = Soloist uses the system audio output and its own audio settings. Sonora’s equalizer, visualizer, audio quality controls and offline downloads are unavailable for Soloist playback. Local files continue to use Sonora’s built-in player.
+toast-soloist-install-failed = Soloist could not be installed. Check your personal key, internet connection and available disk space, then try again.
+toast-soloist-stopped = Soloist stopped. Open Playback settings to try again, update it, or use the built-in player.
+toast-player-command-failed = The selected Spotify player did not accept the command. Try again or check Playback settings.
+settings-soloist-build = Soloist { $version } · { $count ->
+    [one] Expires in one day
+   *[other] Expires in { $count } days
+    }

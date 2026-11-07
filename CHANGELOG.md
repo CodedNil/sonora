@@ -16,6 +16,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   each track's own sample rate on Linux and macOS.
 - Swipe two fingers sideways on a touchpad to go back or forward a page.
 - A quick flick on a touchpad under Wayland keeps the page scrolling for a moment after your fingers lift.
+- Choose Spotify Soloist as an optional player, with guided personal-key setup, downloading and Spotify pairing; the built-in player remains the default.
 
 ### Changed
 
@@ -36,6 +37,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A song's right-click menu lists Go to artist, Go to album, Go to song radio and View details directly again instead of under Go to.
 
 ### Fixed
+
+- Setting up Spotify Soloist no longer crashes while its player is starting or waiting for pairing.
 
 - On macOS, scrolling and clicks no longer lag behind in fullscreen and with lyrics open.
 - Horizontal card rows scroll all the way to the page edges, including album recommendations.

@@ -4,6 +4,7 @@ pub mod artwork;
 mod audio;
 pub mod binimum;
 mod calendar;
+pub mod companion;
 pub mod connect;
 pub mod cover;
 pub mod credentials;
@@ -112,6 +113,11 @@ pub enum Report {
 
 #[async_trait]
 pub trait MusicApi: Send + Sync {
+    /// An optional, separately installed playback program for this provider.
+    fn companion(&self) -> Option<Arc<dyn companion::Companion>> {
+        None
+    }
+
     fn alive(&self) -> bool {
         true
     }

@@ -108,7 +108,7 @@ def render(report, groups):
                 line += " — " + "; ".join(user["notices"])
             out.append(line)
         out.append("")
-        body = dedent(group["text"]).strip("\n")
+        body = "\n".join(line.rstrip() for line in dedent(group["text"]).strip("\n").splitlines())
         out.append("```text")
         out.append(body)
         out.append("```\n")

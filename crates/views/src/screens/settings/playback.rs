@@ -33,11 +33,20 @@ const SLEEP_LAST: usize = (SLEEP_MAX_MINUTES - SLEEP_MIN_MINUTES + 1) as usize
 impl SettingsView {
     pub(super) fn playback_groups(&self, cx: &App) -> Vec<Group> {
         let capabilities = self.session.read(cx).capabilities();
-        let mut playing = vec![Slot::Normalisation, Slot::Gapless];
+        let devices = state::Sonora::global(cx).devices.read(cx);
+        let external = devices.companion_selected();
+        let mut playing = match external {
+            true => Vec::new(),
+            false => vec![Slot::Normalisation, Slot::Gapless],
+        };
         playing.extend([Slot::Sleep, Slot::StayAwake]);
         let mut groups = vec![Group::new("settings-group-playing", "icons/play.svg").rows(playing)];
         // one level is nothing to choose between, so it is stated in a row rather than offered
-        match capabilities.qualities.len() {
+        match if external {
+            0
+        } else {
+            capabilities.qualities.len()
+        } {
             0 => {}
             1 => groups.push(
                 Group::new("settings-stream-quality", "icons/disc-3.svg")
@@ -61,6 +70,9 @@ impl SettingsView {
         }
         groups.extend(self.sessions_groups(cx));
         groups.extend(self.connect_groups(cx));
+        if devices.companion_supported() {
+            groups.push(Group::new("settings-soloist", "icons/speaker.svg").rows([Slot::Soloist]));
+        }
         groups
     }
 

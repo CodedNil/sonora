@@ -297,6 +297,11 @@ impl Worker {
                     self.out.send(Event::Command(Command::Start(start))).ok();
                 }
             }
+            Input::ControlStrict(device, command) => {
+                if !control(self.session.clone(), &device, command).await {
+                    self.out.send(Event::ControlFailed).ok();
+                }
+            }
         }
     }
 

@@ -18,6 +18,9 @@ use crate::{
     QueuePosition, QueueSections, Session, SessionEvent, Toasts, Whence,
 };
 
+mod companion;
+use companion::CompanionJob;
+
 /// Librespot's 80-track report window avoids overloading Spotify's web player.
 const UPCOMING: usize = 80;
 /// Match librespot’s recent-history window; the local queue retains its longer history.
@@ -34,6 +37,14 @@ type RemoteWindow = (Vec<(Track, bool)>, bool, Vec<(Track, bool)>);
 /// reported to the account's other apps, their commands carried out, and the account's other
 /// devices to hand playback to. Only a provider that has such a network gives it anything to do.
 pub struct Devices {
+    companion: Option<Arc<dyn music::companion::Companion>>,
+    companion_state: music::companion::CompanionState,
+    companion_job: Option<CompanionJob>,
+    companion_install: Option<CompanionJob>,
+    companion_updates: Option<Task<()>>,
+    companion_authenticated: bool,
+    companion_selected: bool,
+    companion_device: Option<Device>,
     playback: Entity<Playback>,
     queue: Entity<Queue>,
     library: Entity<Library>,
@@ -109,6 +120,14 @@ impl Devices {
         let this = cx.weak_entity();
         playback.update(cx, |playback, _| playback.set_devices(this));
         let mut devices = Self {
+            companion: None,
+            companion_state: Default::default(),
+            companion_job: None,
+            companion_install: None,
+            companion_updates: None,
+            companion_authenticated: false,
+            companion_selected: false,
+            companion_device: None,
             playback,
             queue,
             library,
@@ -270,6 +289,30 @@ impl Devices {
     /// own engine. `None` while playback is here or nowhere, including the moment between this app
     /// taking playback and the network saying so.
     pub fn steered(&self) -> Option<Elsewhere> {
+        if self.companion_selected && self.claimed {
+            return None;
+        }
+        self.pick_target()
+    }
+
+    /// Where a new streaming pick should play, even while a local file owns the controls.
+    pub(crate) fn pick_target(&self) -> Option<Elsewhere> {
+        if self.companion_selected {
+            if let Some(remote) = self.elsewhere().filter(|_| self.companion_device.is_some()) {
+                return Some(remote.clone());
+            }
+            // An idle companion still receives the next pick. An unavailable one consumes
+            // the command without ever starting the built-in engine as a fallback.
+            return Some(Elsewhere {
+                device: self.companion_device.clone().unwrap_or_else(|| Device {
+                    id: String::new(),
+                    name: self.companion_name().to_owned(),
+                    kind: music::connect::DeviceKind::Computer,
+                    volume: 1.,
+                }),
+                state: Arc::new(Snapshot::default()),
+            });
+        }
         if !self.available() || self.claimed {
             return None;
         }
@@ -298,12 +341,9 @@ impl Devices {
         Some(track)
     }
 
-    /// Counts readable rows, stopping upcoming at the first gap so Next never names a later song.
-    pub(crate) fn queue_sections(&self) -> QueueSections {
-        let remote = self
-            .elsewhere()
-            .map(|remote| &remote.state)
-            .expect("remote queue requires remote playback");
+    /// Counts readable rows in the displayed snapshot, including an idle companion's empty
+    /// queue. Stops upcoming at the first gap so Next never names a later song.
+    pub(crate) fn queue_sections(&self, remote: &Snapshot) -> QueueSections {
         QueueSections::new(
             remote
                 .previous
@@ -359,7 +399,17 @@ impl Devices {
     }
 
     /// Moves playback onto this app from whichever device has it.
-    pub fn transfer_here(&self) {
+    pub fn transfer_here(&mut self, cx: &mut Context<Self>) {
+        if self.companion_selected {
+            self.claimed = false;
+            self.here(cx, |playback, cx| playback.pause(cx));
+            if let Some(device) = &self.companion_device {
+                self.transfer(&device.id);
+            }
+            self.redraw(cx);
+            cx.notify();
+            return;
+        }
         if let Some(link) = &self.link {
             link.send(Request::Transfer(link.device().to_owned()));
         }
@@ -374,8 +424,15 @@ impl Devices {
 
     /// Sends a command to another device.
     pub fn control(&self, device: &str, command: Command) {
+        if self.companion_selected && device.is_empty() {
+            return;
+        }
         if let Some(link) = &self.link {
-            link.send(Request::Control(device.to_owned(), command));
+            let request = match self.companion_selected {
+                true => Request::ControlStrict(device.to_owned(), command),
+                false => Request::Control(device.to_owned(), command),
+            };
+            link.send(request);
         }
     }
 
@@ -431,6 +488,18 @@ impl Devices {
         }
 
         self.reset(link);
+        self.companion = self
+            .session
+            .read(cx)
+            .client()
+            .and_then(|client| client.companion());
+        self.companion_selected = self
+            .companion
+            .as_ref()
+            .is_some_and(|player| player.enabled());
+        if self.companion_selected {
+            self.start_companion(cx);
+        }
         if let Some(events) = self.link.as_ref().and_then(|link| link.events()) {
             self.events = Some(self.listen(events, cx));
         }
@@ -445,6 +514,14 @@ impl Devices {
 
     /// Drops everything owned by the previous provider connection.
     fn reset(&mut self, link: Option<Arc<Connect>>) {
+        self.companion_job = None;
+        self.companion_install = None;
+        self.companion_updates = None;
+        self.companion = None;
+        self.companion_selected = false;
+        self.companion_authenticated = false;
+        self.companion_device = None;
+        self.companion_state = Default::default();
         self.link = link;
         self.shown = false;
         self.named = None;
@@ -474,7 +551,7 @@ impl Devices {
             return;
         };
         let settings = self.settings.read(cx);
-        let wanted = settings.spotify_connect();
+        let wanted = settings.spotify_connect() || self.companion_selected;
         let naming = match settings.spotify_connect_name() {
             ConnectName::Sonora => Naming::App,
             ConnectName::Both => Naming::AppOnComputer,
@@ -528,6 +605,9 @@ impl Devices {
         let mut playlists = HashSet::new();
         for event in events {
             match event {
+                Event::ControlFailed => {
+                    Toasts::show(Outcome::Info, "toast-player-command-failed", cx)
+                }
                 Event::Roster(roster) => self.set_roster(roster, cx),
                 Event::Command(command) => self.run(command, cx),
                 Event::Liked { track, liked } => self.liked(track, liked, cx),
@@ -611,9 +691,10 @@ impl Devices {
                 .as_ref()
                 .is_some_and(|e| e.state.playing);
         self.roster = roster;
+        self.verify_companion();
         // playback taken for a local file is never reported, so the network never releases it,
         // and another device starting to play is what takes it back
-        if started && self.claimed && self.sent.is_none() {
+        if (started || (moved && self.companion_selected)) && self.claimed && self.sent.is_none() {
             self.claimed = false;
             self.here(cx, |playback, cx| playback.pause(cx));
         }
@@ -748,6 +829,12 @@ impl Devices {
 
     /// Carries out what another device asked of this one.
     fn run(&mut self, command: Command, cx: &mut Context<Self>) {
+        if self.companion_selected && !matches!(command, Command::Released) {
+            if let Some(device) = &self.companion_device {
+                self.control(&device.id, command);
+            }
+            return;
+        }
         match command {
             Command::Play => self.here(cx, |playback, cx| playback.resume(cx)),
             Command::Pause => self.here(cx, |playback, cx| playback.pause(cx)),
@@ -957,6 +1044,18 @@ impl Devices {
 
     /// Tells the account's other apps what plays, when something does that this app took.
     fn publish(&mut self, cx: &mut Context<Self>) {
+        if self.companion_selected {
+            let local = self
+                .playback
+                .read(cx)
+                .track()
+                .and_then(|track| track.id.as_deref())
+                .is_some_and(music::is_local_id);
+            if local {
+                self.now_playing(cx);
+            }
+            return;
+        }
         if self.changing.is_some() {
             return;
         }

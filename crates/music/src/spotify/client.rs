@@ -23,12 +23,18 @@ const MADE_FOR_YOU: &str = "0JQ5DAt0tbjZptfcdMSKl3";
 pub struct LibrespotClient {
     session: Session,
     connect: Arc<Connect>,
+    companion: Arc<super::soloist::Soloist>,
 }
 
 impl LibrespotClient {
     pub fn new(session: Session) -> Self {
         let connect = Arc::new(crate::spotify::connect::open(session.clone()));
-        Self { session, connect }
+        let companion = Arc::new(super::soloist::Soloist::new(&session));
+        Self {
+            session,
+            connect,
+            companion,
+        }
     }
 
     pub fn session(&self) -> &Session {
@@ -38,6 +44,10 @@ impl LibrespotClient {
 
 #[async_trait]
 impl MusicApi for LibrespotClient {
+    fn companion(&self) -> Option<Arc<dyn crate::companion::Companion>> {
+        Some(self.companion.clone())
+    }
+
     fn alive(&self) -> bool {
         !self.session.is_invalid()
     }

@@ -40,6 +40,7 @@ mod preview;
 mod rows;
 mod scrobbling;
 mod sessions;
+mod soloist;
 mod sound;
 mod storage;
 mod themes;
@@ -63,6 +64,7 @@ const STORAGE_POLL: Duration = Duration::from_secs(2);
 /// a search scores slots by their title and detail, and only visible groups build their rows.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Slot {
+    Soloist,
     Accounts,
     LocalFolder,
     Folders,
@@ -264,6 +266,7 @@ pub struct SettingsView {
     scrobble_second: Entity<Input>,
     /// The field for the custom name Sonora goes by in Spotify's device list.
     connect_name: Entity<Input>,
+    soloist_key: Entity<Input>,
     /// The address of the listener's own Sonora Sessions server.
     sessions_server: Entity<Input>,
     /// The service whose link dialog is open, by slug.
@@ -300,6 +303,9 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> Self {
         let settings = Sonora::global(cx).settings.clone();
+        let devices = Sonora::global(cx).devices.clone();
+        cx.observe(&devices, |this, _, cx| this.remeasure(cx))
+            .detach();
         let scrobbling = Sonora::global(cx).scrobbling.clone();
         let drm = Sonora::global(cx).drm.clone();
         let equalizer = Sonora::global(cx).equalizer.clone();
@@ -446,6 +452,11 @@ impl SettingsView {
             scrobble_first: cx.new(|cx| Input::new("settings-scrobble-key", cx)),
             scrobble_second: cx.new(|cx| Input::new("settings-scrobble-secret", cx)),
             connect_name,
+            soloist_key: cx.new(|cx| {
+                Input::new("settings-soloist-key-hint", cx)
+                    .masked()
+                    .compact()
+            }),
             sessions_server,
             scrobble_prompt: None,
             languages,
@@ -834,6 +845,7 @@ impl SettingsView {
             ),
             Slot::Sleep => (t!("settings-sleep"), t!("settings-sleep-detail")),
             Slot::StayAwake => (t!("settings-stay-awake"), t!("settings-stay-awake-detail")),
+            Slot::Soloist => (t!("settings-soloist"), t!("settings-soloist-detail")),
             Slot::Widevine => (t!("settings-widevine"), self.widevine_detail(cx)),
             Slot::OutputDevice => (
                 t!("settings-output-device"),
@@ -1002,6 +1014,7 @@ impl SettingsView {
             Slot::SampleRate => self.sample_rate_row(cx),
             Slot::Buffer => self.buffer_row(cx),
             Slot::MatchRate => self.match_rate_row(cx),
+            Slot::Soloist => self.soloist_row(cx),
             Slot::Widevine => self.widevine_row(cx),
             Slot::Equalizer => self.equalizer_row(cx),
             Slot::LyricsSources => self.lyrics_sources_row(cx),

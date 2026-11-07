@@ -771,28 +771,39 @@ impl Playback {
         else {
             return false;
         };
-        self.steer(
-            |_| {
-                Command::Start(connect::Start {
-                    state: Arc::new(connect::Snapshot {
-                        context: origin.and_then(|origin| match origin.whence {
-                            Whence::Radio => Some(connect::Collection::Radio(origin.id.clone())),
-                            _ => collection_of(origin),
-                        }),
-                        track: Some(connect::QueuedTrack::new(id, false)),
-                        playing: true,
-                        ..Default::default()
+        let Some(devices) = self.devices.as_ref().and_then(|devices| devices.upgrade()) else {
+            return false;
+        };
+        if self.local {
+            return false;
+        }
+        let Some(target) = devices.read(cx).pick_target() else {
+            return false;
+        };
+        let command = {
+            Command::Start(connect::Start {
+                state: Arc::new(connect::Snapshot {
+                    context: origin.and_then(|origin| match origin.whence {
+                        Whence::Radio => Some(connect::Collection::Radio(origin.id.clone())),
+                        _ => collection_of(origin),
                     }),
-                    restart: true,
+                    track: Some(connect::QueuedTrack::new(id, false)),
+                    playing: true,
                     ..Default::default()
-                })
-            },
-            cx,
-        )
+                }),
+                restart: true,
+                ..Default::default()
+            })
+        };
+        devices.read(cx).control(&target.device.id, command);
+        true
     }
 
     /// Plays a track the user picked, from its start.
     pub fn play(&mut self, track: &Track, cx: &mut Context<Self>) {
+        if self.hand_over(std::slice::from_ref(track), 0, None, cx) {
+            return;
+        }
         self.load_after(track, Start::Pick, cx);
     }
 
@@ -2557,6 +2568,17 @@ impl Playback {
         match self.local_active() {
             true => self.start_engine(playback, cx),
             false => self.rebind(playback, cx),
+        }
+    }
+
+    /// Rebuilds the provider engine after an explicit backend switch, leaving it paused.
+    pub(crate) fn change_backend(&mut self, cx: &mut Context<Self>) {
+        self.pause(cx);
+        self.load = None;
+        self.task = None;
+        self.engine = None;
+        if let Some(factory) = self.session.read(cx).playback() {
+            self.start_engine(factory, cx);
         }
     }
 

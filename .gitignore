@@ -3,6 +3,8 @@
 /.claude
 /.direnv
 /vendor
+/soloist
+/soloist.exe
 __pycache__/
 /.idea
 /flatpak/flatpak-repo
