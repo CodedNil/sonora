@@ -9,6 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
 use super::{Account, Link, Play, Secret, Service};
+use crate::{Album, ListeningStats, Ranked, SavedArtist, StatsPeriod, Track};
 use crate::escape;
 
 /// The loopback address the browser hands the token back on.
@@ -18,6 +19,12 @@ const PATH: &str = "/scrobble";
 const WAIT: Duration = Duration::from_secs(300);
 /// How many listens last.fm's `track.scrobble` takes in one call.
 const LASTFM_BATCH: usize = 50;
+const STATS_PERIODS: &[StatsPeriod] = &[
+    StatsPeriod::Weeks,
+    StatsPeriod::Months,
+    StatsPeriod::Year,
+    StatsPeriod::AllTime,
+];
 
 const PAGE: &str = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
     <html><body>Sonora is connected. You can close this window.</body></html>";
@@ -139,6 +146,134 @@ impl Service for AudioScrobbler {
         }
         Ok(())
     }
+
+    fn stats_periods(&self) -> &'static [StatsPeriod] {
+        STATS_PERIODS
+    }
+
+    async fn stats(&self, account: &Account, period: StatsPeriod) -> Result<ListeningStats> {
+        let range = match period {
+            StatsPeriod::Weeks => "7day",
+            StatsPeriod::Months => "6month",
+            StatsPeriod::Year => "12month",
+            StatsPeriod::AllTime => "overall",
+        };
+        let key = match account.key.is_empty() {
+            true => ANONYMOUS,
+            false => &account.key,
+        };
+        let (artists, tracks, albums) = tokio::try_join!(
+            self.stats_call("user.getTopArtists", account, key, range),
+            self.stats_call("user.getTopTracks", account, key, range),
+            self.stats_call("user.getTopAlbums", account, key, range),
+        )?;
+        let artists = rows(&artists, "topartists", "artist")
+            .into_iter()
+            .map(|row| Ranked {
+                item: SavedArtist {
+                    name: string(row, "name"),
+                    ..Default::default()
+                },
+                count: number(row, "playcount"),
+            })
+            .collect();
+        let tracks = rows(&tracks, "toptracks", "track")
+            .into_iter()
+            .map(|row| {
+                let artist = row
+                    .get("artist")
+                    .and_then(|artist| artist.get("name").or(Some(artist)))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                Ranked {
+                    item: Track {
+                        name: string(row, "name"),
+                        artists: artist,
+                        album: row
+                            .get("album")
+                            .and_then(|album| album.get("#text"))
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        playable: false,
+                        ..Default::default()
+                    },
+                    count: number(row, "playcount"),
+                }
+            })
+            .collect();
+        let albums = rows(&albums, "topalbums", "album")
+            .into_iter()
+            .map(|row| Ranked {
+                item: Album {
+                    name: string(row, "name"),
+                    artists: row
+                        .get("artist")
+                        .and_then(|artist| artist.get("name").or(Some(artist)))
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    ..Default::default()
+                },
+                count: number(row, "playcount"),
+            })
+            .collect();
+        Ok(ListeningStats { artists, tracks, albums, ..Default::default() })
+    }
+}
+
+impl AudioScrobbler {
+    async fn stats_call(
+        &self,
+        method: &str,
+        account: &Account,
+        key: &str,
+        period: &str,
+    ) -> Result<serde_json::Value> {
+        let answer = super::http()
+            .get(self.endpoint)
+            .query(&[
+                ("method", method),
+                ("user", account.name.as_str()),
+                ("api_key", key),
+                ("format", "json"),
+                ("period", period),
+                ("limit", "50"),
+            ])
+            .send()
+            .await
+            .context("cannot reach scrobbling stats")?;
+        let status = answer.status();
+        let value: serde_json::Value = answer
+            .json()
+            .await
+            .context("cannot read scrobbling stats")?;
+        if !status.is_success() || value.get("error").is_some() {
+            bail!("{} refused the stats request: {}", self.id, value);
+        }
+        Ok(value)
+    }
+}
+
+fn rows<'a>(value: &'a serde_json::Value, parent: &str, child: &str) -> Vec<&'a serde_json::Value> {
+    value
+        .get(parent)
+        .and_then(|value| value.get(child))
+        .map(|items| match items {
+            serde_json::Value::Array(items) => items.iter().collect(),
+            serde_json::Value::Object(_) => vec![items],
+            _ => Vec::new(),
+        })
+        .unwrap_or_default()
+}
+
+fn string(value: &serde_json::Value, key: &str) -> String {
+    value.get(key).and_then(serde_json::Value::as_str).unwrap_or_default().to_owned()
+}
+
+fn number(value: &serde_json::Value, key: &str) -> Option<usize> {
+    value.get(key).and_then(|number| number.as_str().and_then(|s| s.parse().ok()).or_else(|| number.as_u64().map(|n| n as usize)))
 }
 
 impl AudioScrobbler {

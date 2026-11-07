@@ -623,3 +623,50 @@ mod tests {
         }
     }
 }
+
+/// The fixed windows a provider can use for personal listening rankings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatsPeriod {
+    Weeks,
+    Months,
+    Year,
+    AllTime,
+    ThisWeek,
+    ThisMonth,
+    ThisYear,
+    Week,
+    Month,
+    Quarter,
+    HalfYear,
+}
+
+/// One ranked item. A missing count means the provider supplies affinity order alone.
+#[derive(Clone, Debug)]
+pub struct Ranked<T> {
+    pub item: T,
+    pub count: Option<usize>,
+}
+
+/// Personal listening rankings. Empty genres mean the source supplied no genre metadata.
+#[derive(Clone, Debug, Default)]
+pub struct ListeningStats {
+    pub tracks: Vec<Ranked<Track>>,
+    pub artists: Vec<Ranked<SavedArtist>>,
+    pub albums: Vec<Ranked<Album>>,
+    /// Catalog genre names, when a provider supplies a genre taxonomy.
+    pub genres: Vec<Ranked<String>>,
+    /// Track descriptors such as mood, energy, and style; these are not always genres.
+    pub descriptors: Vec<Ranked<String>>,
+    pub plays: Option<usize>,
+    /// Distinct catalog items and days in a timestamped recording, when available.
+    pub unique_tracks: Option<usize>,
+    pub unique_artists: Option<usize>,
+    /// Artists whose first play in Sonora's retained log falls inside the selected period.
+    pub new_artists: Option<usize>,
+    pub active_days: Option<usize>,
+    pub longest_streak: Option<usize>,
+    /// Local hour with the most recorded starts.
+    pub peak_hour: Option<u8>,
+    /// Count of recorded starts in each local clock hour, from midnight through 23:00.
+    pub hourly: Vec<usize>,
+}

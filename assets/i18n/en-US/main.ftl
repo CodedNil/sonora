@@ -1438,3 +1438,80 @@ response-graph-readout = { $frequency } · { $direction ->
         [down] -{ $gain }
        *[flat] { $gain }
     } dB
+
+# Listening statistics
+nav-stats = Stats
+stats-source = Statistics source
+stats-recorded = Sonora history
+stats-provider-note = Provider rankings and counts follow that service's own history and rules. Arbitrary dates are available for Sonora recorded history.
+stats-recorded-note = Plays started in Sonora on this account, including local files. Older plays trimmed before stats was added cannot be recovered.
+stats-scrobbler-note = Rankings and counts come from this connected scrobbler's listening history.
+stats-four-weeks = Last 4 weeks
+stats-six-months = Last 6 months
+stats-year = Last year
+stats-week = Last week
+stats-month = Last month
+stats-quarter = Last 3 months
+stats-half-year = Last 6 months
+stats-this-week = This week
+stats-this-month = This month
+stats-this-year = This year
+stats-replay-year = Latest Replay year
+stats-all-time = All recorded history
+stats-custom-dates = Date range
+stats-from = From
+stats-to = To
+stats-date-hint = YYYY-MM-DD
+stats-apply = Apply dates
+stats-invalid-dates = Enter valid dates in YYYY-MM-DD format, with the end on or after the start.
+stats-retained-since = Recorded history available from { $date }
+stats-loading = Loading your listening stats…
+stats-failed = Could not load listening stats. Try again, or choose Sonora history for recorded plays.
+stats-retry = Try again
+stats-empty = No listening data for this period yet.
+stats-top-artists = Top artists
+stats-top-songs = Top songs
+stats-top-albums = Top albums
+stats-provider-albums-note = Ranked by how many songs from each album appear in your provider's top tracks.
+stats-provider-genre-note = Derived from genre metadata on the ranked songs; counts use song plays when available.
+stats-top-genres = Top genres
+stats-top-descriptors = Track styles and moods
+stats-provider-genres-unavailable = This provider did not supply a genre taxonomy for this ranking.
+stats-provider-descriptors-note = Share of track descriptors across ranked songs. These can describe style or mood and are not all genres.
+stats-genres-empty = No genre tags are available for the plays in this period.
+stats-descriptors-empty = No track descriptors are available for this period.
+stats-overview-tracks = { $count ->
+    [one] { $count } unique song
+   *[other] { $count } unique songs
+    }
+stats-overview-artists = { $count ->
+    [one] { $count } artist
+   *[other] { $count } artists
+    }
+stats-overview-new-artists = { $count ->
+    [one] { $count } new artist discovered in Sonora
+   *[other] { $count } new artists discovered in Sonora
+    }
+stats-overview-days = { $count ->
+    [one] { $count } active day
+   *[other] { $count } active days
+    }
+stats-overview-streak = { $count ->
+    [one] Longest streak: { $count } day
+   *[other] Longest streak: { $count } days
+    }
+stats-overview-hour = Peak hour: { $hour }
+stats-hourly-chart-label = Listening starts by local hour of day
+stats-hourly-entry = { $hour } · { $count } starts
+stats-hour-label = { $hour }
+stats-rank = #{ $rank }
+stats-ranked-plays = { $count ->
+    [one] #{ $rank } · { $count } play
+   *[other] #{ $rank } · { $count } plays
+    }
+stats-plays = { $count ->
+    [one] { $count } play
+   *[other] { $count } plays
+    }
+stats-genre-share = { $genre } · { $percent }%
+stats-show-more = Show more

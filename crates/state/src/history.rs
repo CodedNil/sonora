@@ -5,7 +5,7 @@ use anyhow::{Context as _, Result};
 use gpui::{App, Context, Entity, Task};
 use music::{ArtistRef, Track};
 use rusqlite::types::Value;
-use rusqlite::{Connection, params, params_from_iter};
+use rusqlite::{Connection, OptionalExtension as _, params, params_from_iter};
 use storage::Database;
 
 use crate::playback::PlaybackEvent;
@@ -28,12 +28,12 @@ pub enum HistoryState {
 }
 
 #[derive(Clone)]
-struct Store {
+pub(crate) struct Store {
     database: Database,
 }
 
 impl Store {
-    fn new(database: Database) -> Self {
+    pub(crate) fn new(database: Database) -> Self {
         Self { database }
     }
 
@@ -72,29 +72,28 @@ impl Store {
                 ],
             )
             .context("cannot save listening history")?;
-        self.prune(scope)
-    }
-
-    fn prune(&self, scope: &str) -> Result<()> {
         self.open()?
             .execute(
-                "DELETE FROM plays
-                 WHERE scope = ?1
-                   AND rowid NOT IN (
-                       SELECT rowid FROM plays
-                       WHERE scope = ?1
-                       ORDER BY played_at DESC
-                       LIMIT ?2
-                   )",
-                params![scope, LOCAL_LIMIT],
+                "INSERT OR REPLACE INTO play_metadata (scope, track_id, tags) VALUES (?, ?, ?)",
+                params![
+                    scope,
+                    track_id,
+                    serde_json::to_string(&track.tags).context("cannot encode listening genres")?
+                ],
             )
-            .context("cannot trim listening history")?;
+            .context("cannot save listening genres")?;
         Ok(())
     }
 
     /// Runs one edit and says how it went.
     fn apply(&self, edit: Edit) -> Applied {
         match edit {
+            Edit::Save {
+                scope,
+                provider,
+                track,
+                played_at,
+            } => Applied::Saved(self.save(&scope, &provider, &track, played_at)),
             Edit::Remove { scope, track } => {
                 let rows = self.take(&scope, &track);
                 Applied::Removed { scope, track, rows }
@@ -164,18 +163,49 @@ impl Store {
     }
 
     fn wipe(&self, scope: &str) -> Result<()> {
-        self.open()?
+        let mut connection = self.open()?;
+        let transaction = connection
+            .transaction()
+            .context("cannot begin clearing listening history")?;
+        transaction
             .execute("DELETE FROM plays WHERE scope = ?", params![scope])
             .context("cannot clear listening history")?;
-        Ok(())
+        transaction
+            .execute("DELETE FROM play_metadata WHERE scope = ?", params![scope])
+            .context("cannot clear listening genres")?;
+        transaction
+            .commit()
+            .context("cannot clear listening history")
     }
 
     fn load(&self, scope: &str) -> Result<Vec<Track>> {
+        self.read(scope, LOCAL_LIMIT as i64)
+    }
+
+    /// Reads the retained play log without the history page's display limit.
+    pub(crate) fn recorded(&self, scope: &str) -> Result<Vec<Track>> {
+        self.read(scope, i64::MAX)
+    }
+
+    /// Returns the provider slug recorded for this account's play log, if any.
+    pub(crate) fn recorded_provider(&self, scope: &str) -> Result<Option<String>> {
+        self.open()?
+            .query_row(
+                "SELECT provider FROM plays WHERE scope = ? ORDER BY played_at DESC LIMIT 1",
+                params![scope],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("cannot read listening history provider")
+    }
+
+    fn read(&self, scope: &str, limit: i64) -> Result<Vec<Track>> {
         let connection = self.open()?;
         let mut query = connection
             .prepare(
                 "SELECT track_id, played_at, name, playable, artists, artist_refs, album,
-                        album_id, cover, duration_ms, explicit
+                        album_id, cover, duration_ms, explicit,
+                        (SELECT tags FROM play_metadata m WHERE m.scope = plays.scope AND m.track_id = plays.track_id)
                  FROM plays
                  WHERE scope = ?
                  ORDER BY played_at DESC
@@ -183,7 +213,7 @@ impl Store {
             )
             .context("cannot prepare listening history read")?;
         let rows = query
-            .query_map(params![scope, LOCAL_LIMIT], |row| {
+            .query_map(params![scope, limit], |row| {
                 let refs = row.get_ref(5)?.as_str()?;
                 let artist_refs: Vec<ArtistRef> = serde_json::from_str(refs).unwrap_or_default();
                 let played_at: i64 = row.get(1)?;
@@ -200,6 +230,10 @@ impl Store {
                     duration: std::time::Duration::from_millis(duration.max(0) as u64),
                     added_at: Some(played_at / 1_000),
                     explicit: row.get(10)?,
+                    tags: row
+                        .get::<_, Option<String>>(11)?
+                        .and_then(|tags| serde_json::from_str(&tags).ok())
+                        .unwrap_or_default(),
                     ..Default::default()
                 })
             })
@@ -212,6 +246,12 @@ impl Store {
 /// A write to the play log. Edits run in batches, one batch at a time and in the order they
 /// were made, so an undo never lands before the removal it reverses.
 enum Edit {
+    Save {
+        scope: String,
+        provider: String,
+        track: Box<Track>,
+        played_at: i64,
+    },
     /// Deletes one play and keeps its rows so it can be put back.
     Remove {
         scope: String,
@@ -223,6 +263,7 @@ enum Edit {
 
 /// How an [`Edit`] went.
 enum Applied {
+    Saved(Result<()>),
     Removed {
         scope: String,
         track: Box<Track>,
@@ -376,6 +417,7 @@ impl History {
                     Err(error) => log::warn!("history: write task failed: {error}"),
                 }
                 this.flush(cx);
+                cx.notify();
             })
             .ok();
         }));
@@ -388,6 +430,12 @@ impl History {
         let mut removed = Vec::new();
         for done in applied {
             match done {
+                Applied::Saved(result) => {
+                    if let Err(error) = result {
+                        log::warn!("history: cannot save a play: {error:#}");
+                    }
+                    cx.notify();
+                }
                 Applied::Removed {
                     scope,
                     track,
@@ -583,19 +631,15 @@ impl History {
 
         self.report(&track_id, cx);
 
-        let store = self.store.clone();
-        let provider = provider.to_owned();
-        self.io.spawn(async move {
-            let saved = tokio::task::spawn_blocking(move || {
-                store.save(&scope, &provider, &track, played_at)
-            })
-            .await;
-            match saved {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => log::warn!("history: cannot save a play: {error:#}"),
-                Err(error) => log::warn!("history: save task failed: {error}"),
-            }
-        });
+        self.write(
+            Edit::Save {
+                scope,
+                provider: provider.to_owned(),
+                track: Box::new(track),
+                played_at,
+            },
+            cx,
+        );
     }
 
     /// Reports the play to the provider that owns the track, fire-and-forget. A failure is
@@ -615,10 +659,11 @@ impl History {
         });
     }
 
-    fn scope(&self, cx: &Context<Self>) -> Option<String> {
+    pub(crate) fn scope(&self, cx: &gpui::App) -> Option<String> {
         let session = self.session.read(cx);
         let SessionState::SignedIn(profile) = session.state() else {
-            return None;
+            return matches!(session.state(), SessionState::SignedOut)
+                .then(|| "local:guest".to_owned());
         };
         let provider = session.provider_slug()?;
         Some(format!("{provider}:{}", profile.id))

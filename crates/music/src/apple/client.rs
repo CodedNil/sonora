@@ -28,8 +28,9 @@ use crate::apple::wire::{self, Resource};
 use crate::engine::Loudness;
 use crate::{
     Album, AlbumCatalogue, AlbumDetail, Artist, ArtistCatalogue, ArtistProfile, Genre, GenreDetail,
-    GenreItem, GenreSection, HomeFeed, MediaKind, MusicApi, Page, Pages, PinOutcome, PinTarget,
-    PinTargetKind, Playlist, PlaylistDetail, SavedArtist, Track, UserProfile, escape,
+    GenreItem, GenreSection, HomeFeed, ListeningStats, MediaKind, MusicApi, Page, Pages,
+    PinOutcome, PinTarget, PinTargetKind, Playlist, PlaylistDetail, Ranked, SavedArtist,
+    StatsPeriod, Track, UserProfile, escape,
 };
 
 /// The API the web player calls.
@@ -127,6 +128,9 @@ const STATION: usize = 10;
 
 /// How many of those requests make a queue worth having behind a track.
 const STATION_PULLS: usize = 3;
+
+/// Apple Replay exposes only its latest eligible yearly summary.
+const STATS_PERIODS: &[StatsPeriod] = &[StatsPeriod::Year];
 
 /// How many times one read is sent before its failure belongs to the caller.
 ///
@@ -1319,6 +1323,78 @@ impl MusicApi for AppleClient {
         Ok(answered.data.iter().filter_map(wire::song).collect())
     }
 
+    fn stats_periods(&self) -> &'static [StatsPeriod] {
+        STATS_PERIODS
+    }
+
+    /// Reads Apple's latest eligible Replay year, including its provider-ranked tracks, albums,
+    /// and artists. Apple chooses the year; the API does not accept arbitrary date ranges here.
+    async fn stats(&self, period: StatsPeriod) -> Result<ListeningStats> {
+        anyhow::ensure!(
+            period == StatsPeriod::Year,
+            "Apple Replay only exposes a yearly summary"
+        );
+        let body = self
+            .get(
+                "/me/music-summaries",
+                &[
+                    ("filter[year]", "latest"),
+                    ("views", "top-artists,top-albums,top-songs"),
+                ],
+            )
+            .await?;
+        let root: Value = serde_json::from_str(&body).context("cannot decode Apple Replay")?;
+        let views = root
+            .get("data")
+            .and_then(Value::as_array)
+            .and_then(|summaries| summaries.first())
+            .and_then(|summary| summary.get("views"));
+        let items = |key: &str| {
+            views
+                .and_then(|views| views.get(key))
+                .and_then(|view| view.get("data"))
+                .and_then(Value::as_array)
+        };
+        let tracks = items("top-songs")
+            .into_iter()
+            .flatten()
+            .filter_map(apple_replay_track)
+            .collect::<Vec<_>>();
+        let albums = items("top-albums")
+            .into_iter()
+            .flatten()
+            .filter_map(apple_replay_album)
+            .collect();
+        let artists = items("top-artists")
+            .into_iter()
+            .flatten()
+            .filter_map(apple_replay_artist)
+            .collect();
+        let mut genres = HashMap::<String, Ranked<String>>::new();
+        for ranked in &tracks {
+            for genre in &ranked.item.tags {
+                let key = genre.trim().to_lowercase();
+                if key.is_empty() || key == "music" {
+                    continue;
+                }
+                let entry = genres.entry(key).or_insert_with(|| Ranked {
+                    item: genre.clone(),
+                    count: Some(0),
+                });
+                *entry.count.as_mut().unwrap() += ranked.count.unwrap_or(1);
+            }
+        }
+        let mut genres = genres.into_values().collect::<Vec<_>>();
+        genres.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.item.cmp(&b.item)));
+        Ok(ListeningStats {
+            tracks,
+            albums,
+            artists,
+            genres,
+            ..Default::default()
+        })
+    }
+
     /// The songs the listener has added. Only the ones with a catalog id are listed: an upload
     /// has no catalog encode behind it, and this path plays catalog tracks.
     async fn all_tracks(&self) -> Result<Vec<Track>> {
@@ -2080,6 +2156,109 @@ fn parse(text: &str) -> Value {
         true => Value::Null,
         false => serde_json::from_str(text).unwrap_or(Value::Null),
     }
+}
+
+/// Reads a count from one Apple Replay resource when Apple includes it.
+fn replay_count(value: &Value) -> Option<usize> {
+    let attributes = value.get("attributes")?;
+    ["playCount", "playcount", "plays"]
+        .iter()
+        .find_map(|key| attributes.get(*key).and_then(Value::as_u64))
+        .and_then(|count| usize::try_from(count).ok())
+}
+
+/// Expands Apple's artwork template to the requested cover size.
+fn replay_cover(value: &Value) -> Option<String> {
+    value
+        .get("attributes")?
+        .get("artwork")?
+        .get("url")?
+        .as_str()
+        .map(|url| url.replace("{w}", "640").replace("{h}", "640"))
+}
+
+/// Turns one Apple Replay song row into Sonora's shared ranked-track model.
+fn apple_replay_track(value: &Value) -> Option<Ranked<Track>> {
+    let attributes = value.get("attributes")?;
+    let name = attributes.get("name")?.as_str()?.to_owned();
+    let artist = attributes
+        .get("artistName")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let album = attributes
+        .get("albumName")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let tags = attributes
+        .get("genreNames")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    let duration = attributes
+        .get("durationInMillis")
+        .and_then(Value::as_u64)
+        .map(Duration::from_millis)
+        .unwrap_or_default();
+    Some(Ranked {
+        item: Track {
+            id: value.get("id").and_then(Value::as_str).map(str::to_owned),
+            name,
+            playable: true,
+            artists: artist.clone(),
+            artist_refs: if artist.is_empty() {
+                Vec::new()
+            } else {
+                vec![crate::ArtistRef {
+                    name: artist,
+                    id: None,
+                }]
+            },
+            album,
+            cover: replay_cover(value),
+            duration,
+            tags,
+            ..Default::default()
+        },
+        count: replay_count(value),
+    })
+}
+
+/// Turns one Apple Replay album row into Sonora's shared ranked-album model.
+fn apple_replay_album(value: &Value) -> Option<Ranked<Album>> {
+    let attributes = value.get("attributes")?;
+    Some(Ranked {
+        item: Album {
+            id: value.get("id")?.as_str()?.to_owned(),
+            name: attributes.get("name")?.as_str()?.to_owned(),
+            artists: attributes
+                .get("artistName")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            cover: replay_cover(value),
+            ..Default::default()
+        },
+        count: replay_count(value),
+    })
+}
+
+/// Turns one Apple Replay artist row into Sonora's shared ranked-artist model.
+fn apple_replay_artist(value: &Value) -> Option<Ranked<SavedArtist>> {
+    let attributes = value.get("attributes")?;
+    Some(Ranked {
+        item: SavedArtist {
+            id: value.get("id")?.as_str()?.to_owned(),
+            name: attributes.get("name")?.as_str()?.to_owned(),
+            cover: replay_cover(value),
+            ..Default::default()
+        },
+        count: replay_count(value),
+    })
 }
 
 /// The recently played part of Quick picks: the albums and playlists recent plays came from in

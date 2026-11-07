@@ -63,6 +63,18 @@ impl MusicApi for LibrespotClient {
         ))
     }
 
+    fn stats_periods(&self) -> &'static [crate::StatsPeriod] {
+        &[
+            crate::StatsPeriod::Weeks,
+            crate::StatsPeriod::Months,
+            crate::StatsPeriod::Year,
+        ]
+    }
+
+    async fn stats(&self, period: crate::StatsPeriod) -> Result<crate::ListeningStats> {
+        pathfinder::stats(&self.session, period).await
+    }
+
     async fn profile(&self) -> Result<UserProfile> {
         Ok(profiles::own(&self.session).await)
     }

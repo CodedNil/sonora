@@ -32,6 +32,12 @@ const SCHEMA: &str = "
     );
     CREATE INDEX IF NOT EXISTS plays_scope_time
         ON plays (scope, played_at DESC);
+    CREATE TABLE IF NOT EXISTS play_metadata (
+        scope TEXT NOT NULL,
+        track_id TEXT NOT NULL,
+        tags TEXT NOT NULL,
+        PRIMARY KEY (scope, track_id)
+    );
     CREATE TABLE IF NOT EXISTS flags (
         key TEXT PRIMARY KEY,
         value INTEGER NOT NULL

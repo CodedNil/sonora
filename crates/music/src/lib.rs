@@ -55,9 +55,10 @@ pub use equalizer::Equalizer;
 pub use models::{
     Album, AlbumCatalogue, AlbumDetail, Artist, ArtistCatalogue, ArtistProfile, ArtistRef,
     Contributor, CoverSize, Credit, Genre, GenreDetail, GenreItem, GenreSection, HomeFeed,
-    ImportedPlaylist, Lyrics, LyricsHit, LyricsLane, LyricsLine, LyricsQuery, LyricsWord,
-    PinOutcome, PinTarget, PinTargetKind, Playlist, PlaylistDetail, ReleaseType, RomanizedText,
-    SavedArtist, Track, TrackKey, TrackTags, UserDetail, UserProfile, Voice, WritingSystem,
+    ImportedPlaylist, ListeningStats, Lyrics, LyricsHit, LyricsLane, LyricsLine, LyricsQuery,
+    LyricsWord, PinOutcome, PinTarget, PinTargetKind, Playlist, PlaylistDetail, Ranked,
+    ReleaseType, RomanizedText, SavedArtist, StatsPeriod, Track, TrackKey, TrackTags, UserDetail,
+    UserProfile, Voice, WritingSystem,
 };
 pub use output::{Server as SoundServer, missing_bridge};
 pub use redact::redact;
@@ -222,6 +223,16 @@ pub trait MusicApi: Send + Sync {
     /// that keeps no cross-device history keeps the default and answers with nothing.
     async fn recently_played(&self) -> Result<Vec<Track>> {
         Ok(Vec::new())
+    }
+
+    /// The periods this provider can rank from its own listening data. Empty means unsupported.
+    fn stats_periods(&self) -> &'static [StatsPeriod] {
+        &[]
+    }
+
+    /// Personal rankings across devices, in the provider's order; counts may be unavailable.
+    async fn stats(&self, _period: StatsPeriod) -> Result<ListeningStats> {
+        anyhow::bail!("this provider does not expose listening stats")
     }
 
     async fn playlists(&self) -> Result<Vec<Playlist>>;

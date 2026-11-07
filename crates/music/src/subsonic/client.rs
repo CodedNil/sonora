@@ -19,7 +19,8 @@ use crate::subsonic::wire;
 use crate::{
     Album, AlbumCatalogue, AlbumDetail, Artist, ArtistProfile, Codec, Genre, GenreDetail,
     GenreItem, GenreSection, HomeFeed, MediaKind, MusicApi, Playlist, PlaylistDetail, Report,
-    SUGGESTIONS, SavedArtist, Track, Transcode, UserProfile, distinct_covers, iso_8601_to_epoch,
+    SUGGESTIONS, ListeningStats, Ranked, SavedArtist, StatsPeriod, Track, Transcode, UserProfile,
+    distinct_covers, iso_8601_to_epoch,
 };
 
 const PORTRAIT_LIMIT: usize = 24;
@@ -33,6 +34,7 @@ const HOME_ALBUMS: i32 = 12;
 /// How many albums playing an artist reads at once.
 const ALBUM_READS: usize = 4;
 const LIBRARY_PAGE: i32 = 500;
+const STATS_PERIODS: &[StatsPeriod] = &[StatsPeriod::AllTime];
 const API_VERSION: &str = "1.16.1";
 const CLIENT_NAME: &str = "sonora";
 /// The first Navidrome that takes a playlist picture through its own API.
@@ -520,6 +522,58 @@ impl MusicApi for SubsonicClient {
             offset += fetched as i32;
         }
         Ok(tracks)
+    }
+
+    fn stats_periods(&self) -> &'static [StatsPeriod] {
+        STATS_PERIODS
+    }
+
+    async fn stats(&self, period: StatsPeriod) -> Result<ListeningStats> {
+        anyhow::ensure!(period == StatsPeriod::AllTime, "Subsonic only exposes all-time play counts");
+        let tracks = self.all_tracks().await?;
+        let mut songs = Vec::new();
+        let mut artists: HashMap<String, Ranked<SavedArtist>> = HashMap::new();
+        let mut albums: HashMap<String, Ranked<Album>> = HashMap::new();
+        let mut plays = 0usize;
+        for track in tracks {
+            let Some(count) = track.playcount.and_then(|count| usize::try_from(count).ok()) else {
+                continue;
+            };
+            plays = plays.saturating_add(count);
+            songs.push(Ranked { item: track.clone(), count: Some(count) });
+            for artist in &track.artist_refs {
+                let key = artist.id.clone().unwrap_or_else(|| artist.name.clone());
+                let entry = artists.entry(key).or_insert_with(|| Ranked {
+                    item: SavedArtist { id: artist.id.clone().unwrap_or_default(), name: artist.name.clone(), ..Default::default() },
+                    count: Some(0),
+                });
+                *entry.count.as_mut().unwrap() = entry.count.unwrap().saturating_add(count);
+            }
+            if !track.album.is_empty() {
+                let key = track.album_id.clone().unwrap_or_else(|| track.album.clone());
+                let entry = albums.entry(key.clone()).or_insert_with(|| Ranked {
+                    item: Album { id: key, name: track.album.clone(), artists: track.artists.clone(), artist_refs: track.artist_refs.clone(), cover: track.cover.clone(), ..Default::default() },
+                    count: Some(0),
+                });
+                *entry.count.as_mut().unwrap() = entry.count.unwrap().saturating_add(count);
+            }
+        }
+        let sort = |a: &Ranked<_>, b: &Ranked<_>| b.count.cmp(&a.count);
+        songs.sort_by(sort);
+        let mut artists: Vec<_> = artists.into_values().collect();
+        artists.sort_by(sort);
+        let mut albums: Vec<_> = albums.into_values().collect();
+        albums.sort_by(sort);
+        songs.truncate(100);
+        artists.truncate(100);
+        albums.truncate(100);
+        Ok(ListeningStats {
+            tracks: songs,
+            artists,
+            albums,
+            plays: Some(plays),
+            ..Default::default()
+        })
     }
 
     async fn set_track_saved(&self, track_id: &str, saved: bool) -> Result<()> {

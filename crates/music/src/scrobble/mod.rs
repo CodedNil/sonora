@@ -5,6 +5,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::{Album, ListeningStats, Ranked, SavedArtist, StatsPeriod, Track};
+
 mod audioscrobbler;
 mod listenbrainz;
 mod maloja;
@@ -145,6 +147,16 @@ pub trait Service: Send + Sync {
     /// The account is one `connect` returned, since a row only submits while its account is
     /// linked and switched on.
     async fn scrobble(&self, account: &Account, plays: &[Play]) -> Result<()>;
+
+    /// Periods for which the linked account can read personal rankings.
+    fn stats_periods(&self) -> &'static [StatsPeriod] {
+        &[]
+    }
+
+    /// Reads personal rankings without changing the service's scrobble state.
+    async fn stats(&self, _account: &Account, _period: StatsPeriod) -> Result<ListeningStats> {
+        anyhow::bail!("{} does not expose listening stats", self.id())
+    }
 }
 
 /// The one http client every service shares, so they pool connections and reuse TLS sessions

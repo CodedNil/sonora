@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Explore top artists, songs, albums, genres and track descriptors, plus recorded listening patterns with custom dates and an hourly chart.
+
 ### Fixed
 
 - On macOS, Widevine is also found in registered browsers that have been renamed or moved.
