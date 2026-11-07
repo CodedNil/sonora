@@ -4,13 +4,13 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
-    AnyWindowHandle, App, Context, DragMoveEvent, Empty, EntityId, ListState, MouseButton,
-    MouseDownEvent, Pixels, Point, Render, ScrollHandle, SpringConfig, Task, WeakEntity, Window,
-    anchored, deferred, div, img, point, px,
+    AnimationExt as _, AnyWindowHandle, App, Context, DragMoveEvent, Empty, EntityId, ListState,
+    MouseButton, MouseDownEvent, Pixels, Point, Render, ScrollHandle, SpringAnimation,
+    SpringConfig, Task, WeakEntity, Window, anchored, deferred, div, img, point, px,
 };
 
 use crate::glide::Glide;
-use crate::motion::Glowing as _;
+use crate::motion::Springs;
 use crate::theme::ActiveTheme as _;
 
 const BAR: Pixels = px(6.);
@@ -19,7 +19,7 @@ const THUMB_INSET: Pixels = px(4.);
 const MIN_THUMB: Pixels = px(24.);
 const TRACK_INSET: Pixels = px(4.);
 const LINGER: Duration = Duration::from_secs(2);
-const IDLE: f32 = 0.;
+const IDLE: f32 = 0.15;
 const RESTING: f32 = 0.35;
 const ACTIVE: f32 = 0.55;
 const MIDDLE_SCROLL_DEADZONE: Pixels = px(8.);
@@ -567,7 +567,7 @@ pub fn update_middle_scroll(position: Point<Pixels>, window: &mut Window, cx: &m
 }
 
 impl Render for Scrollbar {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let target = self.target();
         let viewport = target.viewport();
         let hidden = self.maximum.unwrap_or_else(|| target.hidden());
@@ -596,9 +596,12 @@ impl Render for Scrollbar {
             .max(Pixels::ZERO);
         let thumb = (track * (viewport / content)).max(MIN_THUMB).min(track);
         let travel = track - thumb;
-        let resting = match self.always_visible || self.awake || self.hovered {
-            true => RESTING,
-            false => IDLE,
+        let opacity = if self.hovered {
+            ACTIVE
+        } else if self.always_visible || self.awake {
+            RESTING
+        } else {
+            IDLE
         };
 
         let jump = target.clone();
@@ -635,7 +638,7 @@ impl Render for Scrollbar {
                         .w(BAR)
                         .h(thumb)
                         .rounded_full()
-                        .bg(theme.muted_foreground.opacity(resting)),
+                        .bg(theme.muted_foreground.opacity(opacity)),
                 )
                 .children(mark)
                 .into_any_element();
@@ -687,8 +690,6 @@ impl Render for Scrollbar {
                     .w(BAR)
                     .h(thumb)
                     .rounded_full()
-                    .bg(theme.muted_foreground.opacity(resting))
-                    .glow(theme.muted_foreground.opacity(ACTIVE), window, cx)
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,
@@ -736,6 +737,13 @@ impl Render for Scrollbar {
                             drag.set_offset(clamped);
                             this.moved(clamped, cx);
                         }),
+                    )
+                    .with_spring(
+                        "scrollbar-opacity",
+                        SpringAnimation::new(Springs::RESPONSIVE).to(opacity),
+                        move |thumb, opacity| {
+                            thumb.bg(theme.muted_foreground.opacity(opacity.clamp(0., 1.)))
+                        },
                     ),
             )
             .children(mark)
