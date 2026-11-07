@@ -6,7 +6,7 @@ use i18n::t;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::rc::Rc;
-use ui::{ActiveTheme as _, Filter, FilterChange, FlagAxis, RangeAxis, Unit};
+use ui::{ActiveTheme as _, Filter, FilterChange, RangeAxis, Unit};
 
 use crate::shared::menus::{ItemMenu, TrackColumns};
 use gpui::accesskit::Role;
@@ -179,8 +179,10 @@ pub(crate) struct TrackSource {
 }
 
 struct Spread {
-    stamp: usize,
+    stamp: (usize, usize),
     extent: Option<(f32, f32)>,
+    years: Vec<f32>,
+    popularity: Vec<f32>,
 }
 
 /// What the number at the head of a row counts.
@@ -237,7 +239,7 @@ impl TrackSource {
     /// shrink the slider that did the narrowing and leave the user with no way back.
     pub(crate) fn extent(&self, cx: &App) -> Option<(f32, f32)> {
         let tracks = self.provider.tracks(cx);
-        let stamp = tracks.len();
+        let stamp = (tracks.as_ptr() as usize, tracks.len());
         if let Some(spread) = self.spread.borrow().as_ref()
             && spread.stamp == stamp
         {
@@ -246,13 +248,30 @@ impl TrackSource {
 
         let mut low = f32::MAX;
         let mut high = f32::MIN;
+        let mut years = Vec::new();
+        let mut popularity = Vec::new();
         for track in tracks {
             let seconds = track.duration.as_secs_f32();
             low = low.min(seconds);
             high = high.max(seconds);
+            if track.year > 0 {
+                years.push(track.year as f32);
+            }
+            if track.popularity > 0 {
+                popularity.push(track.popularity as f32);
+            }
         }
         let extent = (low <= high).then_some((low, high));
-        *self.spread.borrow_mut() = Some(Spread { stamp, extent });
+        years.sort_by(f32::total_cmp);
+        years.dedup();
+        popularity.sort_by(f32::total_cmp);
+        popularity.dedup();
+        *self.spread.borrow_mut() = Some(Spread {
+            stamp,
+            extent,
+            years,
+            popularity,
+        });
 
         extent
     }
@@ -586,80 +605,96 @@ impl TableSource for TrackSource {
     }
 
     fn filter_axes(&self, cx: &App) -> Vec<Filter> {
-        let duration = self.extent(cx).map(|bounds| {
-            Filter::Range(
-                RangeAxis {
-                    key: "filter-duration",
-                    label: t!("filter-duration"),
-                    bounds,
-                    value: self.sieve.duration.unwrap_or(bounds),
-                    unit: Unit::Clock,
-                    values: None,
-                }
-                .clamped(),
-            )
-        });
+        if self.provider.tracks(cx).len() <= 1 {
+            return Vec::new();
+        }
+        let duration = self
+            .extent(cx)
+            .filter(|(low, high)| high - low > f32::EPSILON)
+            .map(|bounds| {
+                Filter::Range(
+                    RangeAxis {
+                        key: "filter-duration",
+                        label: t!("filter-duration"),
+                        bounds,
+                        value: self.sieve.duration.unwrap_or(bounds),
+                        unit: Unit::Clock,
+                        values: None,
+                    }
+                    .clamped(),
+                )
+            });
 
         let mut axes: Vec<Filter> = duration.into_iter().collect();
-        axes.extend([
-            Filter::Flag(FlagAxis {
-                key: "filter-hide-explicit",
-                label: t!("filter-hide-explicit"),
-                on: self.sieve.hide_explicit,
-            }),
-            Filter::Flag(FlagAxis {
-                key: "filter-playable",
-                label: t!("filter-playable"),
-                on: self.sieve.playable,
-            }),
-        ]);
-        if self.catalog(cx) {
-            axes.push(Filter::Flag(FlagAxis {
-                key: "filter-favorites",
-                label: t!("filter-favorites"),
-                on: self.sieve.favorites,
-            }));
+        let spread = self.spread.borrow();
+        let years = spread
+            .as_ref()
+            .map(|spread| spread.years.clone())
+            .unwrap_or_default();
+        if let (Some(first), Some(last)) = (years.first(), years.last())
+            && first < last
+        {
+            let bounds = (*first, *last);
+            axes.push(Filter::Range(
+                RangeAxis {
+                    key: "filter-year",
+                    label: t!("filter-year"),
+                    bounds,
+                    value: self.sieve.year.unwrap_or(bounds),
+                    unit: Unit::Plain,
+                    values: Some(years),
+                }
+                .clamped(),
+            ));
         }
-        // Offline mode already keeps a shelf to its downloads, so the filter would do nothing.
+        let popularity = spread
+            .as_ref()
+            .map(|spread| spread.popularity.clone())
+            .unwrap_or_default();
+        if let (Some(first), Some(last)) = (popularity.first(), popularity.last())
+            && first < last
+        {
+            let bounds = (*first, *last);
+            axes.push(Filter::Range(
+                RangeAxis {
+                    key: "filter-popularity",
+                    label: t!("filter-popularity"),
+                    bounds,
+                    value: self.sieve.popularity.unwrap_or(bounds),
+                    unit: Unit::Plain,
+                    values: Some(popularity),
+                }
+                .clamped(),
+            ));
+        }
+
+        drop(spread);
+        // Offline mode already keeps a shelf to its downloads, so that filter would do nothing.
         let offered = self.sieve.downloaded || !Sonora::global(cx).downloads.read(cx).is_empty();
-        if offered && !self.downloads_only(cx) {
-            axes.push(Filter::Flag(FlagAxis {
-                key: "filter-downloaded",
-                label: t!("filter-downloaded"),
-                on: self.sieve.downloaded,
-            }));
-        }
+        axes.extend(
+            self.sieve
+                .flags(self.catalog(cx), offered && !self.downloads_only(cx)),
+        );
         axes
     }
 
     fn filter(&mut self, change: FilterChange, _cx: &App) -> bool {
         match change {
-            FilterChange::Range("filter-duration", value) => {
-                self.sieve.duration = Some(value);
-                true
-            }
-            FilterChange::Flag("filter-hide-explicit", value) => {
-                self.sieve.hide_explicit = value;
-                true
-            }
-            FilterChange::Flag("filter-playable", value) => {
-                self.sieve.playable = value;
-                true
-            }
-            FilterChange::Flag("filter-favorites", value) => {
-                self.sieve.favorites = value;
-                true
-            }
-            FilterChange::Flag("filter-downloaded", value) => {
-                self.sieve.downloaded = value;
-                true
-            }
-            FilterChange::Reset => {
-                self.sieve = Default::default();
-                true
-            }
-            _ => false,
+            FilterChange::Range("filter-year", value) => self.sieve.year = Some(value),
+            FilterChange::Range("filter-popularity", value) => self.sieve.popularity = Some(value),
+            FilterChange::Range("filter-duration", value) => self.sieve.duration = Some(value),
+            FilterChange::Flag(key, value) => match key {
+                "filter-hide-explicit" => self.sieve.hide_explicit = value,
+                "filter-playable" => self.sieve.playable = value,
+                "filter-collaborations" => self.sieve.collaborations = value,
+                "filter-favorites" => self.sieve.favorites = value,
+                "filter-downloaded" => self.sieve.downloaded = value,
+                _ => return false,
+            },
+            FilterChange::Reset => self.sieve = Default::default(),
+            _ => return false,
         }
+        true
     }
 
     fn filtered(&self, _cx: &App) -> bool {

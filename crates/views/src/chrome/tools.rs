@@ -2,10 +2,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{AnyElement, App, div};
+use gpui::{AnyElement, App, SharedString, div, svg};
 use ui::{
     ActiveTheme as _, Button, Filter, FilterChange, MenuItem, Mode, Picker, Popovers,
-    RangeScrubber, RangeState, Sort, SortAxis, Text, eyebrow,
+    RangeScrubber, RangeState, Sort, SortAxis, Text, Tipped as _, Unit, eyebrow,
 };
 
 const FILTERS: &str = "filters";
@@ -67,8 +67,37 @@ pub(crate) fn filters(
     filter_fn: impl Fn(FilterChange, &mut App) + 'static,
     cx: &App,
 ) -> AnyElement {
+    if axes.is_empty() {
+        return div().into_any_element();
+    }
     let theme = *cx.theme();
     let narrowed = axes.iter().any(|axis| axis.narrowed());
+    let active = div().flex().items_center().gap_1().children(
+        axes.iter()
+            .filter(|axis| axis.narrowed())
+            .map(|axis| match axis {
+                Filter::Range(axis) => div()
+                    .id(axis.key)
+                    .text_size(theme.text(Text::Small))
+                    .tip_label(axis.label.clone(), ui::Perch::Below)
+                    .child(compact_range(axis))
+                    .into_any_element(),
+                Filter::Flag(axis) => div()
+                    .id(axis.key)
+                    .tip_label(axis.label.clone(), ui::Perch::Below)
+                    .map(|this| match filter_icon(axis.key) {
+                        Some(icon) => this.child(
+                            svg()
+                                .path(icons::path(icon))
+                                .size(theme.text(Text::Label))
+                                .flex_none()
+                                .text_color(theme.foreground),
+                        ),
+                        None => this.child(axis.label.clone()),
+                    })
+                    .into_any_element(),
+            }),
+    );
     let filter_fn = Rc::new(filter_fn);
 
     let items = axes.iter().map(|axis| match axis {
@@ -123,6 +152,7 @@ pub(crate) fn filters(
             let filter_fn = filter_fn.clone();
 
             MenuItem::new(key, axis.label.clone())
+                .when_some(filter_icon(key), |item, icon| item.icon(icon))
                 .selected(on)
                 .on_click(move |_, _, cx| filter_fn(FilterChange::Flag(key, !on), cx))
         }
@@ -131,6 +161,16 @@ pub(crate) fn filters(
     let reset = filter_fn.clone();
 
     Picker::icon(FILTERS, group, "icons/funnel.svg")
+        .when(narrowed, |picker| {
+            picker.button(
+                Button::new("active-filters")
+                    .outline()
+                    .small()
+                    .rounded_full()
+                    .icon("icons/funnel.svg")
+                    .leading(active),
+            )
+        })
         .tooltip("tool-filters")
         .sticky()
         .width(Picker::WIDE)
@@ -168,4 +208,33 @@ pub(crate) fn views(
             shift(next, cx);
         })
         .into_any_element()
+}
+
+/// Uses the same bounds as the range control, omitting the unchanged end from its summary.
+fn compact_range(axis: &ui::RangeAxis) -> SharedString {
+    let low = axis.unit.say(axis.value.0);
+    let high = axis.unit.say(axis.value.1);
+    let (from, to) = axis.share();
+    let value = match (from > f32::EPSILON, to < 1. - f32::EPSILON) {
+        (false, true) => format!("<{high}"),
+        (true, false) => format!(">{low}"),
+        _ => format!("{low}–{high}"),
+    };
+    match axis.unit {
+        Unit::Clock => value.into(),
+        Unit::Plain => format!("{}: {value}", axis.label).into(),
+    }
+}
+
+/// Shared compact symbols for filter flags, with the localized name retained as a tooltip.
+fn filter_icon(key: &str) -> Option<&'static str> {
+    match key {
+        "filter-hide-explicit" => Some("icons/explicit-off.svg"),
+        "filter-playable" => Some("icons/circle-check.svg"),
+        "filter-favorites" => Some("icons/heart-filled.svg"),
+        "filter-collaborations" => Some("icons/users-round-collaboration.svg"),
+        "filter-downloaded" => Some("icons/download.svg"),
+        "filter-owned" => Some("icons/user-round.svg"),
+        _ => None,
+    }
 }

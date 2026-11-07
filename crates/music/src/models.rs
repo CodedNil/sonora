@@ -82,6 +82,8 @@ pub struct Track {
     pub duration: Duration,
     pub added_at: Option<i64>,
     pub added_by: Option<Arc<Contributor>>,
+    /// Reported release year; zero means the provider did not supply one.
+    pub year: i32,
     pub playcount: Option<u64>,
     pub popularity: u32,
     pub explicit: bool,

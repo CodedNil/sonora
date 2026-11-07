@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Filter track lists by release year and popularity when providers report those values.
+
 ### Changed
 
 - Lyrics line spacing scales with the text size for a more balanced layout.
