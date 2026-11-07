@@ -11,6 +11,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Lyrics line spacing scales with the text size for a more balanced layout.
 - Fullscreen controls start hiding after one second of inactivity, with the same smooth cover transition.
+- Playlist filters, sorting and track search sit alongside the playlist actions instead of in the top bar.
 
 ### Fixed
 

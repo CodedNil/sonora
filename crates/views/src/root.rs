@@ -585,7 +585,10 @@ impl Root {
     }
 
     fn options(&self, cx: &Context<Self>) -> TitleBarOptions {
-        let content = self.toolbar.clone().map(Into::into);
+        let content = match router::trail(cx).read(cx).current() {
+            Destination::Playlist(_) => None,
+            _ => self.toolbar.clone().map(Into::into),
+        };
 
         match self.view {
             RootView::Workspace => self.shells.workspace.read(cx).title_bar(content, cx),

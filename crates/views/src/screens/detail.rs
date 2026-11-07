@@ -466,7 +466,12 @@ impl DetailView {
             .children(shuffle)
             .children(library)
             .children(download)
-            .children(overflow);
+            .children(overflow)
+            .when(self.section == "playlist", |this| {
+                this.child(div().flex_1().min_w_0())
+                    .child(self.toolbar.clone())
+            })
+            .min_w_0();
 
         let cover = header.and_then(|header| header.cover.clone());
         let pin = self.detail.read(cx).id().map(|id| {
