@@ -5,24 +5,24 @@ use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, MouseButton,
-    MouseDownEvent, Pixels, Point, Render, ScrollHandle, SharedString, WeakEntity, Window, div,
+    MouseDownEvent, Pixels, Render, ScrollHandle, SharedString, WeakEntity, Window, div,
 };
 use i18n::t;
 use input::SEARCH_CONTEXT;
-use music::{Album, Playlist, SavedArtist, Track};
-use router::{Destination, navigate};
+use music::{Album, Playlist, ReleaseType, SavedArtist, Track};
+use router::{Destination, NavEntry, Place, navigate};
 use ui::Input;
 
 use crate::chrome::Chrome;
-use crate::shared::menus::{ItemMenu, album_menu, artist_menu, playlist_menu};
+use crate::shared::menus::{CardMenu, Item};
 use state::{
     AlbumHit, ArtistHit, Genres, Hit, Kind, Network, Playback, PlaylistHit, Search, Sonora,
 };
 use ui::ActiveTheme as _;
 use ui::{
-    Activate, Button, Card, Deck, Deselect, Dismiss, Dropdown, Pinnable, Popup, Room, Scrollbar,
-    Scroller, SelectLeft, SelectNext, SelectPrevious, SelectRight, Separator, Submit, Text, Theme,
-    VAST, clock, eyebrow, scrolled, snapped, tabular, vacant,
+    Activate, Button, Card, Deck, Deselect, Dismiss, Dropdown, Pinnable, Room, Scrollbar, Scroller,
+    SelectLeft, SelectNext, SelectPrevious, SelectRight, Separator, Submit, Text, Theme, clock,
+    eyebrow, scrolled, snapped, tabular, vacant,
 };
 
 use crate::shared::cards;
@@ -130,8 +130,6 @@ pub(crate) struct SearchView {
     albums: Entity<Scrollbar>,
     mixed: Entity<Scrollbar>,
     browsing: Entity<Scrollbar>,
-    track_menu: ItemMenu,
-    context_menu: Option<(HitMenu, Point<Pixels>)>,
     focus: FocusHandle,
     cursor: Option<(usize, usize)>,
     rows: [usize; 3],
@@ -139,7 +137,27 @@ pub(crate) struct SearchView {
 }
 
 impl SearchView {
+    /// The field the title bar shows for search. The screen asks with whatever it holds, and
+    /// typing into it from anywhere else comes here. Its browse button empties it and opens the
+    /// screen, which then shows the genres to browse.
+    pub(crate) fn field(cx: &mut App) -> Entity<Input> {
+        cx.new(|cx| {
+            let field = cx.weak_entity();
+            Input::new("search-placeholder", cx)
+                .icon("icons/search.svg")
+                .clearable()
+                .pill()
+                .action("icons/layout-grid.svg", "search-browse", move |_, cx| {
+                    field.update(cx, |field, cx| field.set_text("", cx)).ok();
+                    navigate(Destination::Search, cx);
+                })
+        })
+    }
+
+    /// Builds the screen around `input`, the field from [`SearchView::field`]. The title bar
+    /// draws it while search is placed there, and the screen draws it otherwise.
     pub(crate) fn new(
+        input: Entity<Input>,
         search: Entity<Search>,
         suggestions: Entity<Search>,
         genres: Entity<Genres>,
@@ -148,11 +166,7 @@ impl SearchView {
         cx: &mut Context<Self>,
     ) -> Self {
         cx.observe(&genres, |_, _, cx| cx.notify()).detach();
-        let input = cx.new(|cx| {
-            Input::new("search-placeholder", cx)
-                .icon("icons/search.svg")
-                .clearable()
-        });
+        genres.update(cx, |genres, cx| genres.load(cx));
 
         cx.observe(&input, |this, input, cx| {
             let query = input.read(cx).text().to_owned();
@@ -164,6 +178,13 @@ impl SearchView {
             this.pick = None;
             this.suggestions
                 .update(cx, |suggestions, cx| suggestions.ask(&query, cx));
+            if crate::chrome::place(NavEntry::Search, cx) == Place::Top {
+                this.search.update(cx, |search, cx| search.ask(&query, cx));
+                if !query.is_empty() && router::trail(cx).read(cx).current() != Destination::Search
+                {
+                    navigate(Destination::Search, cx);
+                }
+            }
             // An emptied field goes back to browsing rather than keeping the last results.
             if query.trim().is_empty() {
                 this.search.update(cx, |search, cx| search.ask("", cx));
@@ -186,14 +207,14 @@ impl SearchView {
         cx.on_blur(&field, window, |_, _, cx| cx.notify()).detach();
 
         cx.observe(&search, |this, _, cx| {
-            this.track_menu.reset(cx);
-            this.context_menu = None;
             this.cursor = None;
             this.on_best = false;
             this.rows = [0; 3];
             cx.notify();
         })
         .detach();
+        let settings = Sonora::global(cx).settings.clone();
+        cx.observe(&settings, |_, _, cx| cx.notify()).detach();
         let chrome = Chrome::entity(cx);
         cx.observe(&chrome, |_, _, cx| cx.notify()).detach();
         let library = Sonora::global(cx).library.clone();
@@ -212,7 +233,6 @@ impl SearchView {
         search.update(cx, |search, cx| search.ask(&asked, cx));
 
         let me = cx.entity_id();
-        let playlist_scrollbar = cx.new(|_| Scrollbar::inset().watching(me));
 
         Self {
             input,
@@ -232,8 +252,6 @@ impl SearchView {
             albums: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(me)),
             mixed: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(me)),
             browsing: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(me)),
-            track_menu: ItemMenu::new(playlist_scrollbar, cx),
-            context_menu: None,
             focus: cx.focus_handle(),
             cursor: None,
             rows: [0; 3],
@@ -287,7 +305,10 @@ impl SearchView {
     /// Whether the panel shows: the field has the keyboard, nothing put the panel away, and it
     /// has rows or is still waiting on the first suggestions.
     fn panel_open(&self, window: &Window, cx: &App) -> bool {
-        if self.dismissed || !self.typing(window, cx) {
+        if crate::chrome::place(NavEntry::Search, cx) == Place::Top
+            || self.dismissed
+            || !self.typing(window, cx)
+        {
             return false;
         }
         let waiting = !self.typed.trim().is_empty() && self.suggestions.read(cx).is_loading();
@@ -482,7 +503,7 @@ impl SearchView {
     /// The search field with its panel and the button that runs the full search. Once the page
     /// is too narrow for two columns of categories, the panel spans the button too, so the
     /// suggestions get the whole width.
-    fn field(&self, gutter: Pixels, window: &Window, cx: &Context<Self>) -> AnyElement {
+    fn search_field(&self, gutter: Pixels, window: &Window, cx: &Context<Self>) -> AnyElement {
         let open = self.panel_open(window, cx);
         let me = cx.entity().downgrade();
         let input = div()
@@ -533,6 +554,11 @@ impl SearchView {
                 .child(button),
         };
         field.flex_none().px(gutter).into_any_element()
+    }
+
+    /// Moves from the title bar field into the results.
+    pub(crate) fn enter_results(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_next(&SelectNext, window, cx);
     }
 
     fn select_next(&mut self, _: &SelectNext, window: &mut Window, cx: &mut Context<Self>) {
@@ -1121,7 +1147,14 @@ impl SearchView {
         let theme = *cx.theme();
         let pad = theme.metrics.inset;
         let width = cells::content_width(window, pad * 2., cx);
-        let plates = shelves::grid("genre", found, width, window, cx);
+        let plates = shelves::grid(
+            "genre",
+            found,
+            self.browsing.read(cx).anchors(),
+            width,
+            window,
+            cx,
+        );
 
         div()
             .flex()
@@ -1243,6 +1276,7 @@ impl SearchView {
         let measured = self.lead.clone();
         let tracked = scroll.clone();
         let deck = Deck::new(format!("{id}-deck"))
+            .magnetic(bar.read(cx).anchors())
             .rows((0..seats.len()).map(|_| row))
             .gap(theme.font_size * ROW_GAP)
             .when(lead.is_some(), |deck| {
@@ -1369,9 +1403,13 @@ fn menu(
     move |event: &MouseDownEvent, window, cx| {
         window.prevent_default();
         me.update(cx, |this, cx| {
-            this.track_menu.reset(cx);
-            this.context_menu = Some((target.clone(), event.position));
-            cx.notify();
+            let item = match &target {
+                HitMenu::Song(track) => Item::Track(track.as_ref().clone()),
+                HitMenu::Album(hit) => Item::Album(album_of(hit, cx)),
+                HitMenu::Playlist(hit) => Item::Playlist(playlist_of(hit, cx)),
+                HitMenu::Artist(hit) => Item::Artist(artist_of(hit, cx)),
+            };
+            CardMenu::open(item, this.playback.clone(), event.position, cx);
         })
         .ok();
     }
@@ -1479,37 +1517,11 @@ impl Render for SearchView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *cx.theme();
         let pad = theme.metrics.inset;
-        let width = cells::content_width(window, pad * 2., cx);
         let stacked = !Chrome::room(window, cx).fits(Room::Wide);
-        let inset = match width > VAST {
-            true => (width - VAST) / 2.,
-            false => Pixels::ZERO,
-        };
         let asked = !self.search.read(cx).query().trim().is_empty();
-        let context_menu = self.context_menu.clone().map(|(target, position)| {
-            let menu = match target {
-                HitMenu::Song(track) => self.track_menu.for_track(&track, cx),
-                HitMenu::Album(hit) => album_menu(
-                    album_of(&hit, cx),
-                    self.playback.clone(),
-                    &self.track_menu,
-                    cx,
-                ),
-                HitMenu::Playlist(hit) => {
-                    playlist_menu(playlist_of(&hit, cx), self.playback.clone(), cx)
-                }
-                HitMenu::Artist(hit) => {
-                    artist_menu(artist_of(&hit, cx), self.playback.clone(), false, cx)
-                }
-            };
+        let in_bar = crate::chrome::place(NavEntry::Search, cx) == Place::Top;
 
-            Popup::new(position, menu).on_close(cx.listener(|this, _, _, cx| {
-                this.context_menu = None;
-                cx.notify();
-            }))
-        });
-
-        let gutter = pad + inset;
+        let gutter = pad;
         let results = match self.failure(asked, gutter, cx) {
             Some(failure) => failure,
             None => match (asked, stacked) {
@@ -1534,7 +1546,6 @@ impl Render for SearchView {
             .flex_col()
             .size_full()
             .gap_6()
-            .pt(pad)
             .key_context(SEARCH_CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::select_next))
@@ -1545,11 +1556,12 @@ impl Render for SearchView {
             .on_action(cx.listener(Self::deselect_hit))
             .on_action(cx.listener(Self::submit))
             .on_action(cx.listener(Self::dismiss))
-            .child(self.field(gutter, window, cx))
+            .when(!in_bar, |this| {
+                this.child(self.search_field(gutter, window, cx))
+            })
             .when(!stacked, |this| {
                 this.children(self.best(cx).map(|best| div().px(gutter).child(best)))
             })
             .child(results)
-            .when_some(context_menu, |this, menu| this.child(menu))
     }
 }

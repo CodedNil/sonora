@@ -1,14 +1,13 @@
 use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{App, Entity, MouseDownEvent, SharedString, Window, div};
+use gpui::{App, Entity, SharedString, div};
 use music::Track;
 use state::Playback;
 use ui::{ActiveTheme as _, Button, Card, Text, clock, tabular};
 
 use crate::shared::cards;
 
-pub(crate) type ContextHandler = Rc<dyn Fn(usize, &MouseDownEvent, &mut Window, &mut App)>;
 pub(crate) type StartHandler = Rc<dyn Fn(usize, &mut App)>;
 pub(crate) type RemoveHandler = Rc<dyn Fn(usize, &mut App)>;
 
@@ -18,7 +17,6 @@ pub(crate) struct TrackCard {
     tracks: Rc<Vec<Track>>,
     playback: Entity<Playback>,
     detailed: bool,
-    context: Option<ContextHandler>,
     start: Option<StartHandler>,
     /// The Fluent key naming the remove button, and what it does with the track's place.
     remove: Option<(&'static str, RemoveHandler)>,
@@ -37,7 +35,6 @@ impl TrackCard {
             tracks,
             playback,
             detailed: false,
-            context: None,
             start: None,
             remove: None,
         }
@@ -45,11 +42,6 @@ impl TrackCard {
 
     pub(crate) fn detailed(mut self, detailed: bool) -> Self {
         self.detailed = detailed;
-        self
-    }
-
-    pub(crate) fn context(mut self, context: Option<ContextHandler>) -> Self {
-        self.context = context;
         self
     }
 
@@ -108,9 +100,6 @@ impl TrackCard {
             .when_some(artists, Card::bare_meta)
             .when_some(length, Card::trailing)
             .when_some(remove, Card::collapsed_action)
-            .when_some(self.context, |card, handler| {
-                card.menu(move |event, window, cx| handler(place, event, window, cx))
-            })
             .play(playing, move |_, _, cx| match current {
                 true => transport_playback.update(cx, |playback, cx| playback.toggle_play(cx)),
                 false => begin(

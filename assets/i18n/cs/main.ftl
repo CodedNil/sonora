@@ -268,6 +268,7 @@ devices-jam-invite-detail = { $count ->
    *[other] V tomto Jamu už je { $count } lidí.
 }
 devices-jam-invite-join = Připojit se
+devices-elsewhere-here = Přehrát tady
 fullscreen-artwork = Obálka
 
 # filters
@@ -566,7 +567,6 @@ settings-group-protected = Chráněné přehrávání
 settings-group-output = Výstup
 settings-group-status = Stav
 settings-group-startup = Spuštění
-settings-group-context-menus = Kontextové nabídky
 key-ctrl = Ctrl
 key-super = Super
 key-alt = Alt
@@ -633,9 +633,6 @@ settings-font-value = { $size } px
 settings-startup = Zobrazit při startu
 settings-startup-detail = Obrazovka, kterou Sonora otevře po spuštění
 settings-startup-no-guest = Nedostupné v režimu hosta
-settings-entries = Položky postranního panelu
-settings-entries-detail = Sekce uvedené v postranním panelu
-settings-entries-pick = Vyber položky
 settings-language = Jazyk
 settings-language-detail = Jazyk, který Sonora používá v celém rozhraní
 settings-language-system = Podle systému
@@ -995,8 +992,6 @@ settings-group-text = Text
 settings-group-motion = Pohyb
 settings-group-streaming = Streamování
 settings-group-spotify-connect = Spotify Connect
-settings-adaptive-menu = Adaptivní kontextová nabídka
-settings-adaptive-menu-detail = Vynechá položky, které řádek už ukazuje, například album nebo interpreta
 settings-accounts = Spravovat účty
 settings-accounts-detail = Služby, ze kterých toto zařízení umí přehrávat
 settings-provider-current = Přehrává se z této služby

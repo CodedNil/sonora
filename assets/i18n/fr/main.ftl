@@ -255,6 +255,7 @@ devices-jam-invite-detail = { $count ->
    *[other] { $count } personnes sont déjà dans cette Jam.
 }
 devices-jam-invite-join = Rejoindre
+devices-elsewhere-here = Lire ici
 fullscreen-artwork = Pochette
 
 # filters
@@ -547,7 +548,6 @@ settings-group-protected = Lecture protégée
 settings-group-output = Sortie
 settings-group-status = Statut
 settings-group-startup = Démarrage
-settings-group-context-menus = Menus contextuels
 key-ctrl = Ctrl
 key-super = Super
 key-alt = Alt
@@ -613,9 +613,6 @@ settings-font-value = { $size } px
 settings-startup = Afficher au démarrage
 settings-startup-detail = L'écran sur lequel Sonora s'ouvre
 settings-startup-no-guest = Indisponible en mode invité
-settings-entries = Entrées de la barre latérale
-settings-entries-detail = Les sections affichées dans la barre latérale
-settings-entries-pick = Choisir les entrées
 settings-language = Langue
 settings-language-detail = La langue utilisée par Sonora dans l'interface
 settings-language-system = Système
@@ -972,8 +969,6 @@ settings-group-text = Texte
 settings-group-motion = Animations
 settings-group-streaming = Streaming
 settings-group-spotify-connect = Spotify Connect
-settings-adaptive-menu = Menu contextuel adaptatif
-settings-adaptive-menu-detail = Omet les entrées que la ligne montre déjà, comme l'album ou l'artiste
 settings-accounts = Gérer les comptes
 settings-accounts-detail = Les services depuis lesquels cet appareil peut lire
 settings-provider-current = Lecture depuis ce service

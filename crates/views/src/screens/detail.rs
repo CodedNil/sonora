@@ -1,8 +1,8 @@
 use gpui::accesskit::{Role, Toggled};
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, Hsla, Pixels, Point, Render, ScrollHandle, SharedString,
-    WeakEntity, Window, div, px,
+    AnyElement, App, Context, Entity, Hsla, Pixels, Render, ScrollHandle, SharedString, WeakEntity,
+    Window, div,
 };
 
 use std::rc::Rc;
@@ -14,16 +14,13 @@ use state::{
     AppSettings, Collection, Detail, DownloadsChanged, LibraryEvent, Origin, Playback, Progress,
     Sonora,
 };
-use ui::{
-    ActiveTheme as _, ArrowRing, Button, InlineLink, InlineLinks, Menu, Picker, Popovers, Popup,
-    SortAxis,
-};
+use ui::{ActiveTheme as _, ArrowRing, Button, InlineLink, InlineLinks, Menu, Picker, Popovers};
 use ui::{
     ColumnSpec, FilterChange, Listing as _, MIN_CONTENT, Pending, Pin, PinKind, Scrollbar,
     Scroller, TableDelegate, TableEvent, TableState, Text, runtime, table,
 };
 
-use crate::shared::menus::{album_menu, playlist_menu};
+use crate::shared::menus::{CardMenu, Item};
 use crate::shared::trouble;
 
 use crate::chrome::tools::{self, Sliders};
@@ -108,7 +105,6 @@ pub(crate) struct DetailView {
     section: &'static str,
     sorted: Option<String>,
     shown: Option<String>,
-    context_menu: Option<Point<Pixels>>,
     toolbar: Entity<Toolbar>,
     popovers: Popovers,
     sliders: Sliders,
@@ -283,7 +279,6 @@ impl DetailView {
             section,
             sorted: None,
             shown: None,
-            context_menu: None,
             toolbar,
             popovers: Popovers::default(),
             sliders: Sliders::default(),
@@ -360,7 +355,7 @@ impl DetailView {
         page::restore(&self.settings.clone(), &self.table, &key, cx);
     }
 
-    fn header(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
+    fn header(&self, compact: bool, window: &Window, cx: &Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let header = self.detail.read(cx).header();
@@ -384,9 +379,12 @@ impl DetailView {
         let track_count = header.map(|header| header.track_count).unwrap_or(0);
         let listed = self.detail.read(cx).tracks();
         let duration: std::time::Duration = listed.iter().map(|track| track.duration).sum();
-        let eyebrow = match kind {
-            Collection::Playlist => t!("detail-playlist"),
-            Collection::Album => i18n::lookup(cards::release_key(release), None),
+        let (eyebrow, label) = match kind {
+            Collection::Playlist => (t!("detail-playlist"), t!("detail-play-playlist")),
+            Collection::Album => (
+                i18n::lookup(cards::release_key(release), None),
+                t!("detail-play-album"),
+            ),
         };
 
         let mut strip = HeroMetaStrip::new();
@@ -423,10 +421,19 @@ impl DetailView {
             strip = strip.text(runtime(duration));
         }
 
-        let play = HeroPlayButton::listed("play-detail", &self.table, self.playback.clone());
+        let play = HeroPlayButton::listed_labeled(
+            "play-detail",
+            label,
+            &self.table,
+            self.playback.clone(),
+        )
+        .compact(compact);
         let shuffle =
             HeroPlayButton::shuffle_listed("shuffle-detail", &self.table, self.playback.clone());
-        let menu = self.menu(cx);
+        let menu = match compact {
+            true => None,
+            false => self.menu(cx),
+        };
         // Buttons whose action the overflow menu also offers fold into it from the right when
         // the row runs out of room, Download first and Shuffle last. Play and More always show.
         let mut spare = match menu.is_some() {
@@ -445,12 +452,12 @@ impl DetailView {
                 true
             }
         };
-        let (shuffle, folded) = match fits() {
+        let (shuffle, folded) = match compact || fits() {
             true => (Some(shuffle), None),
             false => (None, Some(shuffle.shuffle_item(cx))),
         };
-        let library = self.library_button(cx).filter(|_| fits());
-        let download = self.download_button(cx).filter(|_| fits());
+        let library = self.library_button(cx).filter(|_| compact || fits());
+        let download = self.download_button(cx).filter(|_| compact || fits());
         let overflow = menu.map(|menu| {
             Picker::icon("detail-overflow", &self.popovers, "icons/ellipsis.svg")
                 .tooltip("common-more")
@@ -466,7 +473,9 @@ impl DetailView {
             .children(shuffle)
             .children(library)
             .children(download)
-            .children(overflow);
+            .children(overflow)
+            .min_w_0()
+            .child(self.toolbar.clone());
 
         let cover = header.and_then(|header| header.cover.clone());
         let pin = self.detail.read(cx).id().map(|id| {
@@ -479,6 +488,7 @@ impl DetailView {
 
         let view = self.me.clone();
         PageHero::new("detail-hero", title)
+            .compact(compact)
             .pending(header.is_none() && self.detail.read(cx).is_loading())
             .pin(pin)
             .cover(cover)
@@ -488,8 +498,9 @@ impl DetailView {
             .drag_start(move |event, window, cx| {
                 window.prevent_default();
                 view.update(cx, |this, cx| {
-                    this.context_menu = Some(event.position);
-                    cx.notify();
+                    if let Some(item) = this.menu_item(cx) {
+                        CardMenu::open(item, this.playback.clone(), event.position, cx);
+                    }
                 })
                 .ok();
             })
@@ -623,7 +634,7 @@ impl DetailView {
         notify: &Rc<dyn Fn(&mut App)>,
         cx: &mut App,
     ) -> Vec<AnyElement> {
-        let grid = CardGrid::layout(self.width - cx.theme().metrics.inset * 2.);
+        let grid = CardGrid::layout(self.width);
         let card = grid.card;
         let columns = grid.columns.max(1);
         let detail = self.detail.read(cx);
@@ -769,22 +780,26 @@ impl DetailView {
         )
     }
 
-    fn menu(&self, cx: &App) -> Option<Menu> {
+    /// Resolves the header's collection using current library metadata where available.
+    fn menu_item(&self, cx: &App) -> Option<Item> {
         let detail = self.detail.read(cx);
-        let id = detail.id()?.to_owned();
-        let header = detail.header()?;
-
-        Some(match header.kind {
-            Collection::Album => {
-                let menus = self.table.read(cx).delegate().source().menu();
-                album_menu(detail.album()?.clone(), self.playback.clone(), menus, cx)
-            }
-            Collection::Playlist => {
-                let saved = Sonora::global(cx).library.read(cx).playlist(&id).cloned();
-                let playlist = saved.or_else(|| detail.playlist().cloned())?;
-                playlist_menu(playlist, self.playback.clone(), cx)
-            }
+        let id = detail.id()?;
+        Some(match detail.header()?.kind {
+            Collection::Album => Item::Album(detail.album()?.clone()),
+            Collection::Playlist => Item::Playlist(
+                Sonora::global(cx)
+                    .library
+                    .read(cx)
+                    .playlist(id)
+                    .cloned()
+                    .or_else(|| detail.playlist().cloned())?,
+            ),
         })
+    }
+
+    fn menu(&self, cx: &App) -> Option<Menu> {
+        let menus = self.table.read(cx).delegate().source().menu();
+        Some(self.menu_item(cx)?.menu(menus, self.playback.clone(), cx))
     }
 }
 
@@ -802,26 +817,15 @@ impl Render for DetailView {
 
         self.table.claim(cx);
         let inset = cx.theme().metrics.inset;
-        let width = cells::content_width(window, Pixels::ZERO, cx);
-        if (width - self.width).abs() >= px(0.5) {
-            self.width = width;
-            self.table.set_width(width, cx);
-        }
+        page::resize(&self.table, &mut self.width, inset, window, cx);
 
         let scroll = self.scrollbar.read(cx).scroll().clone();
-        let viewport = page::viewport(&scroll, inset, window);
+        let sticky = page::sticky(&self.scrollbar, cx);
+        let viewport = page::viewport(&scroll, sticky, window);
+        let anchors = self.scrollbar.read(cx).anchors();
+        self.table.set_anchors(anchors, cx);
         self.table
             .update(cx, |table, _| table.set_viewport(viewport));
-
-        let context_menu = self.context_menu.and_then(|position| {
-            let menu = self.menu(cx)?;
-            Some(
-                Popup::new(position, menu).on_close(cx.listener(|this, _, _, cx| {
-                    this.context_menu = None;
-                    cx.notify();
-                })),
-            )
-        });
 
         while self.rails.is_empty() {
             self.rails.push(Rail::new(cx.entity_id()));
@@ -841,14 +845,16 @@ impl Render for DetailView {
             .child(
                 Scroller::new("detail-page", &self.scrollbar)
                     .bottom_inset(crate::chrome::Chrome::bottom(cx))
-                    .pt(inset)
+                    .px(inset)
                     .pb(inset)
-                    .child(div().px(inset).child(self.header(window, cx)))
+                    .child(self.header(false, window, cx))
                     .child(table(&self.table))
                     .children(self.notices(cx))
-                    .child(div().px(inset).pt_10().children(rails)),
+                    .child(div().pt_10().children(rails)),
             )
-            .when_some(context_menu, |this, menu| this.child(menu))
+            .when(sticky > Pixels::ZERO, |this| {
+                this.child(page::header(self.header(true, window, cx), inset, cx))
+            })
             .into_any_element()
     }
 }
@@ -907,17 +913,6 @@ impl Searchable for DetailView {
     }
 }
 
-impl DetailView {
-    fn sorts(&self, cx: &App) -> Vec<SortAxis> {
-        self.table.sortables(cx)
-    }
-
-    fn set_sort(&mut self, key: &'static str, cx: &mut Context<Self>) {
-        self.table.clone().cycle_sort(key, cx);
-        cx.notify();
-    }
-}
-
 impl Tooled for DetailView {
     fn toolbar(&self) -> Entity<Toolbar> {
         self.toolbar.clone()
@@ -925,26 +920,14 @@ impl Tooled for DetailView {
 
     fn tools(&self, cx: &App) -> Vec<AnyElement> {
         let sifted = self.me.clone();
-        let sorted = self.me.clone();
-
-        vec![
-            tools::filters(
-                &self.popovers,
-                &self.sliders,
-                self.table.filters(cx),
-                move |change, cx| {
-                    sifted.update(cx, |view, cx| view.sift(change, cx)).ok();
-                },
-                cx,
-            ),
-            tools::sorts(
-                &self.popovers,
-                self.sorts(cx),
-                move |key, cx| {
-                    sorted.update(cx, |view, cx| view.set_sort(key, cx)).ok();
-                },
-                cx,
-            ),
-        ]
+        vec![tools::filters(
+            &self.popovers,
+            &self.sliders,
+            self.table.filters(cx),
+            move |change, cx| {
+                sifted.update(cx, |view, cx| view.sift(change, cx)).ok();
+            },
+            cx,
+        )]
     }
 }

@@ -1,4 +1,4 @@
-use router::{Destination, Link, navigate};
+use router::{Destination, Link};
 use std::time::Duration;
 use ui::ActiveTheme as _;
 use ui::Tails as _;
@@ -6,21 +6,18 @@ use ui::Tails as _;
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, Context, Entity, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point, Render, ScrollWheelEvent, SharedString,
+    AnyElement, Context, Entity, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, Render,
+    ScrollWheelEvent, SharedString,
 };
 use gpui::{Window, div, px};
 use i18n::t;
 use input::{ShowMembers, ToggleFullscreen, ToggleLyrics, ToggleQueue};
 use state::{AppSettings, Playback, PlayerBarLayout, Queue, SideTab, Sonora};
-use ui::{
-    Artwork, Button, ExplicitBadge, InlineLink, InlineLinks, Pinnable, Popup, Room, Scrollbar,
-    Scrubber, ScrubberState, clock, tabular,
-};
+use ui::{Artwork, Button, ExplicitBadge, Pinnable, Room, Scrubber, ScrubberState, clock, tabular};
 
 use crate::chrome::sessions_button::SessionsButton;
 use crate::chrome::{Chrome, SidebarRight};
-use crate::shared::menus::ItemMenu;
+use crate::shared::menus::CardMenu;
 use crate::shared::pins::Pinned as _;
 use crate::shared::transport::{NOTCH, fraction, like, moved, percent, transport, volume_icon};
 
@@ -33,9 +30,7 @@ const CLOCK_LONG: f32 = 5.4;
 pub(crate) struct PlayerBar {
     playback: Entity<Playback>,
     settings: Entity<AppSettings>,
-    track_menu: ItemMenu,
     sessions: Entity<SessionsButton>,
-    context_menu: Option<(music::Track, Point<Pixels>)>,
     seek: ScrubberState,
     volume: ScrubberState,
     pending: Option<f32>,
@@ -52,20 +47,19 @@ impl PlayerBar {
         let devices = Sonora::global(cx).devices.clone();
         cx.observe(&playback, |_, _, cx| cx.notify()).detach();
         cx.observe(&devices, |_, _, cx| cx.notify()).detach();
+        // The release date comes in with the album, after the song has started.
+        let stage = Sonora::global(cx).stage.clone();
+        cx.observe(&stage, |_, _, cx| cx.notify()).detach();
         cx.observe(&queue, |_, _, cx| cx.notify()).detach();
         cx.observe(&library, |_, _, cx| cx.notify()).detach();
         cx.observe(&settings, |_, _, cx| cx.notify()).detach();
 
-        let me = cx.entity_id();
-        let playlist_scrollbar = cx.new(|_| Scrollbar::inset().watching(me));
         let sessions = cx.new(SessionsButton::new);
 
         Self {
             playback,
             settings,
-            track_menu: ItemMenu::new(playlist_scrollbar, cx),
             sessions,
-            context_menu: None,
             seek: ScrubberState::new("seek"),
             volume: ScrubberState::new("volume"),
             pending: None,
@@ -74,26 +68,6 @@ impl PlayerBar {
             volume_held: false,
             muted: None,
         }
-    }
-
-    fn open_context_menu(
-        &mut self,
-        track: music::Track,
-        position: Point<Pixels>,
-        cx: &mut Context<Self>,
-    ) {
-        self.track_menu.reset(cx);
-        self.context_menu = Some((track, position));
-        cx.notify();
-    }
-
-    /// Opens the track menu on whatever is playing when the click lands, so a render does not
-    /// have to hold a copy of the track for a menu that is rarely asked for.
-    fn open_playing_menu(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        let Some(track) = self.playback.read(cx).shown_track(cx) else {
-            return;
-        };
-        self.open_context_menu(track, position, cx);
     }
 
     fn commit_seek(&mut self, cx: &mut Context<Self>) {
@@ -205,17 +179,17 @@ impl PlayerBar {
 
     fn side_buttons(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = *cx.theme();
-        let (open, tab, lyrics) = {
+        let (open, cards, lyrics) = {
             let settings = self.settings.read(cx);
             (
                 settings.sidebar_right_open(),
-                settings.sidebar_right_tab(),
+                settings.sidebar_cards(),
                 settings.lyrics_enabled(),
             )
         };
 
         let button = move |id: &'static str, icon: &'static str, hint: &'static str, side| {
-            let showing = open && tab == side;
+            let showing = open && cards.expanded == Some(side);
 
             Button::new(id)
                 .ghost()
@@ -318,13 +292,7 @@ impl PlayerBar {
             )
             .when_some(album, |this, album| this.aria_label(album))
             .when(track.is_some(), |this| {
-                this.on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                        window.prevent_default();
-                        this.open_playing_menu(event.position, cx);
-                    }),
-                )
+                this.on_mouse_down(MouseButton::Right, CardMenu::playing)
             })
             .child(Artwork::new(cover).size(artwork))
             .flex_none()
@@ -352,13 +320,7 @@ impl PlayerBar {
                         .role(Role::Label)
                         .aria_value(SharedString::from(track.name.clone())),
                 })
-                .on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                        window.prevent_default();
-                        this.open_playing_menu(event.position, cx);
-                    }),
-                )
+                .on_mouse_down(MouseButton::Right, CardMenu::playing)
                 .child(SharedString::from(track.name.clone()))
                 .min_w_0()
                 .truncate()
@@ -430,20 +392,29 @@ impl PlayerBar {
             .child(headline)
             .when_some(track, |this, track| {
                 this.child(
-                    InlineLinks::new(
-                        "now-playing-artist",
-                        track.artist_refs.iter().map(|artist| {
-                            InlineLink::new(artist.name.clone(), artist.id.clone().map(Into::into))
-                        }),
-                        track.artists.clone(),
-                        muted,
-                    )
-                    .text_size(artists)
-                    .when(centered, |this| this.justify_center())
-                    .truncate()
-                    .on_click(|id, cx| {
-                        navigate(Destination::Artist(id), cx);
-                    }),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .min_w_0()
+                        .when(centered, |this| this.justify_center())
+                        .text_size(artists)
+                        .text_color(muted)
+                        .child(
+                            crate::shared::cells::artist_links(
+                                "now-playing-artist",
+                                track.artist_refs.clone(),
+                                track.artists.clone(),
+                                muted,
+                            )
+                            .text_size(artists)
+                            .when(centered, |this| this.justify_center())
+                            .truncate(),
+                        )
+                        .children(
+                            super::stage::release(cx)
+                                .map(|date| div().flex_none().child(format!("· {date}"))),
+                        ),
                 )
             })
     }
@@ -595,15 +566,6 @@ impl Render for PlayerBar {
             .occlude()
             .on_mouse_move(cx.listener(Self::hover));
 
-        let context_menu = self.context_menu.clone().map(|(track, position)| {
-            Popup::new(position, self.track_menu.for_track(&track, cx)).on_close(cx.listener(
-                |this, _, _, cx| {
-                    this.context_menu = None;
-                    cx.notify();
-                },
-            ))
-        });
-
         let content = match (stacked, layout) {
             (true, _) => base
                 .flex_col()
@@ -711,8 +673,6 @@ impl Render for PlayerBar {
                 ),
         };
 
-        content
-            .relative()
-            .when_some(context_menu, |this, menu| this.child(menu))
+        content.relative()
     }
 }

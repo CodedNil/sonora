@@ -459,6 +459,7 @@ mod tests {
                 }],
                 album: "Album".to_owned(),
                 album_id: Some("album".to_owned()),
+
                 track_number: 1,
                 disc_number: 1,
                 ..Default::default()

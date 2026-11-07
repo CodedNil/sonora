@@ -199,6 +199,7 @@ impl Store {
                     cover: row.get(8)?,
                     duration: std::time::Duration::from_millis(duration.max(0) as u64),
                     added_at: Some(played_at / 1_000),
+
                     explicit: row.get(10)?,
                     ..Default::default()
                 })

@@ -78,6 +78,8 @@ pub struct ColumnSpec<F: 'static> {
     /// The order the first click sorts this column in; a date reads best newest first.
     pub first: Sort,
     pub rank: u8,
+    /// Whether this optional column starts hidden until explicitly enabled.
+    pub hidden_by_default: bool,
 }
 
 impl<F: Copy + 'static> ColumnSpec<F> {
@@ -96,6 +98,7 @@ impl<F: Copy + 'static> ColumnSpec<F> {
             sortable: true,
             first: Sort::Ascending,
             rank: rank::ESSENTIAL,
+            hidden_by_default: false,
         }
     }
 
@@ -176,11 +179,21 @@ pub struct Layout {
     pub order: Vec<String>,
     pub hidden: Vec<String>,
     pub widths: HashMap<String, f32>,
+    /// Explicit choices override column defaults, including in layouts saved before a column existed.
+    pub visibility: HashMap<String, bool>,
 }
 
 impl Layout {
     pub fn hides(&self, key: &str) -> bool {
         self.hidden.iter().any(|hidden| hidden == key)
+    }
+
+    /// Resolves a column's default together with legacy hidden lists and explicit choices.
+    pub fn visible<F>(&self, spec: &ColumnSpec<F>) -> bool {
+        self.visibility
+            .get(spec.key)
+            .copied()
+            .unwrap_or(!spec.hidden_by_default && !self.hides(spec.key))
     }
 
     fn rank(&self, key: &str) -> usize {
@@ -196,6 +209,20 @@ impl Layout {
             .copied()
             .filter(|width| width.is_finite() && *width > 0.)
             .map(px)
+    }
+
+    /// Reorders the visible columns while retaining the saved slots of hidden or crowded ones.
+    pub fn reorder<F>(&mut self, specs: &'static [ColumnSpec<F>], visible: &[String]) {
+        let mut columns: Vec<_> = specs.iter().filter(|spec| !spec.anchored).collect();
+        columns.sort_by_key(|spec| self.rank(spec.key));
+        let mut moved = visible.iter();
+        self.order = columns
+            .into_iter()
+            .map(|spec| match visible.iter().any(|key| key == spec.key) {
+                true => moved.next().cloned().unwrap_or_else(|| spec.key.to_owned()),
+                false => spec.key.to_owned(),
+            })
+            .collect();
     }
 
     pub fn toggle(&mut self, key: &str) {
@@ -246,12 +273,16 @@ pub fn resolve<F: 'static>(
     let head = |ix: usize| heads.get(ix).copied().unwrap_or_default();
     let mut visible = ordered(specs, layout)
         .into_iter()
-        .filter(|(ix, spec)| !layout.hides(spec.key) && !blank.get(*ix).copied().unwrap_or(false))
+        .filter(|(ix, spec)| {
+            layout.visible(spec)
+                && (layout.visibility.get(spec.key) == Some(&true)
+                    || !blank.get(*ix).copied().unwrap_or(false))
+        })
         .collect::<Vec<_>>();
     if visible.is_empty() {
         visible.extend(specs.iter().enumerate().take(1));
     }
-    crowd(&mut visible, available, metrics, &head);
+    crowd(&mut visible, available, metrics, &head, layout);
 
     let mut tracks = seed(visible, available, metrics, layout, &head);
     fit(&mut tracks, available);
@@ -284,11 +315,18 @@ fn crowd<F: 'static>(
     available: Pixels,
     metrics: Metrics,
     head: &impl Fn(usize) -> Pixels,
+    layout: &Layout,
 ) {
+    let chosen = visible
+        .iter()
+        .any(|(_, spec)| layout.visibility.get(spec.key) == Some(&true));
     while movable(visible) > 1 {
         let wanted = visible
             .iter()
-            .map(|(ix, spec)| spec.comfort(metrics, head(*ix)))
+            .map(|(ix, spec)| match chosen {
+                true => spec.floor(metrics, head(*ix)),
+                false => spec.comfort(metrics, head(*ix)),
+            })
             .fold(Pixels::ZERO, |total, comfort| total + comfort);
         if wanted <= available {
             return;
@@ -299,7 +337,14 @@ fn crowd<F: 'static>(
             .enumerate()
             .filter(|(_, (_, spec))| !spec.anchored)
             .min_by(|(left, (_, one)), (right, (_, other))| {
-                one.rank.cmp(&other.rank).then(right.cmp(left))
+                let priority = |spec: &ColumnSpec<F>| {
+                    (
+                        spec.rank >= rank::ESSENTIAL,
+                        layout.visibility.get(spec.key) == Some(&true),
+                        spec.rank,
+                    )
+                };
+                priority(one).cmp(&priority(other)).then(right.cmp(left))
             })
             .map(|(at, _)| at);
         let Some(evicted) = evicted else {
@@ -605,6 +650,7 @@ mod tests {
             sortable: false,
             first: Sort::Ascending,
             rank: rank::ESSENTIAL,
+            hidden_by_default: false,
         },
         ColumnSpec {
             field: Field::Cover,
@@ -616,6 +662,7 @@ mod tests {
             sortable: false,
             first: Sort::Ascending,
             rank: rank::ESSENTIAL,
+            hidden_by_default: false,
         },
         ColumnSpec {
             field: Field::Title,
@@ -627,6 +674,7 @@ mod tests {
             sortable: true,
             first: Sort::Ascending,
             rank: rank::ESSENTIAL,
+            hidden_by_default: false,
         },
         ColumnSpec {
             field: Field::Artist,
@@ -638,6 +686,7 @@ mod tests {
             sortable: true,
             first: Sort::Ascending,
             rank: rank::SPARE,
+            hidden_by_default: false,
         },
         ColumnSpec {
             field: Field::Added,
@@ -649,6 +698,7 @@ mod tests {
             sortable: true,
             first: Sort::Ascending,
             rank: rank::NICE,
+            hidden_by_default: false,
         },
         ColumnSpec {
             field: Field::Length,
@@ -660,6 +710,7 @@ mod tests {
             sortable: true,
             first: Sort::Ascending,
             rank: rank::USEFUL,
+            hidden_by_default: false,
         },
     ];
 

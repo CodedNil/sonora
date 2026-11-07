@@ -294,6 +294,7 @@ devices-session-people = { $count ->
     [few] { $count } человека в этой сессии
    *[many] { $count } человек в этой сессии
     }
+devices-elsewhere-here = Играть здесь
 fullscreen-artwork = Обложка
 
 # filters
@@ -597,7 +598,6 @@ settings-group-protected = Защищённое воспроизведение
 settings-group-output = Вывод
 settings-group-status = Статус
 settings-group-startup = Запуск
-settings-group-context-menus = Контекстные меню
 key-ctrl = Ctrl
 key-super = Super
 key-alt = Alt
@@ -664,9 +664,6 @@ settings-font-value = { $size } px
 settings-startup = Показывать при запуске
 settings-startup-detail = Экран, который Sonora открывает при старте
 settings-startup-no-guest = Недоступно в гостевом режиме
-settings-entries = Разделы боковой панели
-settings-entries-detail = Разделы, которые видны в боковой панели
-settings-entries-pick = Выбрать разделы
 settings-language = Язык
 settings-language-detail = Язык интерфейса Sonora
 settings-language-system = Системный
@@ -1034,8 +1031,6 @@ settings-sessions-official = Использовать официальный с�
 settings-sessions-server = Адрес сервера
 settings-sessions-server-hint = wss://sessions.example.com
 settings-sessions-save = Сохранить
-settings-adaptive-menu = Адаптивное контекстное меню
-settings-adaptive-menu-detail = Убирает пункты, которые уже видны в строке, — например альбом или исполнителя
 settings-accounts = Управление аккаунтами
 settings-accounts-detail = Сервисы, из которых это устройство может слушать музыку
 settings-provider-current = Воспроизведение из этого сервиса

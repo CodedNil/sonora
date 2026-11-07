@@ -1,6 +1,7 @@
 mod aside;
 mod downloads;
 mod jam;
+mod layout_editor;
 mod members;
 mod notice;
 mod output_picker;
@@ -8,16 +9,20 @@ mod player_bar;
 mod session;
 mod sessions_button;
 mod sidebar_left;
+mod sidebar_motion;
 mod sidebar_right;
+mod stage;
 mod swipe_cue;
 mod theme_invite;
 mod title_bar;
 mod toasts;
 mod toolbar;
 pub(crate) mod tools;
+mod up_next;
 
 pub(crate) use aside::{Aside, VerseLook, verse, verse_sizes};
 pub(crate) use jam::{JamCode, JamInvite, JamJoin};
+pub(crate) use layout_editor::LayoutEditor;
 pub(crate) use members::Members;
 pub(crate) use notice::AppNotice;
 pub(crate) use output_picker::OutputPicker;
@@ -29,16 +34,26 @@ pub(crate) use swipe_cue::SwipeCue;
 pub(crate) use theme_invite::ThemeInvite;
 #[cfg(target_os = "macos")]
 pub use title_bar::traffic_lights;
-pub(crate) use title_bar::{Busy, TitleBar, TitleBarEvent, TitleBarOptions};
+pub(crate) use title_bar::{Busy, TitleBar, TitleBarEvent, TitleBarOptions, crowded};
 pub use toasts::ToastStack;
 pub(crate) use toolbar::{Searchable, Toolbar, Tooled};
+pub(crate) use up_next::UpNext;
 
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{App, Div, Entity, Global, Pixels, SharedString, Window, div};
+use router::{LibraryTab, NavEntry, Place};
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use state::AppSettings;
 use ui::{ActiveTheme as _, MIN_CONTENT, Room, eyebrow};
+
+/// The same four library pages are available in sidebar groups and top-bar menus.
+pub(crate) const LIBRARY_TABS: [(&str, LibraryTab); 4] = [
+    ("nav-songs", LibraryTab::Songs),
+    ("nav-albums", LibraryTab::Albums),
+    ("nav-artists", LibraryTab::Artists),
+    ("nav-playlists", LibraryTab::Playlists),
+];
 
 /// The radius every element touching a corner of the window rounds that corner with, or `None`
 /// under server-side decorations or `Rounding::Square`. It never exceeds half the title bar's
@@ -66,7 +81,44 @@ pub(crate) fn section_label(key: &'static str, cx: &App) -> gpui::Stateful<Div> 
         .h(cx.theme().metrics.list_row)
         .px_2()
         .pb_1()
-        .child(eyebrow(i18n::lookup(key, None), cx))
+        .child(eyebrow(i18n::lookup(key, None), cx).text_color(cx.theme().foreground))
+}
+
+/// Where `entry` is shown: where the user put it, or where it starts out. A stored place the
+/// entry cannot take, say the pins in the title bar, falls back to the default.
+pub(crate) fn place(entry: NavEntry, cx: &App) -> Place {
+    let settings = state::Sonora::global(cx).settings.read(cx);
+    settings
+        .nav_place(entry.id())
+        .and_then(|id| match (entry, id) {
+            (NavEntry::Settings, "top") => Some(Place::TopRight),
+            _ => Place::from_id(id),
+        })
+        .filter(|place| entry.places().contains(place))
+        .unwrap_or(entry.default_place())
+}
+
+/// The saved order shared by toolbar groups, sidebar entries and their layout editor.
+pub(crate) fn ordered_navigation(cx: &App) -> Vec<NavEntry> {
+    let settings = state::Sonora::global(cx).settings.read(cx);
+    let mut entries = Vec::new();
+    for id in settings.nav_order() {
+        if let Some(entry) = NavEntry::ALL.into_iter().find(|entry| entry.id() == id)
+            && !entries.contains(&entry)
+        {
+            entries.push(entry);
+        }
+    }
+    for (index, entry) in NavEntry::ALL.into_iter().enumerate() {
+        if !entries.contains(&entry) {
+            let before = NavEntry::ALL[index + 1..]
+                .iter()
+                .find_map(|next| entries.iter().position(|held| held == next))
+                .unwrap_or(entries.len());
+            entries.insert(before, entry);
+        }
+    }
+    entries
 }
 
 pub(crate) fn cap(min: Pixels, max: Pixels, keep: Pixels, window: &Window) -> Pixels {
@@ -118,6 +170,12 @@ impl Chrome {
         cx.try_global::<Installed>()
             .map(|installed| *installed.0.read(cx))
             .unwrap_or_default()
+    }
+
+    /// Every main page keeps the same breathing room beside its content, including beside sidebars.
+    pub(crate) fn page_insets(cx: &App) -> (Pixels, Pixels) {
+        let inset = cx.theme().metrics.inset;
+        (inset, inset)
     }
 
     pub fn reserved_right(cx: &App) -> Pixels {

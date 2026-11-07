@@ -1,7 +1,10 @@
 use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{App, Div, ElementId, Hsla, Pixels, SharedString, StyleRefinement, Window, div};
+use gpui::{
+    App, Div, ElementId, Hsla, MouseButton, MouseDownEvent, Pixels, SharedString, StyleRefinement,
+    Window, div,
+};
 
 const RAMP: f32 = 6.;
 const DEPTH: usize = 5;
@@ -22,6 +25,8 @@ impl InlineLink {
 }
 
 type ClickHandler = Rc<dyn Fn(SharedString, &mut App) + 'static>;
+type MenuHandler =
+    Rc<dyn Fn(SharedString, SharedString, &MouseDownEvent, &mut Window, &mut App) + 'static>;
 
 #[derive(IntoElement)]
 pub struct InlineLinks {
@@ -33,6 +38,7 @@ pub struct InlineLinks {
     text_size: Option<Pixels>,
     clip: bool,
     on_click: Option<ClickHandler>,
+    on_menu: Option<MenuHandler>,
 }
 
 impl InlineLinks {
@@ -51,6 +57,7 @@ impl InlineLinks {
             text_size: None,
             clip: false,
             on_click: None,
+            on_menu: None,
         }
     }
 
@@ -61,6 +68,15 @@ impl InlineLinks {
 
     pub fn truncate(mut self) -> Self {
         self.clip = true;
+        self
+    }
+
+    /// Opens a linked item’s context menu without forwarding the click to its container.
+    pub fn on_menu(
+        mut self,
+        handler: impl Fn(SharedString, SharedString, &MouseDownEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_menu = Some(Rc::new(handler));
         self
     }
 
@@ -91,6 +107,7 @@ impl RenderOnce for InlineLinks {
             text_size,
             clip,
             on_click,
+            on_menu,
         } = self;
         let empty = items.is_empty();
         let overrides = std::mem::take(base.style());
@@ -131,6 +148,8 @@ impl RenderOnce for InlineLinks {
                     let item = match value {
                         Some(value) => {
                             let handler = on_click.clone();
+                            let menu_value = value.clone();
+                            let menu_label = label.clone();
                             item.role(match linking {
                                 true => gpui::accesskit::Role::Link,
                                 false => gpui::accesskit::Role::Label,
@@ -138,6 +157,18 @@ impl RenderOnce for InlineLinks {
                             .map(|this| match linking {
                                 true => this.aria_label(label.clone()),
                                 false => this.aria_value(label.clone()),
+                            })
+                            .when_some(on_menu.clone(), |item, handler| {
+                                item.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                                    cx.stop_propagation();
+                                    handler(
+                                        menu_value.clone(),
+                                        menu_label.clone(),
+                                        event,
+                                        window,
+                                        cx,
+                                    );
+                                })
                             })
                             .hover(|style| style.underline())
                             .cursor_pointer()
