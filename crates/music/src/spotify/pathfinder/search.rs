@@ -4,7 +4,9 @@ use serde::Deserialize;
 
 use super::album::release_type;
 use super::query;
-use crate::{Album, ArtistRef, Playlist, SavedArtist};
+use super::wire::{Artists, Profile};
+use super::wire::{Artwork, Date as Year, Image};
+use crate::{Album, Playlist, SavedArtist};
 
 const ALBUMS: &str = "searchAlbums";
 /// The search page's own query, which answers artists among every other kind. The shared hash
@@ -151,47 +153,10 @@ struct WirePlaylist {
     owner: Option<Owner>,
 }
 
-#[derive(Deserialize)]
-struct Year {
-    #[serde(default)]
-    year: i32,
-}
-
-#[derive(Default, Deserialize)]
-struct Artists {
-    #[serde(default)]
-    items: Vec<Artist>,
-}
-
-#[derive(Deserialize)]
-struct Artist {
-    #[serde(default)]
-    uri: String,
-    profile: Option<Profile>,
-}
-
-#[derive(Deserialize)]
-struct Profile {
-    #[serde(default)]
-    name: String,
-}
-
 #[derive(Default, Deserialize)]
 struct Images {
     #[serde(default)]
     items: Vec<Artwork>,
-}
-
-#[derive(Default, Deserialize)]
-struct Artwork {
-    #[serde(default)]
-    sources: Vec<Image>,
-}
-
-#[derive(Deserialize)]
-struct Image {
-    height: Option<u32>,
-    url: String,
 }
 
 #[derive(Deserialize)]
@@ -282,8 +247,7 @@ fn album(hit: AlbumHit) -> Option<Album> {
     let AlbumEntity::Album(album) = hit.data? else {
         return None;
     };
-    let (names, refs) = credits(album.artists);
-    let year = album.date.map(|date| date.year).unwrap_or_default();
+    let (names, refs) = album.artists.credits();
 
     Some(Album {
         id: trimmed(&album.uri, ALBUM_PREFIX)?,
@@ -293,12 +257,8 @@ fn album(hit: AlbumHit) -> Option<Album> {
         cover: cover(&album.cover.sources, false),
         cover_large: cover(&album.cover.sources, true),
         release_type: release_type(&album.kind),
-        year,
-        track_count: 0,
-        release_date: match year {
-            0 => String::new(),
-            year => year.to_string(),
-        },
+        track_count: None,
+        release_date: album.date.as_ref().and_then(Year::release),
         label: String::new(),
         copyrights: Vec::new(),
         added_at: None,
@@ -310,45 +270,27 @@ fn playlist(hit: PlaylistHit, username: &str) -> Option<Playlist> {
         return None;
     };
     let owner = playlist.owner.and_then(|owner| owner.data);
+    let owned = owner
+        .as_ref()
+        .is_some_and(|account| account.username == username);
 
     Some(Playlist {
         id: trimmed(&playlist.uri, PLAYLIST_PREFIX)?,
         name: playlist.name,
-        owned: owner
-            .as_ref()
-            .is_some_and(|account| account.username == username),
+        owned,
         owner: owner.map(|account| account.name).unwrap_or_default(),
-        owner_id: String::new(),
-        collaborative: false,
+        owner_id: None,
+        can_edit_tracks: owned,
         blend: false,
-        public: true,
+        public: Some(true),
         cover: playlist
             .images
             .items
             .first()
             .and_then(|artwork| cover(&artwork.sources, false)),
-        track_count: 0,
+        track_count: None,
         modified_at: None,
     })
-}
-
-fn credits(artists: Artists) -> (String, Vec<ArtistRef>) {
-    let refs: Vec<_> = artists
-        .items
-        .into_iter()
-        .filter_map(|artist| {
-            Some(ArtistRef {
-                name: artist.profile.map(|profile| profile.name)?,
-                id: trimmed(&artist.uri, ARTIST_PREFIX),
-            })
-        })
-        .collect();
-    let names = refs
-        .iter()
-        .map(|artist| artist.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    (names, refs)
 }
 
 fn cover(sources: &[Image], large: bool) -> Option<String> {

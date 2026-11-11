@@ -97,6 +97,9 @@ pub trait TableSource: 'static {
     fn columns(&self) -> &'static [ColumnSpec<Self::Field>];
     fn rows(&self, cx: &App) -> usize;
 
+    /// Drops derived data before a rebuild rereads the source rows.
+    fn invalidate(&mut self) {}
+
     fn populated(&self, _field: Self::Field, _cx: &App) -> bool {
         true
     }
@@ -288,6 +291,7 @@ impl<S: TableSource> TableDelegate<S> {
     }
 
     fn rebuild(&mut self, cx: &App) {
+        self.source.invalidate();
         self.relayout(cx);
         self.reorder(cx);
     }

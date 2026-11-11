@@ -200,7 +200,7 @@ impl ItemMenu {
             .state(shelf)
             .playlists()
             .iter()
-            .filter(|playlist| playlist.owned || playlist.collaborative)
+            .filter(|playlist| playlist.can_edit_tracks)
             .cloned()
             .collect();
         let ids = match &addition {
@@ -1169,28 +1169,34 @@ pub(crate) fn playlist_menu(playlist: Playlist, playback: Entity<Playback>, cx: 
     let from = Origin::playlist(playlist.id.clone()).named(playlist.name.clone());
     let copied = playlist.id.clone();
     let id = playlist.id.clone();
-    let public = playlist.public;
     let imported = music::is_local_id(&playlist.id);
     let tiles = playlist_tiles(&playlist, cx);
-    let visibility = (!imported).then(|| {
-        MenuItem::new(
-            "playlist-visibility",
-            match public {
-                true => t!("menu-make-playlist-private"),
-                false => t!("menu-make-playlist-public"),
-            },
-        )
-        .icon("icons/user.svg")
-        .on_click({
-            let id = id.clone();
-            move |_, _, cx| {
-                let library = Sonora::global(cx).library.clone();
-                library.update(cx, |library, cx| {
-                    library.set_playlist_public(id.clone(), !public, cx)
-                });
-            }
-        })
-    });
+    let current = playlist.public;
+    let visibility = [true, false]
+        .into_iter()
+        .filter(move |target| !imported && current != Some(*target))
+        .map(|public| {
+            MenuItem::new(
+                match public {
+                    true => "playlist-make-public",
+                    false => "playlist-make-private",
+                },
+                match public {
+                    true => t!("menu-make-playlist-public"),
+                    false => t!("menu-make-playlist-private"),
+                },
+            )
+            .icon("icons/user.svg")
+            .on_click({
+                let id = id.clone();
+                move |_, _, cx| {
+                    let library = Sonora::global(cx).library.clone();
+                    library.update(cx, |library, cx| {
+                        library.set_playlist_public(id.clone(), public, cx)
+                    });
+                }
+            })
+        });
     let actions = match playlist.owned {
         true => visibility
             .into_iter()

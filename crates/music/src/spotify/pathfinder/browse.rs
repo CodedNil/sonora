@@ -1,10 +1,12 @@
 use anyhow::{Context as _, Result, bail};
 use librespot_core::Session;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 
 use super::query;
+use super::wire::{Artists, Profile};
+use super::wire::{Artwork, nullable};
 use crate::{
-    Album, ArtistRef, Genre, GenreDetail, GenreItem, GenreSection, HomeFeed, Playlist, ReleaseType,
+    Album, Genre, GenreDetail, GenreItem, GenreSection, HomeFeed, Playlist, ReleaseType,
     SavedArtist,
 };
 
@@ -169,53 +171,15 @@ struct OwnerData {
 }
 
 #[derive(Default, Deserialize)]
-struct Artists {
-    #[serde(default, deserialize_with = "nullable")]
-    items: Vec<Artist>,
-}
-
-#[derive(Deserialize)]
-struct Artist {
-    #[serde(default, deserialize_with = "nullable")]
-    uri: String,
-    profile: Option<Profile>,
-}
-
-#[derive(Deserialize)]
-struct Profile {
-    #[serde(default, deserialize_with = "nullable")]
-    name: String,
-}
-
-#[derive(Default, Deserialize)]
 struct Images {
     #[serde(default, deserialize_with = "nullable")]
     items: Vec<Artwork>,
-}
-
-#[derive(Default, Deserialize)]
-struct Artwork {
-    #[serde(default, deserialize_with = "nullable")]
-    sources: Vec<Source>,
-}
-
-#[derive(Deserialize)]
-struct Source {
-    url: String,
 }
 
 #[derive(Deserialize)]
 struct Label {
     #[serde(rename = "transformedLabel", default, deserialize_with = "nullable")]
     label: String,
-}
-
-fn nullable<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Default + Deserialize<'de>,
-{
-    Ok(Option::deserialize(deserializer)?.unwrap_or_default())
 }
 
 pub(crate) async fn all(session: &Session) -> Result<Vec<Genre>> {
@@ -334,38 +298,27 @@ fn item(item: Item) -> Option<GenreItem> {
                 .and_then(|owner| owner.data)
                 .map(|data| data.name)
                 .unwrap_or_default(),
-            owner_id: String::new(),
+            owner_id: None,
             owned: false,
-            collaborative: false,
+            can_edit_tracks: false,
             blend: false,
-            public: true,
+            public: Some(true),
             cover: playlist.images.items.first().and_then(image),
-            track_count: 0,
+            track_count: None,
             modified_at: None,
         })),
         Entity::Album(album) => {
-            let artists: Vec<ArtistRef> = album
-                .artists
-                .items
-                .into_iter()
-                .filter_map(|artist| {
-                    Some(ArtistRef {
-                        name: artist.profile?.name,
-                        id: trimmed(&artist.uri, ARTIST_PREFIX),
-                    })
-                })
-                .collect();
+            let (artists, artist_refs) = album.artists.credits();
             Some(GenreItem::Album(Album {
                 id: trimmed(&uri, ALBUM_PREFIX)?,
                 name: album.name,
-                artists: joined(&artists),
-                artist_refs: artists,
+                artists,
+                artist_refs,
                 cover: image(&album.cover),
                 cover_large: None,
                 release_type: ReleaseType::Album,
-                year: 0,
-                track_count: 0,
-                release_date: String::new(),
+                track_count: None,
+                release_date: None,
                 label: String::new(),
                 copyrights: Vec::new(),
                 added_at: None,
@@ -408,14 +361,6 @@ fn image(artwork: &Artwork) -> Option<String> {
         .first()
         .map(|source| source.url.clone())
         .filter(|url| !url.is_empty())
-}
-
-fn joined(artists: &[ArtistRef]) -> String {
-    artists
-        .iter()
-        .map(|artist| artist.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 fn trimmed(uri: &str, prefix: &str) -> Option<String> {

@@ -1042,7 +1042,7 @@ impl Devices {
             context,
             playing: playback.wants_playing(),
             position: playback.live_position(),
-            duration: track.duration,
+            duration: track.duration.unwrap_or_default(),
             volume: playback.volume(),
             shuffle: Some(queue.shuffle()),
             repeat: Some(playback.repeat()),

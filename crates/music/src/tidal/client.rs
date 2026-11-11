@@ -912,16 +912,16 @@ impl TidalClient {
                 id: format!("{}{mix_id}", wire::MIX),
                 name: wire::text(&page, "title").unwrap_or_default().to_owned(),
                 owner: "TIDAL".to_owned(),
-                owner_id: String::new(),
+                owner_id: None,
                 owned: false,
-                collaborative: false,
+                can_edit_tracks: false,
                 blend: false,
-                public: true,
+                public: Some(true),
                 cover: None,
-                track_count: 0,
+                track_count: None,
                 modified_at: None,
             });
-        playlist.track_count = u32::try_from(tracks.len()).unwrap_or(u32::MAX);
+        playlist.track_count = Some(u32::try_from(tracks.len()).unwrap_or(u32::MAX));
         if playlist.cover.is_none() {
             playlist.cover = tracks.iter().find_map(|track| track.cover.clone());
         }

@@ -22,7 +22,7 @@ use crate::subsonic::wire;
 use crate::{
     Album, AlbumCatalogue, AlbumDetail, Artist, ArtistProfile, Codec, Genre, GenreDetail,
     GenreItem, GenreSection, HomeFeed, MediaKind, MusicApi, Playlist, PlaylistDetail, Report,
-    SUGGESTIONS, SavedArtist, Track, Transcode, UserProfile, distinct_covers, iso_8601_to_epoch,
+    SUGGESTIONS, SavedArtist, Track, Transcode, UserProfile, distinct_covers,
 };
 
 const PORTRAIT_LIMIT: usize = 24;
@@ -218,7 +218,6 @@ impl SubsonicClient {
             detail.artists.as_ref(),
             detail.display_artist.clone(),
         );
-        let year = detail.year.unwrap_or(0);
         Album {
             id,
             name: detail.name.clone(),
@@ -230,18 +229,11 @@ impl SubsonicClient {
                 detail.release_types.as_deref(),
                 detail.is_compilation,
             ),
-            year,
-            track_count: detail
-                .song_count
-                .map(|count| count.max(0) as u32)
-                .unwrap_or(tracks as u32),
-            release_date: match year {
-                0 => String::new(),
-                _ => year.to_string(),
-            },
+            track_count: Some(tracks as u32),
+            release_date: detail.year.and_then(crate::ReleaseDate::from_year),
             label: wire::labels(detail.record_labels.as_deref()),
             copyrights: Vec::new(),
-            added_at: iso_8601_to_epoch(detail.created.as_deref()),
+            added_at: detail.created.as_deref().and_then(crate::parse_timestamp),
         }
     }
 
@@ -254,8 +246,10 @@ impl SubsonicClient {
             &source.id,
             &source.name,
             source.owner.as_deref(),
-            source.public.unwrap_or(false),
-            source.song_count.unwrap_or(0).max(0) as u32,
+            source.public,
+            source
+                .song_count
+                .and_then(|count| u32::try_from(count).ok()),
             cover,
             &self.username,
         )
@@ -432,7 +426,7 @@ impl MusicApi for SubsonicClient {
     async fn artist_tracks(&self, artist_id: &str) -> Result<Vec<Track>> {
         let artist = self.artist(artist_id).await?;
         let mut albums = artist.albums;
-        albums.sort_by_key(|album| std::cmp::Reverse(album.year));
+        albums.sort_by_key(|album| std::cmp::Reverse(album.release_date));
         let reads: Vec<_> = stream::iter(albums)
             .map(|album| async move { (self.album_tracks(&album.id).await, album.name) })
             .buffered(ALBUM_READS)
@@ -907,13 +901,15 @@ impl MusicApi for SubsonicClient {
             &detail.id,
             &detail.name,
             detail.owner.as_deref(),
-            detail.public.unwrap_or(false),
-            detail.song_count.unwrap_or(0).max(0) as u32,
+            detail.public,
+            detail
+                .song_count
+                .and_then(|count| u32::try_from(count).ok()),
             cover,
             &self.username,
         );
-        if playlist.track_count == 0 {
-            playlist.track_count = tracks.len() as u32;
+        if playlist.track_count.is_none() {
+            playlist.track_count = Some(tracks.len() as u32);
         }
         if playlist.cover.is_none() {
             playlist.cover = tracks.iter().find_map(|track| track.cover.clone());

@@ -617,7 +617,7 @@ fn wire_hit(hit: Hit, client: &dyn MusicApi) -> Option<wire::Hit> {
             track.id?,
             track.name,
             track.artists,
-            Some(track.duration.as_secs()),
+            track.duration.map(|duration| duration.as_secs()),
         ),
         Hit::Album(album) => (
             Kind::Album,
@@ -672,7 +672,8 @@ fn moment(playback: &Playback, time: Time, cx: &App) -> Duration {
             playback.live_position(),
             playback
                 .track()
-                .map_or(Duration::ZERO, |track| track.duration),
+                .and_then(|track| track.duration)
+                .unwrap_or_default(),
         ),
     };
     let target = match time {
@@ -759,7 +760,7 @@ fn wire_track(track: &Track) -> wire::Track {
         artists,
         album: track.album.clone(),
         cover: track.cover.clone(),
-        duration: track.duration.as_secs(),
+        duration: track.duration.map(|duration| duration.as_secs()),
     }
 }
 

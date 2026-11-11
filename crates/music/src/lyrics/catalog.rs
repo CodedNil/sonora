@@ -32,7 +32,7 @@ pub(crate) fn candidates(
                 title: track.name,
                 artist: track.artists,
                 album: (!track.album.is_empty()).then_some(track.album),
-                duration: track.duration,
+                duration: track.duration.unwrap_or_default(),
                 track: None,
             };
             let hit = hit(source, &candidate, Lyrics::plain(String::new()));

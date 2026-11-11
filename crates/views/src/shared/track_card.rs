@@ -83,7 +83,7 @@ impl TrackCard {
                 .text_size(theme.text(Text::Small))
                 .text_color(theme.muted_foreground)
                 .font_features(tabular())
-                .child(clock(track.duration))
+                .when_some(track.duration, |this, duration| this.child(clock(duration)))
         });
 
         let remove = self.remove.map(|(tooltip, remove)| {

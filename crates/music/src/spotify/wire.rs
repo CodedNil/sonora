@@ -111,22 +111,23 @@ pub fn playlist_from(id: &str, content: &RootList, username: &str) -> models::Pl
         id: id.to_owned(),
         name: name.to_owned(),
         owner: owner.to_owned(),
-        owner_id: content.owner_username().to_owned(),
+        owner_id: (!content.owner_username().is_empty())
+            .then(|| content.owner_username().to_owned()),
         owned: owner == username,
-        collaborative: content.attributes.collaborative()
-            || content
-                .capabilities
-                .as_ref()
-                .is_some_and(|permissions| permissions.can_edit_items()),
+        can_edit_tracks: content
+            .capabilities
+            .as_ref()
+            .and_then(|permissions| permissions.can_edit_items)
+            .unwrap_or_else(|| owner == username || content.attributes.collaborative()),
         blend: blend(&content.attributes),
-        public: false,
+        public: None,
         cover: playlist_cover(&content.attributes),
-        track_count: content.length().max(0) as u32,
-        modified_at: seconds(content.timestamp()),
+        track_count: content.length.and_then(|count| u32::try_from(count).ok()),
+        modified_at: timestamp(content.timestamp()),
     }
 }
 
-pub fn playlists_from(rootlist: &RootList) -> Vec<models::Playlist> {
+pub fn playlists_from(rootlist: &RootList, username: &str) -> Vec<models::Playlist> {
     let contents = &rootlist.contents;
     let meta = &contents.meta_items;
 
@@ -153,20 +154,21 @@ pub fn playlists_from(rootlist: &RootList) -> Vec<models::Playlist> {
                 owner: owner.to_owned(),
                 owner_id: meta
                     .map(|meta| meta.owner_username())
-                    .unwrap_or_default()
-                    .to_owned(),
-                owned: false,
-                collaborative: meta.is_some_and(|meta| {
-                    meta.attributes.collaborative()
-                        || meta
-                            .capabilities
-                            .as_ref()
-                            .is_some_and(|permissions| permissions.can_edit_items())
+                    .filter(|owner| !owner.is_empty())
+                    .map(str::to_owned),
+                owned: owner == username,
+                can_edit_tracks: meta.is_some_and(|meta| {
+                    meta.capabilities
+                        .as_ref()
+                        .and_then(|permissions| permissions.can_edit_items)
+                        .unwrap_or_else(|| owner == username || meta.attributes.collaborative())
                 }),
                 blend: meta.is_some_and(|meta| blend(&meta.attributes)),
-                public: item.attributes.public(),
+                public: item.attributes.public,
                 cover: meta.and_then(|meta| playlist_cover(&meta.attributes)),
-                track_count: meta.map(|meta| meta.length()).unwrap_or_default().max(0) as u32,
+                track_count: meta
+                    .and_then(|meta| meta.length)
+                    .and_then(|count| u32::try_from(count).ok()),
                 modified_at: None,
             })
         })
@@ -186,6 +188,21 @@ pub fn copyright(recording: bool, text: &str) -> String {
     }
 }
 
-pub fn seconds(millis: i64) -> Option<i64> {
-    (millis > 0).then_some(millis / 1_000)
+pub fn timestamp(millis: i64) -> Option<crate::Timestamp> {
+    (millis > 0)
+        .then(|| crate::Timestamp::from_millisecond(millis).ok())
+        .flatten()
+}
+
+/// Retains the precision of Spotify's optional protobuf date components.
+pub(super) fn release_date(
+    date: &librespot_protocol::metadata::Date,
+) -> Option<crate::ReleaseDate> {
+    crate::ReleaseDate::from_parts(
+        date.year(),
+        date.month
+            .filter(|month| *month > 0)
+            .map(|month| month as u32),
+        date.day.filter(|day| *day > 0).map(|day| day as u32),
+    )
 }

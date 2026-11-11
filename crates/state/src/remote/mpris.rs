@@ -214,8 +214,8 @@ fn metadata(track: &Track, cover: Option<&str>, cx: &App) -> Metadata {
         .title(track.name.clone())
         .artist(artists)
         .album(track.album.clone())
-        .length(time(track.duration))
         .build();
+    metadata.set_length(track.duration.map(time));
     metadata.set_art_url(cover);
     if let Some(id) = &track.id {
         let url = Sonora::global(cx)

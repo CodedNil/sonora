@@ -5,6 +5,7 @@ use librespot_core::Session;
 use serde::Deserialize;
 
 use super::query;
+use super::wire::{Artwork as Cover, Copyrights, Date as PathDate, Image};
 use crate::{Album, ArtistRef, ReleaseType};
 
 pub(crate) struct Overview {
@@ -114,19 +115,6 @@ struct Release {
     tracks: ReleaseTracks,
 }
 
-#[derive(Deserialize)]
-struct PathDate {
-    year: i32,
-    month: Option<u32>,
-    day: Option<u32>,
-}
-
-#[derive(Default, Deserialize)]
-struct Cover {
-    #[serde(default)]
-    sources: Vec<Image>,
-}
-
 /// The banner over an artist page. It sits beside `visuals` rather than in it, and its sources
 /// give a largest size instead of an exact one.
 #[derive(Deserialize)]
@@ -145,23 +133,6 @@ struct HeaderImage {
 struct HeaderSource {
     url: String,
     max_width: Option<u32>,
-}
-
-#[derive(Deserialize)]
-struct Image {
-    height: u32,
-    url: String,
-}
-
-#[derive(Default, Deserialize)]
-struct Copyrights {
-    #[serde(default)]
-    items: Vec<Copyright>,
-}
-
-#[derive(Deserialize)]
-struct Copyright {
-    text: String,
 }
 
 #[derive(Default, Deserialize)]
@@ -228,7 +199,7 @@ fn overview(data: Data, artist_id: &str) -> Result<Overview> {
             .avatar
             .sources
             .iter()
-            .max_by_key(|image| image.height)
+            .max_by_key(|image| image.height.unwrap_or_default())
             .map(|image| image.url.clone()),
         banner: artist
             .header
@@ -270,13 +241,6 @@ fn releases(
 }
 
 fn album(release: Release, artist: &ArtistRef) -> Album {
-    let release_date = release.date.as_ref().map(date).unwrap_or_default();
-    let year = release
-        .date
-        .as_ref()
-        .map(|date| date.year)
-        .unwrap_or_default();
-
     Album {
         id: release.id,
         name: release.name,
@@ -285,9 +249,8 @@ fn album(release: Release, artist: &ArtistRef) -> Album {
         cover: cover(&release.cover.sources, false),
         cover_large: cover(&release.cover.sources, true),
         release_type: release_type(&release.kind),
-        year,
-        track_count: release.tracks.total_count,
-        release_date,
+        track_count: Some(release.tracks.total_count),
+        release_date: release.date.as_ref().and_then(PathDate::release),
         label: release.label,
         copyrights: release
             .copyright
@@ -299,22 +262,20 @@ fn album(release: Release, artist: &ArtistRef) -> Album {
     }
 }
 
-fn date(date: &PathDate) -> String {
-    match (date.month, date.day) {
-        (Some(month), Some(day)) => format!("{:04}-{month:02}-{day:02}", date.year),
-        (Some(month), None) => format!("{:04}-{month:02}", date.year),
-        _ => format!("{:04}", date.year),
-    }
-}
-
 fn cover(sources: &[Image], large: bool) -> Option<String> {
     let picked = match large {
         true => sources
             .iter()
-            .filter(|image| image.height >= 300)
-            .min_by_key(|image| image.height)
-            .or_else(|| sources.iter().max_by_key(|image| image.height)),
-        false => sources.iter().min_by_key(|image| image.height),
+            .filter(|image| image.height.unwrap_or_default() >= 300)
+            .min_by_key(|image| image.height.unwrap_or_default())
+            .or_else(|| {
+                sources
+                    .iter()
+                    .max_by_key(|image| image.height.unwrap_or_default())
+            }),
+        false => sources
+            .iter()
+            .min_by_key(|image| image.height.unwrap_or_default()),
     }?;
 
     Some(picked.url.clone())
@@ -361,8 +322,14 @@ mod tests {
             overview.albums[0].cover_large.as_deref(),
             Some("album-large")
         );
-        assert_eq!(overview.albums[0].release_date, "2024-03-02");
-        assert_eq!(overview.albums[0].track_count, 12);
+        assert_eq!(
+            overview.albums[0]
+                .release_date
+                .map(|date| date.to_string())
+                .as_deref(),
+            Some("2024-03-02")
+        );
+        assert_eq!(overview.albums[0].track_count, Some(12));
         assert_eq!(
             overview.albums[0].artist_refs[0].id.as_deref(),
             Some("artist")

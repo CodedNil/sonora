@@ -5,10 +5,10 @@ use gpui::prelude::*;
 use gpui::{App, ClickEvent, Entity, MouseDownEvent, Pixels, SharedString, Window, div};
 use music::{GenreItem, Track};
 use state::Playback;
-use ui::{ActiveTheme as _, Button, Card, eyebrow, heading, snapped, vacant};
+use ui::{ActiveTheme as _, Card, heading, snapped, vacant};
 
-use crate::shared::cards;
 use crate::shared::track_card::{ContextHandler, StartHandler, TrackCard};
+use crate::shared::{cards, page};
 
 const ROWS: usize = 5;
 const MAX_COLUMNS: usize = 3;
@@ -62,13 +62,13 @@ impl Rows {
 pub(crate) struct Picks {
     id: &'static str,
     title: &'static str,
-    eyebrow: Option<SharedString>,
     vacancy: &'static str,
     rows: Rows,
     playback: Entity<Playback>,
     width: Pixels,
     page: usize,
     detailed: bool,
+    show_header: bool,
     loading: bool,
     on_previous: Option<ClickHandler>,
     on_next: Option<ClickHandler>,
@@ -84,26 +84,10 @@ impl Picks {
         width: Pixels,
         page: usize,
     ) -> Self {
-        Self {
-            id,
-            title: "",
-            eyebrow: None,
-            vacancy: "",
-            rows: Rows::Tracks(tracks),
-            playback,
-            width,
-            page,
-            detailed: false,
-            loading: false,
-            on_previous: None,
-            on_next: None,
-            on_context_menu: None,
-            on_start: None,
-        }
+        Self::with_rows(id, Rows::Tracks(tracks), playback, width, page)
     }
 
-    /// A deck of shelf items rather than tracks: each row plays or opens on its own, so
-    /// `on_start` goes unused, and `on_context_menu` still names the row by its place.
+    /// A deck of independently playable shelf items, with context menus addressed by row.
     pub(crate) fn mixed(
         id: &'static str,
         items: Rc<Vec<GenreItem>>,
@@ -111,16 +95,26 @@ impl Picks {
         width: Pixels,
         page: usize,
     ) -> Self {
+        Self::with_rows(id, Rows::Mixed(items), playback, width, page)
+    }
+
+    fn with_rows(
+        id: &'static str,
+        rows: Rows,
+        playback: Entity<Playback>,
+        width: Pixels,
+        page: usize,
+    ) -> Self {
         Self {
             id,
             title: "",
-            eyebrow: None,
             vacancy: "",
-            rows: Rows::Mixed(items),
+            rows,
             playback,
             width,
             page,
             detailed: false,
+            show_header: true,
             loading: false,
             on_previous: None,
             on_next: None,
@@ -134,12 +128,6 @@ impl Picks {
         self
     }
 
-    /// The small line over the title, already worded: a key looked up at render, or a name.
-    pub(crate) fn eyebrow(mut self, label: impl Into<SharedString>) -> Self {
-        self.eyebrow = Some(label.into());
-        self
-    }
-
     pub(crate) fn vacancy(mut self, key: &'static str) -> Self {
         self.vacancy = key;
         self
@@ -147,6 +135,12 @@ impl Picks {
 
     pub(crate) fn detailed(mut self) -> Self {
         self.detailed = true;
+        self
+    }
+
+    /// Hides the deck heading when its parent supplies the section heading and controls.
+    pub(crate) fn without_header(mut self) -> Self {
+        self.show_header = false;
         self
     }
 
@@ -196,6 +190,7 @@ impl RenderOnce for Picks {
         let empty = rows.len() == 0;
         let barren = empty && !self.loading;
         let id = self.id;
+        let show_header = self.show_header;
         let on_previous = self.on_previous;
         let on_next = self.on_next;
         let on_context_menu = self.on_context_menu;
@@ -209,7 +204,7 @@ impl RenderOnce for Picks {
             .rounded(theme.radius)
             .border_1()
             .border_color(theme.border)
-            .child(
+            .children(show_header.then(|| {
                 div()
                     .flex()
                     .items_end()
@@ -220,26 +215,14 @@ impl RenderOnce for Picks {
                     .pb_3()
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_0()
-                            .children(self.eyebrow.map(|label| {
-                                eyebrow(label.clone(), cx)
-                                    .id(SharedString::from(format!("{id}-eyebrow")))
-                                    .role(Role::Label)
-                                    .aria_value(label)
-                            }))
-                            .child({
-                                let title = i18n::lookup(self.title, None);
-                                heading(title.clone(), cx)
-                                    .id(SharedString::from(format!("{id}-heading")))
-                                    .role(Role::Heading)
-                                    .aria_level(2)
-                                    .aria_label(title)
-                            }),
-                    )
+                    .child(div().flex().flex_col().gap_0().child({
+                        let title = i18n::lookup(self.title, None);
+                        heading(title.clone(), cx)
+                            .id(SharedString::from(format!("{id}-heading")))
+                            .role(Role::Heading)
+                            .aria_level(2)
+                            .aria_label(title)
+                    }))
                     .child(
                         div()
                             .flex()
@@ -247,24 +230,22 @@ impl RenderOnce for Picks {
                             .gap_1()
                             .pb_1()
                             .child(
-                                Button::new(SharedString::from(format!("{id}-previous")))
-                                    .small()
-                                    .outline()
-                                    .icon("icons/chevron-left.svg")
-                                    .tooltip("common-previous")
-                                    .disabled(empty || page == 0)
-                                    .when_some(on_previous, |button, handler| {
+                                page::arrow_button(
+                                    SharedString::from(format!("{id}-previous")),
+                                    true,
+                                )
+                                .disabled(empty || page == 0)
+                                .when_some(
+                                    on_previous,
+                                    |button, handler| {
                                         button.on_click(move |event, window, cx| {
                                             handler(event, window, cx)
                                         })
-                                    }),
+                                    },
+                                ),
                             )
                             .child(
-                                Button::new(SharedString::from(format!("{id}-next")))
-                                    .small()
-                                    .outline()
-                                    .icon("icons/chevron-right.svg")
-                                    .tooltip("common-next")
+                                page::arrow_button(SharedString::from(format!("{id}-next")), false)
                                     .disabled(empty || page + 1 >= shape.pages)
                                     .when_some(on_next, |button, handler| {
                                         button.on_click(move |event, window, cx| {
@@ -272,8 +253,8 @@ impl RenderOnce for Picks {
                                         })
                                     }),
                             ),
-                    ),
-            )
+                    )
+            }))
             .when(barren, |this| {
                 let vacancy = i18n::lookup(self.vacancy, None);
                 this.child(

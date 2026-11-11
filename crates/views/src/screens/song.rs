@@ -103,8 +103,8 @@ impl SongView {
             .or_else(|| track.cover.clone());
         let album = self.detail.read(cx).album().map(|detail| &detail.album);
         let release = album
-            .map(|album| release_date_label(&album.release_date))
-            .filter(|release| !release.is_empty());
+            .and_then(|album| album.release_date)
+            .map(release_date_label);
 
         let mut meta = HeroMetaStrip::new().item(cells::artist_links(
             "song-artists",
@@ -115,7 +115,9 @@ impl SongView {
         if let Some(release) = release {
             meta = meta.text(release);
         }
-        meta = meta.text(clock(track.duration));
+        if let Some(duration) = track.duration {
+            meta = meta.text(clock(duration));
+        }
 
         let actions = div()
             .flex()
@@ -179,12 +181,10 @@ impl SongView {
             .map(|detail| detail.album.name.clone())
             .unwrap_or_else(|| track.album.clone());
         let release = album
-            .map(|detail| detail.album.release_date.clone())
-            .unwrap_or_default();
-        let release = match release.is_empty() {
-            true => t!("common-unknown"),
-            false => release_date_label(&release),
-        };
+            .and_then(|detail| detail.album.release_date)
+            .or(track.release_date)
+            .map(release_date_label)
+            .unwrap_or_else(|| t!("common-unknown"));
         let label = album
             .map(|detail| detail.album.label.clone())
             .filter(|value| !value.is_empty())
@@ -214,7 +214,10 @@ impl SongView {
             (
                 "song-fact-popularity",
                 t!("song-popularity"),
-                t!("song-popularity-value", value = track.popularity),
+                track
+                    .popularity
+                    .map(|value| t!("song-popularity-value", value = value))
+                    .unwrap_or_else(|| t!("common-not-available")),
             ),
         ];
         InfoCard::new(t!("song-about"))
@@ -329,7 +332,7 @@ impl SongView {
 
     fn discovery(&self, track: &Track, cx: &Context<Self>) -> AnyElement {
         let theme = *cx.theme();
-        let tags = track.tags.clone();
+        let tags = track.genres.clone();
         let languages = match track.languages.is_empty() {
             true => t!("common-not-provided"),
             false => SharedString::from(

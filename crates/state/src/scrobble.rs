@@ -408,7 +408,7 @@ fn played(track: &Track, at: SystemTime) -> Option<Play> {
         artist,
         title: track.name.clone(),
         album: Some(track.album.clone()).filter(|album| !album.is_empty()),
-        duration: track.duration,
+        duration: track.duration?,
         at,
     })
 }

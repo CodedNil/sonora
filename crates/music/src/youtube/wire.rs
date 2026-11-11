@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use crate::models::{
     Album, AlbumDetail, Artist, ArtistProfile, ArtistRef, Playlist, PlaylistDetail, ReleaseType,
     Track, UserProfile,
@@ -9,20 +7,11 @@ use crate::models::{
 const COVER_LARGE: u32 = 1200;
 
 pub fn track(source: ytmusic::Track, index: u32) -> Track {
-    let artists = source
-        .artists
-        .iter()
-        .map(|artist| artist.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let artist_refs = source
-        .artists
-        .into_iter()
-        .map(|artist| ArtistRef {
+    let (artists, artist_refs) =
+        ArtistRef::credits(source.artists.into_iter().map(|artist| ArtistRef {
             name: artist.name,
             id: artist.id,
-        })
-        .collect();
+        }));
     Track {
         id: source.video_id,
         name: source.title,
@@ -36,48 +25,31 @@ pub fn track(source: ytmusic::Track, index: u32) -> Track {
             .unwrap_or_default(),
         album_id: source.album.and_then(|album| album.id),
         cover: cover(&source.thumbnails),
-        duration: source.duration.unwrap_or(Duration::ZERO),
-        added_at: None,
-        added_by: None,
-        playcount: None,
-        popularity: 0,
+        duration: source.duration,
         explicit: source.explicit,
         track_number: index + 1,
         disc_number: 1,
-        tags: Vec::new(),
-        languages: Vec::new(),
-        credits: Vec::new(),
+        ..Default::default()
     }
 }
 
 pub fn album(source: ytmusic::Album) -> Album {
-    let artists = source
-        .artists
-        .iter()
-        .map(|artist| artist.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let (artists, artist_refs) =
+        ArtistRef::credits(source.artists.into_iter().map(|artist| ArtistRef {
+            name: artist.name,
+            id: artist.id,
+        }));
     Album {
         id: source.browse_id,
         name: source.title,
         artists,
-        artist_refs: source
-            .artists
-            .into_iter()
-            .map(|artist| ArtistRef {
-                name: artist.name,
-                id: artist.id,
-            })
-            .collect(),
+        artist_refs,
         cover: cover(&source.thumbnails),
         cover_large: cover_large(&source.thumbnails),
         release_type: release_type(source.kind),
-        year: source.year.unwrap_or(0),
-        track_count: source.track_count.unwrap_or(0),
-        release_date: source.year.map(|year| year.to_string()).unwrap_or_default(),
-        label: String::new(),
-        copyrights: Vec::new(),
-        added_at: None,
+        track_count: source.track_count,
+        release_date: source.year.and_then(crate::ReleaseDate::from_year),
+        ..Default::default()
     }
 }
 
@@ -94,25 +66,22 @@ pub fn album_detail(source: ytmusic::AlbumDetail) -> AlbumDetail {
     }
 }
 
-pub fn playlist(source: ytmusic::Playlist, owned: bool, public: bool) -> Playlist {
+pub fn playlist(source: ytmusic::Playlist, owned: bool) -> Playlist {
     Playlist {
         id: source.id,
         name: source.title,
         owner: source.author.unwrap_or_default(),
-        owner_id: String::new(),
         owned: owned || source.owned,
-        collaborative: false,
-        blend: false,
-        public: source.public.unwrap_or(public),
+        can_edit_tracks: owned || source.owned,
+        public: source.public,
         cover: cover(&source.thumbnails),
-        track_count: source.track_count.unwrap_or(0),
-        modified_at: None,
+        track_count: source.track_count,
+        ..Default::default()
     }
 }
 
 pub fn playlist_detail(source: ytmusic::PlaylistDetail) -> PlaylistDetail {
     let owned = source.playlist.owned;
-    let public = source.public;
     let tracks = source
         .tracks
         .into_iter()
@@ -120,7 +89,7 @@ pub fn playlist_detail(source: ytmusic::PlaylistDetail) -> PlaylistDetail {
         .map(|(index, item)| track(item, index as u32))
         .collect();
     PlaylistDetail {
-        playlist: playlist(source.playlist, owned, public),
+        playlist: playlist(source.playlist, owned),
         tracks,
         continuation: source.continuation,
     }

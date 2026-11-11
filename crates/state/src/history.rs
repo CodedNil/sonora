@@ -14,8 +14,8 @@ use crate::{Io, Outcome, Playback, Session, SessionEvent, SessionState, Toast, T
 const LOCAL_LIMIT: usize = 500;
 /// Every column of `plays`, in the order a [`Row`] holds them.
 const COLUMNS: &str = "scope, provider, track_id, played_at, name, playable, artists, \
-                       artist_refs, album, album_id, cover, duration_ms, explicit";
-const COLUMN_COUNT: usize = 13;
+                       artist_refs, album, album_id, cover, duration_ms, explicit, track";
+const COLUMN_COUNT: usize = 14;
 
 /// One `plays` row as stored, column by column, so a removed play goes back exactly as it was.
 type Row = Vec<Value>;
@@ -49,12 +49,14 @@ impl Store {
         };
         let artist_refs = serde_json::to_string(&track.artist_refs)
             .context("cannot encode listening history artists")?;
+        let snapshot =
+            serde_json::to_string(track).context("cannot encode listening history metadata")?;
         self.open()?
             .execute(
                 "INSERT OR IGNORE INTO plays (
                     scope, provider, track_id, played_at, name, playable, artists,
-                    artist_refs, album, album_id, cover, duration_ms, explicit
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    artist_refs, album, album_id, cover, duration_ms, explicit, track
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
                     scope,
                     provider,
@@ -67,8 +69,12 @@ impl Store {
                     track.album,
                     track.album_id,
                     track.cover,
-                    track.duration.as_millis().min(i64::MAX as u128) as i64,
+                    track
+                        .duration
+                        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+                        .unwrap_or(0),
                     track.explicit,
+                    snapshot,
                 ],
             )
             .context("cannot save listening history")?;
@@ -110,7 +116,7 @@ impl Store {
         let (Some(track_id), Some(played_at)) = (track.id.as_deref(), track.added_at) else {
             return Ok(Vec::new());
         };
-        let played_at = played_at.saturating_mul(1_000);
+        let played_at = played_at.as_second().saturating_mul(1_000);
         let window = params![scope, track_id, played_at, played_at.saturating_add(1_000)];
         let mut connection = self.open()?;
         let transaction = connection
@@ -175,7 +181,7 @@ impl Store {
         let mut query = connection
             .prepare(
                 "SELECT track_id, played_at, name, playable, artists, artist_refs, album,
-                        album_id, cover, duration_ms, explicit
+                        album_id, cover, duration_ms, explicit, track
                  FROM plays
                  WHERE scope = ?
                  ORDER BY played_at DESC
@@ -187,6 +193,12 @@ impl Store {
                 let refs = row.get_ref(5)?.as_str()?;
                 let artist_refs: Vec<ArtistRef> = serde_json::from_str(refs).unwrap_or_default();
                 let played_at: i64 = row.get(1)?;
+                if let Some(stored) = row.get::<_, Option<String>>(11)?
+                    && let Ok(mut track) = serde_json::from_str::<Track>(&stored)
+                {
+                    track.added_at = music::Timestamp::from_millisecond(played_at).ok();
+                    return Ok(track);
+                }
                 let duration: i64 = row.get(9)?;
                 Ok(Track {
                     id: Some(row.get(0)?),
@@ -197,8 +209,9 @@ impl Store {
                     album: row.get(6)?,
                     album_id: row.get(7)?,
                     cover: row.get(8)?,
-                    duration: std::time::Duration::from_millis(duration.max(0) as u64),
-                    added_at: Some(played_at / 1_000),
+                    duration: (duration > 0)
+                        .then(|| std::time::Duration::from_millis(duration as u64)),
+                    added_at: music::Timestamp::from_millisecond(played_at).ok(),
                     explicit: row.get(10)?,
                     ..Default::default()
                 })
@@ -572,7 +585,7 @@ impl History {
         self.active = Some(key);
 
         let played_at = now();
-        track.added_at = Some(played_at / 1_000);
+        track.added_at = music::Timestamp::from_millisecond(played_at).ok();
         self.tracks.insert(0, track.clone());
         if self.task.is_some() {
             self.pending.push(track.clone());

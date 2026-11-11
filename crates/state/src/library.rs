@@ -3,7 +3,7 @@ use std::future::Future;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use gpui::{App, Context, Entity, SharedString, Task};
 use music::{
@@ -568,13 +568,6 @@ fn hold<T>(what: &str, result: anyhow::Result<Vec<T>>, into: &mut Rows<T>) -> bo
     }
 }
 
-fn stamp() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
-}
-
 fn take<T>(
     part: LibraryPart,
     result: anyhow::Result<Vec<T>>,
@@ -843,7 +836,7 @@ impl Savable for Track {
     }
 
     fn stamp_added(&mut self) {
-        self.added_at = Some(stamp());
+        self.added_at = Some(music::Timestamp::now());
     }
 
     fn saved_now(library: &Library, id: &str) -> Option<Self> {
@@ -909,7 +902,7 @@ impl Savable for Album {
     }
 
     fn stamp_added(&mut self) {
-        self.added_at = Some(stamp());
+        self.added_at = Some(music::Timestamp::now());
     }
 
     fn saved_now(library: &Library, id: &str) -> Option<Self> {
@@ -955,7 +948,7 @@ impl Savable for SavedArtist {
     }
 
     fn stamp_added(&mut self) {
-        self.added_at = Some(stamp());
+        self.added_at = Some(music::Timestamp::now());
     }
 
     fn saved_now(library: &Library, id: &str) -> Option<Self> {
@@ -2012,7 +2005,7 @@ impl Library {
             },
             move |client| async move { client.set_playlist_public(&id, public).await },
             move |this, _, cx| {
-                this.amend_playlist(&changed, |playlist| playlist.public = public, cx);
+                this.amend_playlist(&changed, |playlist| playlist.public = Some(public), cx);
             },
             cx,
         );
@@ -2349,7 +2342,11 @@ impl Library {
         let added_count = track_ids.len() as u32;
         self.amend_playlist(
             playlist_id,
-            |playlist| playlist.track_count += added_count,
+            |playlist| {
+                playlist.track_count = playlist
+                    .track_count
+                    .map(|count| count.saturating_add(added_count))
+            },
             cx,
         );
         if let Some(ids) = self.contents.get_mut(playlist_id) {
@@ -2370,7 +2367,11 @@ impl Library {
     ) {
         self.amend_playlist(
             playlist_id,
-            |playlist| playlist.track_count = playlist.track_count.saturating_sub(dropped_count),
+            |playlist| {
+                playlist.track_count = playlist
+                    .track_count
+                    .map(|count| count.saturating_sub(dropped_count))
+            },
             cx,
         );
         if let Some(ids) = self.contents.get_mut(playlist_id) {
@@ -2681,12 +2682,16 @@ impl Library {
         let mut wanted = Vec::new();
         let mut adopted = Vec::new();
         for (index, playlist) in playlists.iter().enumerate() {
-            if playlist.cover.is_some() || (playlist.track_count as usize) < mosaic::TILES {
+            if playlist.cover.is_some()
+                || playlist
+                    .track_count
+                    .is_some_and(|count| (count as usize) < mosaic::TILES)
+            {
                 continue;
             }
-            match mosaic::cached(&playlist.id, playlist.track_count) {
+            match mosaic::cached(&playlist.id, playlist.track_count.unwrap_or(0)) {
                 Some(cover) => adopted.push((index, cover)),
-                None => wanted.push((playlist.id.clone(), playlist.track_count)),
+                None => wanted.push((playlist.id.clone(), playlist.track_count.unwrap_or(0))),
             }
         }
         for (index, cover) in adopted {
@@ -2735,14 +2740,17 @@ impl Library {
     fn mosaic_stamp(&self, id: &str) -> Option<u32> {
         let playlist = self.playlist(id)?;
 
-        (playlist.cover.is_none() && playlist.track_count as usize >= mosaic::TILES)
-            .then_some(playlist.track_count)
+        (playlist.cover.is_none()
+            && playlist
+                .track_count
+                .is_none_or(|count| count as usize >= mosaic::TILES))
+        .then_some(playlist.track_count.unwrap_or(0))
     }
 
-    /// Whether the listener may change the playlist `id`: one they own or collaborate on.
+    /// Whether the provider allows the listener to add or remove tracks in playlist `id`.
     pub fn is_editable(&self, id: &str) -> bool {
         self.playlist(id)
-            .is_some_and(|playlist| playlist.owned || playlist.collaborative)
+            .is_some_and(|playlist| playlist.can_edit_tracks)
     }
 
     fn paint_mosaic(
@@ -2792,7 +2800,7 @@ impl Library {
             .state(shelf)
             .playlists()
             .iter()
-            .filter(|playlist| playlist.owned || playlist.collaborative)
+            .filter(|playlist| playlist.can_edit_tracks)
             .map(|playlist| playlist.id.clone())
             .filter(|id| {
                 (shelf.local() || !self.contents.contains_key(id)) && !self.reading.contains_key(id)
@@ -2994,7 +3002,7 @@ impl Library {
         match track {
             Some(_) if self.saved(id) => return,
             Some(mut track) => {
-                track.added_at = Some(stamp());
+                track.added_at = Some(music::Timestamp::now());
                 self.set_saved(track, true);
             }
             None => {
@@ -3300,7 +3308,7 @@ impl Library {
         }
         let part = landed.part();
         let arrived = landed.arrived();
-        let counts = |this: &Self| -> HashMap<String, u32> {
+        let counts = |this: &Self| -> HashMap<String, Option<u32>> {
             this.state(shelf)
                 .playlists()
                 .iter()

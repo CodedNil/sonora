@@ -1,220 +1,278 @@
-use std::collections::HashMap;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result};
+use http::header::{ACCEPT, CONTENT_TYPE};
+use http::{HeaderMap, HeaderValue, Method};
 use librespot_core::Session;
-use librespot_protocol::entity_extension_data::EntityExtensionData;
-use librespot_protocol::extended_metadata::{BatchedEntityRequest, EntityRequest, ExtensionQuery};
-use librespot_protocol::extension_kind::ExtensionKind;
-use librespot_protocol::metadata::image::Size as ImageSize;
-use librespot_protocol::metadata::{
-    Album as AlbumMessage, Artist as ArtistMessage, Track as TrackMessage,
-};
-use protobuf::{EnumOrUnknown, Message as _};
 
-use crate::spotify::pace::paced;
-use crate::spotify::{collection2, wire};
-use crate::{ArtistRef, Credit, Track};
+use crate::spotify::pb::{Reader, Value, Writer, text};
+use crate::spotify::{metadata, pace::paced};
+use crate::{Page, Pages, Track};
 
 const TRACK_PREFIX: &str = "spotify:track:";
-const UNKNOWN: &str = "Unknown";
-const BATCH: usize = 500;
+const PAGING: &str = "/collection/v2/paging";
+const WRITE: &str = "/collection/v2/write";
+const CONTENT: &str = "application/vnd.collection-v2.spotify.proto";
+pub(crate) const COLLECTION: &str = "collection";
+pub(crate) const ARTISTS: &str = "artist";
+const PAGE: i32 = 300;
+
+static UPDATE: AtomicU64 = AtomicU64::new(0);
+
+const REQUEST_USERNAME: u32 = 1;
+const REQUEST_SET: u32 = 2;
+const REQUEST_TOKEN: u32 = 3;
+const REQUEST_LIMIT: u32 = 4;
+
+const RESPONSE_ITEMS: u32 = 1;
+const RESPONSE_TOKEN: u32 = 2;
+
+const ITEM_URI: u32 = 1;
+const ITEM_ADDED_AT: u32 = 2;
+const ITEM_REMOVED: u32 = 3;
+
+const WRITE_USERNAME: u32 = 1;
+const WRITE_SET: u32 = 2;
+const WRITE_ITEMS: u32 = 3;
+const WRITE_UPDATE_ID: u32 = 4;
+
+struct CollectionPage {
+    items: Vec<SavedItem>,
+    next: String,
+}
+
+pub(crate) struct SavedItem {
+    pub(crate) uri: String,
+    pub(crate) added_at: Option<crate::Timestamp>,
+}
 
 pub async fn saved_tracks(session: &Session) -> Result<Vec<Track>> {
-    let items = collection2::saved_items(session, collection2::COLLECTION, TRACK_PREFIX).await?;
-    if items.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let uris: Vec<_> = items.iter().map(|item| item.uri.clone()).collect();
-    let mut known = metadata(session, &uris).await?;
-    Ok(items
-        .into_iter()
-        .filter_map(|item| {
-            let mut track = known.remove(&item.uri)?;
-            track.added_at = item.added_at;
-            Some(track)
-        })
-        .collect())
-}
-
-pub async fn track(session: &Session, track_id: &str) -> Result<Track> {
-    let uri = format!("{TRACK_PREFIX}{track_id}");
-    metadata(session, std::slice::from_ref(&uri))
-        .await?
-        .remove(&uri)
-        .context("track metadata is missing")
-}
-
-pub(crate) async fn metadata(session: &Session, uris: &[String]) -> Result<HashMap<String, Track>> {
-    let entities = extended(session, uris, ExtensionKind::TRACK_V4)
-        .await
-        .context("cannot read track metadata")?;
-
-    let mut tracks = HashMap::new();
-    for entity in entities {
-        let Ok(message) = TrackMessage::parse_from_bytes(&entity.extension_data.value) else {
-            continue;
-        };
-        let track = track_from(&entity.entity_uri, &message);
-        tracks.insert(entity.entity_uri, track);
+    let mut pages = saved_tracks_paged(session).await?;
+    let mut tracks = Vec::new();
+    while let Some(page) = pages.recv().await {
+        tracks.extend(page?.items);
     }
     Ok(tracks)
 }
 
-pub(crate) async fn extended(
-    session: &Session,
-    uris: &[String],
-    kind: ExtensionKind,
-) -> Result<Vec<EntityExtensionData>> {
-    let mut entities = Vec::with_capacity(uris.len());
-    batched(session, uris, kind, BATCH, |batch| {
-        entities.extend(batch);
-        Ok(())
-    })
-    .await?;
-
-    Ok(entities)
+/// Streams enriched favorites in bounded batches, so a large library does not delay its first rows.
+/// Dropping the receiver cancels the in-flight batch and stops further requests.
+pub async fn saved_tracks_paged(session: &Session) -> Result<Pages<Track>> {
+    let items = saved_items(session, COLLECTION, TRACK_PREFIX).await?;
+    let total = Some(items.len());
+    let (sink, pages) = tokio::sync::mpsc::channel(1);
+    let session = session.clone();
+    tokio::spawn(async move {
+        for items in items.chunks(metadata::FEATURES_AT_ONCE) {
+            let load = async {
+                let uris: Vec<_> = items.iter().map(|item| item.uri.clone()).collect();
+                let mut known = metadata::tracks(&session, &uris).await?;
+                let items = items
+                    .iter()
+                    .filter_map(|item| {
+                        let mut track = known.remove(&item.uri)?;
+                        track.added_at = item.added_at;
+                        Some(track)
+                    })
+                    .collect();
+                Ok(Page { total, items })
+            };
+            let page: Result<Page<Track>> =
+                tokio::select! { _ = sink.closed() => return, page = load => page };
+            let failed = page.is_err();
+            if sink.send(page).await.is_err() || failed {
+                return;
+            }
+        }
+    });
+    Ok(pages)
 }
 
-/// Reads extended metadata a batch at a time and hands each batch to `take` before asking
-/// for the next one. A caller that turns the entities into its own models here never holds
-/// more than one batch of protobufs, which is what keeps a thousand-release discography from
-/// costing hundreds of megabytes.
-pub(crate) async fn batched(
-    session: &Session,
-    uris: &[String],
-    kind: ExtensionKind,
-    batch: usize,
-    mut take: impl FnMut(Vec<EntityExtensionData>) -> Result<()>,
-) -> Result<()> {
-    for uris in uris.chunks(batch.max(1)) {
-        let request = BatchedEntityRequest {
-            entity_request: uris
-                .iter()
-                .map(|uri| EntityRequest {
-                    entity_uri: uri.clone(),
-                    query: vec![ExtensionQuery {
-                        extension_kind: EnumOrUnknown::new(kind),
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                })
-                .collect(),
-            ..Default::default()
-        };
-        let response = paced(|| session.spclient().get_extended_metadata(request.clone())).await?;
-        take(
-            response
-                .extended_metadata
-                .into_iter()
-                .flat_map(|array| array.extension_data)
-                .collect(),
-        )?;
-    }
+/// Stars or unstars a track, album or artist in its corresponding collection set.
+pub async fn set_saved(session: &Session, kind: &str, id: &str, saved: bool) -> Result<()> {
+    let uri = format!("spotify:{kind}:{id}");
+    let set = match kind {
+        "artist" => ARTISTS,
+        _ => COLLECTION,
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("cannot read the current time")?;
+    let added_at = match saved {
+        true => now
+            .as_secs()
+            .try_into()
+            .context("current time exceeds the collection timestamp range")?,
+        false => 0,
+    };
 
+    let mut item = Writer::default();
+    item.string(ITEM_URI, &uri);
+    item.int32(ITEM_ADDED_AT, added_at);
+    item.bool(ITEM_REMOVED, !saved);
+
+    let sequence = UPDATE.fetch_add(1, Ordering::Relaxed);
+    let update_id = format!(
+        "sonora-{}-{}-{}-{sequence}",
+        now.as_secs(),
+        now.subsec_nanos(),
+        std::process::id()
+    );
+    let mut request = Writer::default();
+    request.string(WRITE_USERNAME, &session.username());
+    request.string(WRITE_SET, set);
+    request.message(WRITE_ITEMS, &item.finish());
+    request.string(WRITE_UPDATE_ID, &update_id);
+    let body = request.finish();
+
+    paced(|| {
+        session
+            .spclient()
+            .request(&Method::POST, WRITE, Some(headers()), Some(&body))
+    })
+    .await
+    .context("cannot update the saved collection")?;
     Ok(())
 }
 
-fn track_from(uri: &str, track: &TrackMessage) -> Track {
-    let (artists, artist_refs) = artists_from(&track.artist);
+pub(crate) async fn saved_items(
+    session: &Session,
+    set: &str,
+    prefix: &str,
+) -> Result<Vec<SavedItem>> {
+    let username = session.username();
+    let mut found = Vec::new();
+    let mut token = String::new();
 
-    Track {
-        id: uri.strip_prefix(TRACK_PREFIX).map(str::to_owned),
-        playable: !track.file.is_empty() || !track.alternative.is_empty(),
-        name: non_empty(track.name.as_deref())
-            .unwrap_or(UNKNOWN)
-            .to_owned(),
-        artists,
-        artist_refs,
-        album: track
-            .album
-            .as_ref()
-            .and_then(|album| non_empty(album.name.as_deref()))
-            .unwrap_or_default()
-            .to_owned(),
-        album_id: track.album.as_ref().and_then(|album| base62(album.gid())),
-        cover: track.album.as_ref().and_then(cover_url),
-        duration: Duration::from_millis(track.duration.unwrap_or_default().max(0) as u64),
-        added_at: None,
-        added_by: None,
-        playcount: None,
-        popularity: track.popularity.unwrap_or_default().clamp(0, 100) as u32,
-        explicit: track.explicit.unwrap_or_default(),
-        track_number: track.number.unwrap_or_default().max(0) as u32,
-        disc_number: track.disc_number.unwrap_or_default().max(0) as u32,
-        tags: track.tags.clone(),
-        languages: track.language_of_performance.clone(),
-        credits: track
-            .artist_with_role
-            .iter()
-            .filter_map(|credit| {
-                let name = non_empty(credit.artist_name.as_deref())?.to_owned();
-                let role = match credit.role.map(|role| role.value()) {
-                    Some(1) => "Main artist",
-                    Some(2) => "Featured artist",
-                    Some(3) => "Remixer",
-                    Some(4) => "Actor",
-                    Some(5) => "Composer",
-                    Some(6) => "Conductor",
-                    Some(7) => "Orchestra",
-                    _ => "Performer",
-                };
-                Some(Credit {
-                    name,
-                    role: role.to_owned(),
-                    id: base62(credit.artist_gid()),
-                })
-            })
-            .collect(),
-    }
-}
-
-pub(crate) fn artists_from(artists: &[ArtistMessage]) -> (String, Vec<ArtistRef>) {
-    let refs: Vec<_> = artists
-        .iter()
-        .filter_map(|artist| {
-            let name = non_empty(artist.name.as_deref())?.to_owned();
-            Some(ArtistRef {
-                name,
-                id: base62(artist.gid()),
-            })
+    loop {
+        let body = request(&username, set, &token);
+        let raw = paced(|| {
+            session
+                .spclient()
+                .request(&Method::POST, PAGING, Some(headers()), Some(&body))
         })
-        .collect();
-    let names = match refs.is_empty() {
-        true => UNKNOWN.to_owned(),
-        false => refs
-            .iter()
-            .map(|artist| artist.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", "),
+        .await
+        .context("cannot read the saved collection")?;
+
+        let page = response(&raw).context("cannot decode the collection page")?;
+
+        found.extend(
+            page.items
+                .into_iter()
+                .filter(|item| item.uri.starts_with(prefix)),
+        );
+
+        token = page.next;
+        if token.is_empty() {
+            break;
+        }
+    }
+
+    Ok(found)
+}
+
+fn headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static(CONTENT));
+    headers.insert(ACCEPT, HeaderValue::from_static(CONTENT));
+    headers
+}
+
+fn request(username: &str, set: &str, token: &str) -> Vec<u8> {
+    let mut writer = Writer::default();
+    writer.string(REQUEST_USERNAME, username);
+    writer.string(REQUEST_SET, set);
+    writer.string(REQUEST_TOKEN, token);
+    writer.int32(REQUEST_LIMIT, PAGE);
+    writer.finish()
+}
+
+fn response(bytes: &[u8]) -> Result<CollectionPage> {
+    let mut page = CollectionPage {
+        items: Vec::new(),
+        next: String::new(),
     };
-    (names, refs)
+    let mut reader = Reader::new(bytes);
+
+    while let Some((field, value)) = reader.field()? {
+        match (field, value) {
+            (RESPONSE_ITEMS, Value::Bytes(item)) => page.items.extend(kept(item)?),
+            (RESPONSE_TOKEN, Value::Bytes(token)) => page.next = text(token)?,
+            _ => (),
+        }
+    }
+
+    Ok(page)
 }
 
-pub(crate) fn base62(gid: &[u8]) -> Option<String> {
-    librespot_core::SpotifyId::from_raw(gid)
-        .ok()
-        .map(|id| id.to_base62())
+fn kept(bytes: &[u8]) -> Result<Option<SavedItem>> {
+    let mut uri = None;
+    let mut added_at = None;
+    let mut removed = false;
+    let mut reader = Reader::new(bytes);
+
+    while let Some((field, value)) = reader.field()? {
+        match (field, value) {
+            (ITEM_URI, Value::Bytes(raw)) => uri = Some(text(raw)?),
+            (ITEM_ADDED_AT, Value::Varint(raw) | Value::Fixed(raw)) => {
+                added_at = crate::Timestamp::from_second(raw as u32 as i32 as i64).ok();
+            }
+            (ITEM_REMOVED, Value::Varint(flag)) => removed = flag != 0,
+            _ => (),
+        }
+    }
+
+    if added_at.is_none() && uri.is_some() && !removed {
+        log::debug!(
+            "collection: saved item has no date, fields: {}",
+            fields(bytes)
+        );
+    }
+
+    Ok(uri
+        .filter(|_| !removed)
+        .map(|uri| SavedItem { uri, added_at }))
 }
 
-fn non_empty(value: Option<&str>) -> Option<&str> {
-    value.filter(|value| !value.is_empty())
+fn fields(bytes: &[u8]) -> String {
+    let mut reader = Reader::new(bytes);
+    let mut seen = Vec::new();
+    while let Ok(Some((field, value))) = reader.field() {
+        seen.push(match value {
+            Value::Varint(raw) => format!("{field}=varint({raw})"),
+            Value::Fixed(raw) => format!("{field}=fixed({raw})"),
+            Value::Bytes(raw) => format!("{field}=bytes({})", raw.len()),
+        });
+    }
+    seen.join(", ")
 }
 
-fn cover_url(album: &AlbumMessage) -> Option<String> {
-    let smallest = album
-        .cover_group
-        .as_ref()?
-        .image
-        .iter()
-        .filter(|image| image.has_file_id())
-        .min_by_key(|image| match image.size() {
-            ImageSize::SMALL => 0,
-            ImageSize::DEFAULT => 1,
-            ImageSize::LARGE => 2,
-            ImageSize::XLARGE => 3,
-        })?;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    wire::image_url(smallest.file_id())
+    #[test]
+    fn parses_saved_item_with_date() {
+        let mut writer = Writer::default();
+        writer.string(ITEM_URI, "spotify:track:abc");
+        writer.int32(ITEM_ADDED_AT, 1_725_552_000);
+
+        let item = kept(&writer.finish()).unwrap().unwrap();
+
+        assert_eq!(item.uri, "spotify:track:abc");
+        assert_eq!(
+            item.added_at.map(|stamp| stamp.as_second()),
+            Some(1_725_552_000)
+        );
+    }
+
+    #[test]
+    fn drops_removed_item() {
+        let mut writer = Writer::default();
+        writer.string(ITEM_URI, "spotify:track:abc");
+        writer.int32(ITEM_REMOVED, 1);
+
+        assert!(kept(&writer.finish()).unwrap().is_none());
+    }
 }

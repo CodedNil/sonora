@@ -49,7 +49,7 @@ impl Controls {
                 title: Some(&track.name),
                 artist: Some(&track.artists),
                 album: Some(&track.album),
-                duration: Some(track.duration),
+                duration: track.duration,
                 cover_url: cover,
             },
             None => MediaMetadata::default(),

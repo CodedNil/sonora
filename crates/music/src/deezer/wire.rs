@@ -6,9 +6,12 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+/// A track id is a numeric string. Zero and negative ids are user uploads, which the
+/// streaming endpoints treat differently; the sign stays in the string.
+pub(crate) use crate::json_id as id;
 use crate::{
     Album, ArtistRef, Genre, GenreItem, GenreSection, Playlist, ReleaseType, SavedArtist, Track,
-    UserProfile, calendar,
+    UserProfile,
 };
 
 /// Sets a smart tracklist's id apart from a playlist's, so a later lookup knows to ask for
@@ -21,16 +24,6 @@ pub const FLOW: &str = "flow:";
 
 /// Who a smart tracklist or a Flow is credited to, since Deezer makes them for the listener.
 const MAKER: &str = "Deezer";
-
-/// A track id is a numeric string. Zero and negative ids are user uploads, which the
-/// streaming endpoints treat differently; the sign stays in the string.
-pub fn id(value: &Value) -> Option<String> {
-    value
-        .as_str()
-        .map(str::to_owned)
-        .or_else(|| value.as_i64().map(|number| number.to_string()))
-        .filter(|id| !id.is_empty() && id != "0")
-}
 
 /// The first non-empty string under any of `keys`.
 pub fn text<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
@@ -68,15 +61,15 @@ pub fn number(value: &Value, keys: &[&str]) -> Option<u64> {
 }
 
 /// A unix timestamp, or a gateway `YYYY-MM-DD HH:MM:SS` / `YYYY-MM-DD` string as seconds.
-fn when(value: &Value, keys: &[&str]) -> Option<i64> {
+fn when(value: &Value, keys: &[&str]) -> Option<crate::Timestamp> {
     if let Some(at) = number(value, keys) {
-        return Some(at as i64);
+        return crate::Timestamp::from_second(at as i64).ok();
     }
     keys.iter().find_map(|key| {
         value
             .get(*key)
             .and_then(Value::as_str)
-            .and_then(calendar::seconds)
+            .and_then(crate::parse_timestamp)
     })
 }
 
@@ -138,24 +131,13 @@ fn artists_of(value: &Value) -> (String, Vec<ArtistRef>) {
             .filter_map(Value::as_str)
             .map(str::to_owned)
             .collect();
-        let single = value
-            .get("ART_ID")
-            .and_then(id)
-            .map(|artist_id| (names.clone(), artist_id));
-        let refs = match (single, names.len()) {
-            (Some((names, artist_id)), 1) => vec![ArtistRef {
-                name: names[0].clone(),
-                id: Some(artist_id),
-            }],
-            _ => names
-                .iter()
-                .map(|name| ArtistRef {
-                    name: name.clone(),
-                    id: None,
-                })
-                .collect(),
-        };
-        return (names.join(", "), refs);
+        let id = (names.len() == 1)
+            .then(|| value.get("ART_ID").and_then(id))
+            .flatten();
+        return ArtistRef::credits(names.into_iter().map(|name| ArtistRef {
+            name,
+            id: id.clone(),
+        }));
     }
     if let Some(artist) = value.get("artist")
         && let Some(name) = artist.get("name").and_then(Value::as_str)
@@ -234,19 +216,17 @@ pub fn track(value: &Value) -> Option<Track> {
             .and_then(id)
             .or_else(|| value.get("ALB_ID").and_then(id)),
         cover: cover(&album, 300).or_else(|| cover(value, 300)),
-        duration: Duration::from_secs(number(value, &["DURATION", "duration"]).unwrap_or(0)),
+        duration: number(value, &["DURATION", "duration"]).map(Duration::from_secs),
         added_at: when(value, &["ADDED_AT", "time_add", "DATE_ADD"]),
-        added_by: None,
-        playcount: None,
+        release_date: text(value, &["PHYSICAL_RELEASE_DATE", "release_date"])
+            .or_else(|| text(&album, &["release_date"]))
+            .and_then(crate::ReleaseDate::parse),
         popularity: number(value, &["RANK", "rank", "RANK_SNG"])
-            .map(|rank| (rank / 10_000).min(100) as u32)
-            .unwrap_or(0),
+            .map(|rank| (rank / 10_000).min(100) as u8),
         explicit: truthy(value, &["explicit_lyrics", "EXPLICIT_LYRICS"]),
         track_number: number(value, &["TRACK_NUMBER", "track_position"]).unwrap_or(0) as u32,
         disc_number: number(value, &["DISK_NUMBER"]).unwrap_or(1) as u32,
-        tags: Vec::new(),
-        languages: Vec::new(),
-        credits: Vec::new(),
+        ..Default::default()
     })
 }
 
@@ -274,11 +254,6 @@ pub fn album(value: &Value) -> Option<Album> {
         ],
     )
     .unwrap_or_default();
-    let year = release
-        .split('-')
-        .next()
-        .and_then(|year| year.parse().ok())
-        .unwrap_or(0);
     Some(Album {
         id: album_id,
         name: text(value, &["ALB_TITLE", "title"])
@@ -294,9 +269,9 @@ pub fn album(value: &Value) -> Option<Album> {
             Some("compile") => ReleaseType::Compilation,
             _ => ReleaseType::Album,
         },
-        year,
-        track_count: number(value, &["NB_TRAK", "nb_tracks"]).unwrap_or(0) as u32,
-        release_date: release.to_owned(),
+        track_count: number(value, &["NB_TRAK", "nb_tracks"])
+            .map(|count| count.min(u64::from(u32::MAX)) as u32),
+        release_date: crate::ReleaseDate::parse(release),
         label: text(value, &["label", "LABEL"])
             .unwrap_or_default()
             .to_owned(),
@@ -334,16 +309,17 @@ pub fn playlist(value: &Value, user_id: &str) -> Option<Playlist> {
             .unwrap_or_default()
             .to_owned(),
         owner: owner.to_owned(),
-        owner_id: owner_id.clone(),
+        owner_id: (!owner_id.is_empty()).then(|| owner_id.clone()),
         owned: !owner_id.is_empty() && owner_id == user_id,
-        collaborative: false,
+        can_edit_tracks: !owner_id.is_empty() && owner_id == user_id,
         blend: false,
         public: number(value, &["STATUS"])
             .map(|status| status == 1)
-            .unwrap_or_else(|| truthy(value, &["public"])),
+            .or_else(|| value.get("public").and_then(Value::as_bool)),
         cover: image(kind, md5, 300)
             .or_else(|| text(value, &["picture_medium"]).map(str::to_owned)),
-        track_count: number(value, &["NB_SONG", "nb_tracks"]).unwrap_or(0) as u32,
+        track_count: number(value, &["NB_SONG", "nb_tracks"])
+            .map(|count| count.min(u64::from(u32::MAX)) as u32),
         modified_at: when(value, &["DATE_MOD"]),
     })
 }
@@ -426,7 +402,7 @@ pub fn smart_tracklist(value: &Value) -> Option<Playlist> {
         format!("{SMART}{smart_id}"),
         name,
         cover,
-        number(value, &["NB_SONG"]).unwrap_or(0) as u32,
+        number(value, &["NB_SONG"]).map(|count| count.min(u64::from(u32::MAX)) as u32),
     ))
 }
 
@@ -440,7 +416,12 @@ pub fn flow(item: &Value) -> Option<Playlist> {
     let name = text(item, &["title"])
         .or_else(|| text(data, &["title"]))
         .unwrap_or("Flow");
-    Some(made(format!("{FLOW}{config}"), name, picture(item, 300), 0))
+    Some(made(
+        format!("{FLOW}{config}"),
+        name,
+        picture(item, 300),
+        None,
+    ))
 }
 
 /// A channel card as a genre whose id is the page path `page.get` opens it by, such as
@@ -478,19 +459,15 @@ fn picture(item: &Value, size: u32) -> Option<String> {
 }
 
 /// A playlist Deezer makes for the listener rather than one a user owns.
-fn made(id: String, name: &str, cover: Option<String>, track_count: u32) -> Playlist {
+fn made(id: String, name: &str, cover: Option<String>, track_count: Option<u32>) -> Playlist {
     Playlist {
         id,
         name: name.to_owned(),
         owner: MAKER.to_owned(),
-        owner_id: String::new(),
-        owned: false,
-        collaborative: false,
-        blend: false,
-        public: true,
+        public: Some(true),
         cover,
         track_count,
-        modified_at: None,
+        ..Default::default()
     }
 }
 

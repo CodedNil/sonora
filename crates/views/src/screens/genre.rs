@@ -1,15 +1,18 @@
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, FontWeight, Pixels, Render, ScrollHandle, SharedString,
-    WeakEntity, Window, div, px,
+    AnyElement, App, Context, Entity, FontWeight, Pixels, Render, ScrollHandle, WeakEntity, Window,
+    div, px,
 };
 use i18n::t;
 use state::{AppSettings, GenreDetails, Playback, Sonora};
-use ui::{ActiveTheme as _, Mode, Popovers, Scrollbar, Scroller, Skeleton, Text, vacant};
+use ui::{
+    ActiveTheme as _, Mode, Popovers, Scrollbar, Scroller, Skeleton, Text, spoken_heading, vacant,
+};
 
 use crate::chrome::{Chrome, Toolbar, Tooled, tools};
 use crate::shared::cells;
+use crate::shared::page;
 use crate::shared::shelves::Shelves;
 use crate::shared::trouble;
 
@@ -163,26 +166,27 @@ impl Render for GenreView {
                             .flex()
                             .flex_col()
                             .gap_8()
-                            .when(title.is_none() && loading, |this| {
-                                this.child(
-                                    Skeleton::new()
-                                        .w(TITLE_SKELETON)
-                                        .h(theme.text(Text::Display)),
-                                )
-                            })
-                            .when_some(title, |this, title| {
-                                let name = SharedString::from(title);
-                                this.child(
-                                    div()
-                                        .id("genre-title")
-                                        .role(Role::Heading)
-                                        .aria_level(1)
-                                        .aria_label(name.clone())
-                                        .text_size(theme.text(Text::Display))
-                                        .font_weight(FontWeight::BOLD)
-                                        .child(name),
-                                )
-                            })
+                            .child(page::row(
+                                div()
+                                    .when(title.is_none() && loading, |this| {
+                                        this.child(
+                                            Skeleton::new()
+                                                .w(TITLE_SKELETON)
+                                                .h(theme.text(Text::Display)),
+                                        )
+                                    })
+                                    .when_some(title, |this, title| {
+                                        this.child(
+                                            spoken_heading("genre-title", title, 1, cx)
+                                                .flex_1()
+                                                .min_w_0()
+                                                .truncate()
+                                                .text_size(theme.text(Text::Display))
+                                                .font_weight(FontWeight::BOLD),
+                                        )
+                                    }),
+                                self.toolbar.clone(),
+                            ))
                             .when(empty, |this| {
                                 let label = t!("genre-empty");
                                 this.child(

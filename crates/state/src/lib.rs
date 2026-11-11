@@ -75,13 +75,13 @@ pub use playback::{Origin, Playback, PlaybackState, Sleep, Unreachable, Whence};
 pub use profile::Profile;
 pub use queue::{
     Queue, QueueKind, QueuePlacement, QueuePosition, QueueSections, QueueSlot, QueueView, Resume,
-    Stub,
+    SavedEntry,
 };
 pub use remote::{Remote, attach as attach_remote};
 pub use requirements::{Requirement, Requirements};
 pub use scan::Scan;
 pub use scrobble::{ScrobbleRow, ScrobbleState, Scrobbling};
-pub use search::{AlbumHit, ArtistHit, Hit, Kind, PlaylistHit, Search};
+pub use search::{ArtistHit, Hit, Kind, Search};
 pub use session::{Failure, ProviderInfo, Session, SessionEvent, SessionState};
 pub use settings::{
     AppSettings, ConnectName, DiscordName, FilterValue, FullscreenControlsAutohide, LYRICS_SOURCES,

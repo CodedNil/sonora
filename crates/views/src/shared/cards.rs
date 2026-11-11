@@ -31,7 +31,7 @@ pub(crate) fn album_card(
 
     Card::new(id, SharedString::from(album.name.clone()))
         .aria_description(spoken_caption([
-            year_label(album.year, Some(album.release_type)).unwrap_or_default(),
+            year_label(album.year(), Some(album.release_type)).unwrap_or_default(),
             SharedString::from(album.artists.clone()),
         ]))
         .cover(cover)
@@ -40,7 +40,7 @@ pub(crate) fn album_card(
         .hint()
         .bare_meta(released(
             SharedString::new_static("album-card-artist"),
-            album.year,
+            album.year(),
             Some(album.release_type),
             &album.artist_refs,
             album.artists.clone(),
@@ -285,14 +285,14 @@ pub(crate) fn listed(
         GenreItem::Album(album) => card
             .aria_description(spoken_caption([
                 i18n::lookup(release_key(album.release_type), None),
-                year_label(album.year, None).unwrap_or_default(),
+                year_label(album.year(), None).unwrap_or_default(),
                 SharedString::from(album.artists.clone()),
             ]))
             .bare_meta(tagged(
                 i18n::lookup(release_key(album.release_type), None),
                 released(
                     SharedString::new_static("listed-artist"),
-                    album.year,
+                    album.year(),
                     None,
                     &album.artist_refs,
                     album.artists.clone(),
@@ -329,9 +329,9 @@ fn tagged(kind: SharedString, rest: impl IntoElement, theme: &Theme) -> impl Int
 fn playlist_meta(playlist: &Playlist) -> SharedString {
     let owner = playlist.owner.as_str();
     match (owner.is_empty(), playlist.track_count) {
-        (_, 0) => SharedString::from(owner.to_owned()),
-        (true, count) => t!("count-songs", count = count),
-        (false, count) => SharedString::from(format!(
+        (_, None) => SharedString::from(owner.to_owned()),
+        (true, Some(count)) => t!("count-songs", count = count),
+        (false, Some(count)) => SharedString::from(format!(
             "{owner} {BULLET} {}",
             t!("count-songs", count = count)
         )),
@@ -358,7 +358,7 @@ pub(crate) fn release_key(kind: ReleaseType) -> &'static str {
 /// asks for.
 pub(crate) fn released(
     id: impl Into<SharedString>,
-    year: i32,
+    year: Option<u16>,
     kind: Option<ReleaseType>,
     artists: &[ArtistRef],
     fallback: impl Into<SharedString>,
@@ -394,10 +394,10 @@ pub(crate) fn released(
 }
 
 /// What a release's caption leads with: its year, or its kind when the year is unknown.
-fn year_label(year: i32, kind: Option<ReleaseType>) -> Option<SharedString> {
+fn year_label(year: Option<u16>, kind: Option<ReleaseType>) -> Option<SharedString> {
     match year {
-        0 => kind.map(|kind| i18n::lookup(release_key(kind), None)),
-        year => Some(SharedString::from(year.to_string())),
+        None => kind.map(|kind| i18n::lookup(release_key(kind), None)),
+        Some(year) => Some(SharedString::from(year.to_string())),
     }
 }
 
@@ -428,11 +428,10 @@ pub(crate) fn imported_playlist_card(
     playback: &Entity<Playback>,
     cx: &App,
 ) -> Card {
-    let count = t!("count-tracks", count = playlist.track_count);
-
-    playlist_card(id, playlist, playback, cx)
-        .aria_description(count.clone())
-        .meta(count)
+    playlist_card(id, playlist, playback, cx).when_some(playlist.track_count, |card, count| {
+        let count = t!("count-tracks", count = count);
+        card.aria_description(count.clone()).meta(count)
+    })
 }
 
 pub(crate) fn artist_card(

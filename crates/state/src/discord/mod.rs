@@ -283,7 +283,10 @@ impl Discord {
             self.timing
                 .track_started_at(track, playback.live_position())
         });
-        let duration = track.duration.as_secs() as i64;
+        let duration = track
+            .duration
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or(0);
         let public_art = provider.is_some_and(|provider| provider.public_art());
         let lookup = !track.id.as_deref().is_some_and(music::is_local_id)
             || settings.artwork_for_local_files();

@@ -137,9 +137,9 @@ impl Profile {
             if playlist.cover.is_some() {
                 continue;
             }
-            match mosaic::cached(&playlist.id, playlist.track_count) {
+            match mosaic::cached(&playlist.id, playlist.track_count.unwrap_or(0)) {
                 Some(cover) => playlist.cover = Some(cover),
-                None => wanted.push((playlist.id.clone(), playlist.track_count)),
+                None => wanted.push((playlist.id.clone(), playlist.track_count.unwrap_or(0))),
             }
         }
 

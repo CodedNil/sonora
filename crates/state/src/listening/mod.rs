@@ -723,7 +723,7 @@ impl Listening {
             .chosen_upcoming()
             .next()
             .and_then(|track| track.id.as_deref());
-        let Some(total) = queue.current().map(|track| track.duration) else {
+        let Some(total) = queue.current().and_then(|track| track.duration) else {
             return false;
         };
         let near = !total.is_zero() && total.saturating_sub(playback.live_position()) < LATE;
@@ -897,7 +897,7 @@ impl Listening {
     /// Where the session's track is now, going by when the server took `state`.
     fn expected(&self, state: &Shared) -> Duration {
         let at = self.unclamped(state);
-        match state.track.as_ref().map(|track| track.duration) {
+        match state.track.as_ref().and_then(|track| track.duration) {
             Some(total) if !total.is_zero() => at.min(total),
             _ => at,
         }
@@ -916,7 +916,7 @@ impl Listening {
         state
             .track
             .as_ref()
-            .map(|track| track.duration)
+            .and_then(|track| track.duration)
             .is_some_and(|total| !total.is_zero() && self.unclamped(state) >= total)
     }
 

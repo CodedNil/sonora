@@ -668,7 +668,7 @@ impl DeezerClient {
             .unwrap_or_default();
         let mut playlist = wire::smart_tracklist(&results["DATA"])
             .with_context(|| format!("cannot read the smart tracklist {smart_id}"))?;
-        playlist.track_count = tracks.len() as u32;
+        playlist.track_count = Some(tracks.len() as u32);
         if playlist.cover.is_none() {
             playlist.cover = tracks.iter().find_map(|track| track.cover.clone());
         }
@@ -712,7 +712,7 @@ impl DeezerClient {
             None => wire::flow(&json!({ "id": config }))
                 .with_context(|| format!("cannot read the flow {config}"))?,
         };
-        playlist.track_count = tracks.len() as u32;
+        playlist.track_count = Some(tracks.len() as u32);
         if playlist.cover.is_none() {
             playlist.cover = tracks.iter().find_map(|track| track.cover.clone());
         }
@@ -1338,8 +1338,8 @@ impl MusicApi for DeezerClient {
             .unwrap_or_default();
         let mut playlist = wire::playlist(data, &user_id)
             .with_context(|| format!("cannot read the playlist {playlist_id}"))?;
-        if playlist.track_count == 0 {
-            playlist.track_count = tracks.len() as u32;
+        if playlist.track_count.is_none() {
+            playlist.track_count = Some(tracks.len() as u32);
         }
         if playlist.cover.is_none() {
             playlist.cover = tracks.iter().find_map(|track| track.cover.clone());

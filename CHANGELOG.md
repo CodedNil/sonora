@@ -19,8 +19,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Blur the desktop behind a see-through window on Linux compositors that support it, such as KDE Plasma and niri.
 - Tidal tracks show their bit depth or bit rate in the signal path.
 - Keep plays from the signed-in provider out of Last.fm and the other linked services with a switch in Scrobbling, for accounts that already scrobble on their own.
+- Filter song lists by release year, play count, popularity, tempo, genre, mood, tags and collaborations when available.
+- Keep each playlist's search when returning to it.
+- Show Spotify genres in song lists, including Favorites and playlists.
+- Filter local files and Subsonic songs by their tagged moods and tempo when available.
 
 ### Changed
+
+- Distinguish unavailable song lengths, popularity and track counts from actual zero values.
 
 - Hover highlights fade out when the pointer leaves instead of cutting off.
 - The player bar keeps its playback buttons and seek bar centred as the window narrows: the volume slider shrinks first and folds into a button with a slider that rises on hover only when space runs out.
@@ -41,6 +47,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The play button swaps its play and pause icons with a pop, and the next and previous icons slide on like a belt when clicked.
 - Play on a pinned or library card starts sooner, and its icon answers the click at once.
 - Everyone in a Sonora Session now hears the same moment of a song to within a fraction of a second, and the end of a song is no longer cut short for some listeners when the session moves to the next one.
+- Find search and filter controls beside page headings, with compact summaries of active filters.
+- Spotify Favorites begin showing songs before the whole collection has loaded.
 
 ### Fixed
 

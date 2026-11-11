@@ -87,6 +87,7 @@ image = { version = "0.25", default-features = false, features = [
     "webp",
 ] }
 jiff = { version = "0.2", default-features = false, features = [
+    "serde",
     "std",
     "tz-system",
     "tzdb-bundle-platform",

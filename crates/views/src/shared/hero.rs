@@ -11,7 +11,7 @@ use music::{Album, Track};
 use state::{Origin, Playback};
 use ui::{
     ActiveTheme as _, Artwork, Button, ExplicitBadge, LEADING, MenuItem, Perch, Pin, Pinnable as _,
-    Skeleton, TableState, Tails as _, Text, Tipped as _, spoken, upper,
+    Skeleton, TableState, Tails as _, Text, Tipped as _, runtime, spoken, upper,
 };
 
 use crate::shared::tracks::{self, TrackSource};
@@ -50,29 +50,18 @@ pub(crate) fn copyright_notices(album: &Album) -> Vec<SharedString> {
     }
 }
 
-pub(crate) fn release_date_label(value: &str) -> SharedString {
-    let parts: Vec<_> = value.split('-').collect();
-    if parts.len() != 3 {
-        return SharedString::from(value.to_owned());
-    }
-    let month = match parts[1] {
-        "01" => t!("month-1"),
-        "02" => t!("month-2"),
-        "03" => t!("month-3"),
-        "04" => t!("month-4"),
-        "05" => t!("month-5"),
-        "06" => t!("month-6"),
-        "07" => t!("month-7"),
-        "08" => t!("month-8"),
-        "09" => t!("month-9"),
-        "10" => t!("month-10"),
-        "11" => t!("month-11"),
-        "12" => t!("month-12"),
-        _ => return SharedString::from(value.to_owned()),
+/// Formats a release date without inventing any missing date components.
+pub(crate) fn release_date_label(value: music::ReleaseDate) -> SharedString {
+    let Some(date) = value.full_date() else {
+        return value.to_string().into();
     };
-    let day = parts[2].trim_start_matches('0');
-
-    t!("date-full", month = &month, day = day, year = parts[0])
+    let month = i18n::lookup(&format!("month-{}", date.month()), None);
+    t!(
+        "date-full",
+        month = &month,
+        day = date.day().to_string(),
+        year = date.year().to_string()
+    )
 }
 
 /// The line of facts under a hero title, joined by bullets. Its text items reach screen readers
@@ -101,6 +90,14 @@ impl HeroMetaStrip {
     pub(crate) fn item(mut self, item: impl IntoElement) -> Self {
         self.items.push(MetaItem::Element(item.into_any_element()));
         self
+    }
+
+    /// Adds a runtime when the tracks have a known duration.
+    pub(crate) fn duration(self, duration: Option<std::time::Duration>) -> Self {
+        match duration.filter(|duration| !duration.is_zero()) {
+            Some(duration) => self.text(runtime(duration)),
+            None => self,
+        }
     }
 }
 
@@ -358,6 +355,7 @@ pub(crate) struct PageHero {
     fallback: Option<SharedString>,
     accent: bool,
     eyebrow: Option<SharedString>,
+    top_bar: Option<AnyElement>,
     meta: Option<AnyElement>,
     actions: Option<AnyElement>,
     circle: bool,
@@ -376,6 +374,7 @@ impl PageHero {
             fallback: None,
             accent: false,
             eyebrow: None,
+            top_bar: None,
             meta: None,
             actions: None,
             circle: false,
@@ -424,6 +423,20 @@ impl PageHero {
         self
     }
 
+    /// Puts a category label and controls above the content, in place of the eyebrow.
+    pub(crate) fn top_bar(
+        mut self,
+        category: impl Into<SharedString>,
+        tools: impl IntoElement,
+        cx: &App,
+    ) -> Self {
+        self.top_bar = Some(crate::shared::page::row(
+            eyebrow_label(category.into(), cx),
+            tools,
+        ));
+        self
+    }
+
     pub(crate) fn meta(mut self, meta: impl IntoElement) -> Self {
         self.meta = Some(meta.into_any_element());
         self
@@ -457,17 +470,38 @@ impl RenderOnce for PageHero {
         let theme = *cx.theme();
 
         let art = theme.metrics.cover;
+        let head = self.top_bar.or_else(|| {
+            self.eyebrow
+                .map(|eyebrow| eyebrow_label(eyebrow, cx).into_any_element())
+        });
         let drag_start = self.drag_start.map(Rc::from);
         let starter = drag_start.clone();
 
+        let hero = div()
+            .id(self.id.clone())
+            .when_some(self.pin.filter(|_| !self.pending), |hero, pin| {
+                hero.pin(pin)
+            })
+            .flex()
+            .w_full()
+            .min_w_0()
+            .flex_none()
+            .items_end()
+            .gap(COVER_GAP)
+            .pb_6();
+        let content = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .h(art)
+            .justify_end()
+            .gap_2()
+            .line_height(relative(LEADING))
+            .children(head);
+
         if self.pending {
-            return div()
-                .id(self.id)
-                .flex()
-                .flex_none()
-                .items_end()
-                .gap(COVER_GAP)
-                .pb_6()
+            return hero
                 .child(
                     Skeleton::new()
                         .flex_none()
@@ -476,16 +510,7 @@ impl RenderOnce for PageHero {
                         .when(self.circle, |skeleton| skeleton.rounded_full()),
                 )
                 .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .h(art)
-                        .justify_end()
-                        .gap_2()
-                        .line_height(relative(LEADING))
-                        .children(self.eyebrow.map(|eyebrow| eyebrow_label(eyebrow, cx)))
+                    content
                         .child(
                             skeleton_line(theme.text(Text::Display)).child(
                                 Skeleton::new()
@@ -505,84 +530,75 @@ impl RenderOnce for PageHero {
                 );
         }
 
-        div()
-            .id(self.id.clone())
-            .when_some(self.pin, |hero, pin| hero.pin(pin))
-            .flex()
-            .flex_none()
-            .items_end()
-            .gap(COVER_GAP)
-            .pb_6()
-            .child(
-                div()
-                    .flex_none()
-                    .when_some(starter, |this, drag_start: Rc<DragStart>| {
-                        this.on_mouse_down(MouseButton::Right, move |event, window, cx| {
-                            drag_start(event, window, cx)
-                        })
+        hero.child(
+            div()
+                .flex_none()
+                .when_some(starter, |this, drag_start: Rc<DragStart>| {
+                    this.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                        drag_start(event, window, cx)
                     })
-                    .child(
-                        Artwork::new(self.cover)
-                            .size(art)
-                            .corner_radius(theme.radius * 1.5)
-                            .when(self.circle, Artwork::circle)
-                            .when_some(self.fallback, Artwork::fallback)
-                            .when(self.accent, Artwork::accent),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .h(art)
-                    .justify_end()
-                    .gap_2()
-                    .line_height(relative(LEADING))
-                    .children(self.eyebrow.map(|eyebrow| eyebrow_label(eyebrow, cx)))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .min_w_0()
-                            .text_size(theme.text(Text::Display))
-                            .font_weight(FontWeight::BOLD)
-                            .child(
+                })
+                .child(
+                    Artwork::new(self.cover)
+                        .size(art)
+                        .corner_radius(theme.radius * 1.5)
+                        .when(self.circle, Artwork::circle)
+                        .when_some(self.fallback, Artwork::fallback)
+                        .when(self.accent, Artwork::accent),
+                ),
+        )
+        .child(
+            content
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .min_w_0()
+                        .text_size(theme.text(Text::Display))
+                        .font_weight(FontWeight::BOLD)
+                        .child(
+                            div()
+                                .id((self.id.clone(), "title"))
+                                .role(Role::Heading)
+                                .aria_level(1)
+                                .aria_label(self.title.clone())
+                                .min_w_0()
+                                .truncate()
+                                .tails()
+                                .when(!self.title.is_empty(), |this| {
+                                    this.tip_label(self.title.clone(), Perch::Below)
+                                })
+                                .when_some(drag_start, |this, drag_start: Rc<DragStart>| {
+                                    this.on_mouse_down(
+                                        MouseButton::Right,
+                                        move |event, window, cx| drag_start(event, window, cx),
+                                    )
+                                })
+                                .child(self.title),
+                        )
+                        .when(self.explicit, |this| {
+                            this.child(
                                 div()
-                                    .id((self.id.clone(), "title"))
-                                    .role(Role::Heading)
-                                    .aria_level(1)
-                                    .aria_label(self.title.clone())
-                                    .min_w_0()
-                                    .truncate()
-                                    .tails()
-                                    .when(!self.title.is_empty(), |this| {
-                                        this.tip_label(self.title.clone(), Perch::Below)
-                                    })
-                                    .when_some(drag_start, |this, drag_start: Rc<DragStart>| {
-                                        this.on_mouse_down(
-                                            MouseButton::Right,
-                                            move |event, window, cx| drag_start(event, window, cx),
-                                        )
-                                    })
-                                    .child(self.title),
+                                    .id((self.id.clone(), "explicit"))
+                                    .role(Role::Image)
+                                    .aria_label(t!("song-explicit"))
+                                    .flex_none()
+                                    .child(ExplicitBadge::new()),
                             )
-                            .when(self.explicit, |this| {
-                                this.child(
-                                    div()
-                                        .id((self.id.clone(), "explicit"))
-                                        .role(Role::Image)
-                                        .aria_label(t!("song-explicit"))
-                                        .flex_none()
-                                        .child(ExplicitBadge::new()),
-                                )
-                            }),
-                    )
-                    .children(self.meta)
-                    .children(self.actions.map(|actions| div().pt_1().child(actions))),
-            )
+                        }),
+                )
+                .children(self.meta)
+                .children(self.actions.map(|actions| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .w_full()
+                        .min_w_0()
+                        .pt_1()
+                        .child(actions)
+                })),
+        )
     }
 }
 
@@ -594,7 +610,7 @@ fn eyebrow_label(label: SharedString, cx: &App) -> Stateful<Div> {
     div()
         .id("hero-eyebrow")
         .role(Role::Label)
-        .aria_value(label.clone())
+        .aria_label(label.clone())
         .text_size(theme.text(Text::Small))
         .text_color(theme.muted_foreground)
         .font_weight(FontWeight::SEMIBOLD)

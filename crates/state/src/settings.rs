@@ -710,12 +710,14 @@ impl Values {
     }
 }
 
-/// One narrowed filter axis as stored per table: a flag that is on, or a range the user
-/// shrank. Whole ranges and flags that are off read as untouched and take no space.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// A saved table filter: a flag, narrowed range, picked choices, or text query. Empty filters take no space.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum FilterValue {
     Flag(bool),
     Range(f32, f32),
+    /// The ids of the options picked on a choice filter.
+    Choice(Vec<String>),
+    Text(String),
 }
 
 /// Everything `state.sqlite` holds under the `runtime` key: values the app changes on its own
@@ -744,6 +746,7 @@ struct StateValues {
     sidebar_full_library: bool,
     sidebar_pin_sort: String,
     sidebar_pin_reversed: bool,
+    #[serde(deserialize_with = "read_resume")]
     resume: Option<Resume>,
     window: Option<Frame>,
     system_theme: String,
@@ -3046,10 +3049,44 @@ fn take(pinned: &mut Vec<Held>, slug: &str, pin: &Pin) -> bool {
     true
 }
 
+/// Keeps queue identity and order across metadata changes without invalidating other settings.
+fn read_resume<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Resume>, D::Error> {
+    let mut value = serde_json::Value::deserialize(deserializer)?;
+    let defaults =
+        serde_json::to_value(music::Track::default()).map_err(serde::de::Error::custom)?;
+    for field in ["current", "past", "upcoming"] {
+        let Some(entries) = value.get_mut(field) else {
+            continue;
+        };
+        let entries = match entries {
+            serde_json::Value::Array(entries) => entries.as_mut_slice(),
+            entry => std::slice::from_mut(entry),
+        };
+        for entry in entries
+            .iter_mut()
+            .filter_map(serde_json::Value::as_object_mut)
+            .filter(|entry| !entry.contains_key("track"))
+        {
+            let mut track = defaults.as_object().cloned().unwrap_or_default();
+            track.extend(entry.clone());
+            track.insert("playable".into(), true.into());
+            entry.insert("track".into(), track.into());
+        }
+    }
+    Ok(serde_json::from_value(value).ok().flatten())
+}
+
 /// Carries the position over from the previous record while the same track is current on the
 /// same provider.
 fn carry(previous: Option<&Resume>, next: &mut Resume) {
-    let playing = |resume: &Resume| resume.current.as_ref().map(|stub| stub.id.clone());
+    let playing = |resume: &Resume| {
+        resume
+            .current
+            .as_ref()
+            .and_then(|entry| entry.track.id.clone())
+    };
     let same = previous.filter(|old| old.provider == next.provider);
     next.position = same
         .filter(|old| playing(old) == playing(next))
@@ -3139,7 +3176,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
-    use crate::queue::Stub;
+    use crate::queue::SavedEntry;
     use ui::PinKind;
 
     #[test]
@@ -3234,9 +3271,12 @@ mod tests {
         Resume {
             provider: provider.to_owned(),
             position,
-            current: Some(Stub {
-                id: playing.to_owned(),
-                ..Stub::default()
+            current: Some(SavedEntry {
+                track: music::Track {
+                    id: Some(playing.to_owned()),
+                    ..Default::default()
+                },
+                ..SavedEntry::default()
             }),
             ..Resume::default()
         }

@@ -14,6 +14,7 @@ mod hashes;
 mod library;
 mod plays;
 mod search;
+mod wire;
 
 pub(crate) use album::album;
 pub(crate) use artist::{Overview, artist};

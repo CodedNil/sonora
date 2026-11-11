@@ -298,7 +298,8 @@ fn continuation(answer: &Value) -> Option<&str> {
 fn item(node: &Value, index: usize) -> Option<GenreItem> {
     if let Some(source) = parse::two_row_playlist(node) {
         let thumb = thumb(&source.thumbnails);
-        let mut playlist = wire::playlist(source, false, true);
+        let mut playlist = wire::playlist(source, false);
+        playlist.public = playlist.public.or(Some(true));
         playlist.cover = thumb;
         if let Some(owner) = playlist_owner(node) {
             playlist.owner = owner;

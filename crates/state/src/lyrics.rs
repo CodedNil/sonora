@@ -741,7 +741,7 @@ fn query_for(track: &Track, key: Option<TrackKey>) -> LyricsQuery {
         title: track.name.clone(),
         artist: track.artists.clone(),
         album: (!track.album.is_empty()).then(|| track.album.clone()),
-        duration: track.duration,
+        duration: track.duration.unwrap_or_default(),
         track: key,
     }
 }

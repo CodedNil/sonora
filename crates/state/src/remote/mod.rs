@@ -221,7 +221,7 @@ impl Remote {
                 self.artwork = Some(self.fetch_artwork(track, url, cx));
             }
         }
-        if track.map(|track| track.duration) != self.length {
+        if track.and_then(|track| track.duration) != self.length {
             let art = self.art.take();
             self.describe(track, art.as_deref(), cx);
         }
@@ -255,7 +255,7 @@ impl Remote {
     fn describe(&mut self, track: Option<&Track>, cover: Option<&str>, cx: &App) {
         self.controls.describe(track, cover, cx);
         self.art = cover.map(str::to_owned);
-        self.length = track.map(|track| track.duration);
+        self.length = track.and_then(|track| track.duration);
     }
 
     /// The cover to publish: the album art `Cover` resolves once it arrives, the thumbnail the
@@ -376,7 +376,7 @@ fn extension(format: image::ImageFormat) -> &'static str {
 fn shift(playback: &mut Playback, target: Duration, cx: &mut Context<Playback>) {
     let end = playback
         .track()
-        .map(|track| track.duration)
+        .and_then(|track| track.duration)
         .unwrap_or(target);
     playback.seek(target.min(end), cx);
 }

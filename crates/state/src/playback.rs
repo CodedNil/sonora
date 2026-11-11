@@ -771,7 +771,8 @@ impl Playback {
                 let duration = match remote.state.duration.is_zero() {
                     true => self
                         .shown_track(cx)
-                        .map_or(Duration::ZERO, |track| track.duration),
+                        .and_then(|track| track.duration)
+                        .unwrap_or_default(),
                     false => remote.state.duration,
                 };
                 (remote.state.live_position(), duration)
@@ -780,7 +781,8 @@ impl Playback {
                 self.position,
                 self.track
                     .as_ref()
-                    .map_or(Duration::ZERO, |track| track.duration),
+                    .and_then(|track| track.duration)
+                    .unwrap_or_default(),
             ),
         }
     }
@@ -1677,7 +1679,7 @@ impl Playback {
     /// Lines the next track up behind the current one once it is near its end, so a gapless
     /// engine can join them. An engine that fetched it already only queues it here.
     fn preload_next(&mut self, position: Duration, cx: &Context<Self>) {
-        let Some(duration) = self.track.as_ref().map(|track| track.duration) else {
+        let Some(duration) = self.track.as_ref().and_then(|track| track.duration) else {
             return;
         };
         if duration.is_zero()
@@ -2415,7 +2417,7 @@ impl Playback {
         let Some(total) = self
             .track
             .as_ref()
-            .map(|track| track.duration)
+            .and_then(|track| track.duration)
             .filter(|total| !total.is_zero())
         else {
             return;
@@ -2450,7 +2452,7 @@ impl Playback {
             true => self.clock.now(),
             false => self.position,
         };
-        match self.track.as_ref().map(|track| track.duration) {
+        match self.track.as_ref().and_then(|track| track.duration) {
             Some(total) if !total.is_zero() => live.min(total),
             _ => live,
         }
@@ -3054,9 +3056,9 @@ impl Playback {
             BackendEvent::Length { duration, .. } => {
                 if let Some(track) = self.track.as_mut()
                     && !duration.is_zero()
-                    && track.duration != duration
+                    && track.duration != Some(duration)
                 {
-                    track.duration = duration;
+                    track.duration = Some(duration);
                 }
             }
             BackendEvent::Ended { .. } => {

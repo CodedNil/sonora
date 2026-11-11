@@ -15,9 +15,7 @@ use ui::Input;
 
 use crate::chrome::Chrome;
 use crate::shared::menus::{ItemMenu, album_menu, artist_menu, playlist_menu};
-use state::{
-    AlbumHit, ArtistHit, Genres, Hit, Kind, Network, Playback, PlaylistHit, Search, Sonora,
-};
+use state::{ArtistHit, Genres, Hit, Kind, Network, Playback, Search, Sonora};
 use ui::ActiveTheme as _;
 use ui::{
     Activate, Button, Card, Deck, Deselect, Dismiss, Dropdown, Pinnable, Popup, Room, Scrollbar,
@@ -58,15 +56,15 @@ enum Press {
 #[derive(Clone)]
 enum HitMenu {
     Song(Box<Track>),
-    Album(AlbumHit),
-    Playlist(PlaylistHit),
+    Album(Box<Album>),
+    Playlist(Box<Playlist>),
     Artist(ArtistHit),
 }
 
 impl HitMenu {
     fn of(hit: &Hit) -> Option<Self> {
         match hit {
-            Hit::Song(track) => Some(Self::Song(Box::new(track.clone()))),
+            Hit::Song(track) => Some(Self::Song(track.clone())),
             Hit::Album(album) => Some(Self::Album(album.clone())),
             Hit::Playlist(list) => Some(Self::Playlist(list.clone())),
             Hit::Artist(artist) if artist.id.is_some() => Some(Self::Artist(artist.clone())),
@@ -821,7 +819,7 @@ impl SearchView {
         if let (Hit::Album(album), false) = (hit, compact) {
             return cards::released(
                 format!("album-artist-{place}"),
-                album.year,
+                album.year(),
                 None,
                 &album.artist_refs,
                 album.artists.clone(),
@@ -905,9 +903,11 @@ impl SearchView {
                             .text_size(theme.text(Text::Small))
                             .text_color(theme.muted_foreground)
                             .font_features(tabular())
-                            .child(clock(track.duration)),
+                            .when_some(track.duration, |this, duration| {
+                                this.child(clock(duration))
+                            }),
                     )
-                    .press(pressed(Press::Song(Box::new(track.clone())), me))
+                    .press(pressed(Press::Song(track.clone()), me))
             }
             Hit::Artist(artist) => {
                 let card = Card::new(("artist", place), artist.name.clone())
@@ -997,7 +997,7 @@ impl SearchView {
                 Kind::Song,
                 track.name.clone(),
                 track.artist_refs.clone(),
-                Some(Press::Song(Box::new(track.clone()))),
+                Some(Press::Song(track.clone())),
             ),
             Hit::Artist(artist) => (
                 Kind::Artist,
@@ -1428,36 +1428,22 @@ fn menu(
     }
 }
 
-fn album_of(hit: &AlbumHit, cx: &App) -> Album {
+fn album_of(hit: &Album, cx: &App) -> Album {
     Sonora::global(cx)
         .library
         .read(cx)
         .album(&hit.id)
         .cloned()
-        .unwrap_or_else(|| Album {
-            id: hit.id.clone(),
-            name: hit.name.clone(),
-            artists: hit.artists.clone(),
-            artist_refs: hit.artist_refs.clone(),
-            cover: hit.cover.clone(),
-            cover_large: hit.cover.clone(),
-            ..Default::default()
-        })
+        .unwrap_or_else(|| hit.clone())
 }
 
-fn playlist_of(hit: &PlaylistHit, cx: &App) -> Playlist {
+fn playlist_of(hit: &Playlist, cx: &App) -> Playlist {
     Sonora::global(cx)
         .library
         .read(cx)
         .playlist(&hit.id)
         .cloned()
-        .unwrap_or_else(|| Playlist {
-            id: hit.id.clone(),
-            name: hit.name.clone(),
-            owner: hit.owner.clone(),
-            cover: hit.cover.clone(),
-            ..Default::default()
-        })
+        .unwrap_or_else(|| hit.clone())
 }
 
 fn artist_of(hit: &ArtistHit, cx: &App) -> SavedArtist {

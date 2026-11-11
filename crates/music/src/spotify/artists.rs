@@ -2,14 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context as _, Result};
 use librespot_core::{Session, SpotifyUri};
-use librespot_protocol::extended_metadata::{BatchedEntityRequest, EntityRequest, ExtensionQuery};
 use librespot_protocol::extension_kind::ExtensionKind;
 use librespot_protocol::metadata::{Artist as ArtistMessage, Image};
-use protobuf::{EnumOrUnknown, Message as _};
+use protobuf::Message as _;
 
-use crate::spotify::collection2::SavedItem;
+use crate::spotify::collection::SavedItem;
 use crate::spotify::pace::paced;
-use crate::spotify::{albums, collection, collection2, pathfinder, wire};
+use crate::spotify::{albums, collection, metadata, pathfinder, wire};
 use crate::{Album, Artist, ArtistCatalogue, ArtistProfile, ReleaseType, SavedArtist, Track};
 
 const ARTIST_PREFIX: &str = "spotify:artist:";
@@ -92,7 +91,7 @@ async fn overview_artist(session: &Session, overview: pathfinder::Overview) -> R
     let track_uris: Vec<_> = overview.tracks.iter().map(|(uri, _)| uri.clone()).collect();
     let mut known_tracks = match track_uris.is_empty() {
         true => HashMap::<String, Track>::new(),
-        false => collection::metadata(session, &track_uris).await?,
+        false => metadata::tracks(session, &track_uris).await?,
     };
     let top_tracks = overview
         .tracks
@@ -126,7 +125,7 @@ async fn legacy_artist(session: &Session, artist_id: &str) -> Result<Artist> {
     let track_uris = top_track_uris(&message, &session.country());
     let known_tracks = match track_uris.is_empty() {
         true => HashMap::<String, Track>::new(),
-        false => collection::metadata(session, &track_uris).await?,
+        false => metadata::tracks(session, &track_uris).await?,
     };
     let top_tracks = track_uris
         .iter()
@@ -188,7 +187,7 @@ async fn ranked_tracks(session: &Session, releases: &[Album]) -> Result<Vec<Trac
         return Ok(Vec::new());
     }
 
-    let known_tracks = collection::metadata(session, &uris).await?;
+    let known_tracks = metadata::tracks(session, &uris).await?;
     let mut rest: Vec<Track> = uris
         .iter()
         .filter_map(|uri| known_tracks.get(uri))
@@ -225,7 +224,7 @@ fn newest_first(releases: impl Iterator<Item = Album>) -> Vec<Album> {
         .filter(|album| seen.insert((album.name.to_lowercase(), album.release_type)))
         .collect();
 
-    releases.sort_by(|left, right| right.release_date.cmp(&left.release_date));
+    releases.sort_by_key(|album| std::cmp::Reverse(album.release_date));
     releases
 }
 
@@ -261,13 +260,13 @@ pub async fn saved_artists(session: &Session) -> Result<Vec<SavedArtist>> {
 }
 
 async fn followed(session: &Session) -> Result<Vec<SavedItem>> {
-    match collection2::saved_items(session, collection2::ARTISTS, ARTIST_PREFIX).await {
+    match collection::saved_items(session, collection::ARTISTS, ARTIST_PREFIX).await {
         Ok(items) if !items.is_empty() => return Ok(items),
         Ok(_) => log::debug!("artists: the followed set is empty, reading the collection set"),
         Err(error) => log::warn!("artists: cannot read the followed set: {error:#}"),
     }
 
-    collection2::saved_items(session, collection2::COLLECTION, ARTIST_PREFIX).await
+    collection::saved_items(session, collection::COLLECTION, ARTIST_PREFIX).await
 }
 
 pub async fn images(session: &Session, ids: &[String]) -> Result<HashMap<String, String>> {
@@ -283,51 +282,38 @@ async fn cards(session: &Session, ids: &[String]) -> Result<HashMap<String, Save
         return Ok(HashMap::new());
     }
 
-    let request = BatchedEntityRequest {
-        entity_request: ids
-            .iter()
-            .map(|id| EntityRequest {
-                entity_uri: format!("{ARTIST_PREFIX}{id}"),
-                query: vec![ExtensionQuery {
-                    extension_kind: EnumOrUnknown::new(ExtensionKind::ARTIST_V4),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            })
-            .collect(),
-        ..Default::default()
-    };
-
-    let response = paced(|| session.spclient().get_extended_metadata(request.clone()))
+    let uris: Vec<_> = ids
+        .iter()
+        .map(|id| format!("{ARTIST_PREFIX}{id}"))
+        .collect();
+    let response = metadata::extended(session, &uris, ExtensionKind::ARTIST_V4)
         .await
         .context("cannot read artist portraits")?;
 
     let mut found = HashMap::new();
-    for array in response.extended_metadata {
-        for entity in array.extension_data {
-            let Ok(message) = ArtistMessage::parse_from_bytes(&entity.extension_data.value) else {
-                continue;
-            };
-            let Some(id) = entity.entity_uri.strip_prefix(ARTIST_PREFIX) else {
-                continue;
-            };
-            let smallest = portraits(&message)
-                .into_iter()
-                .min_by_key(|image| wire::image_width(image));
+    for entity in response {
+        let Ok(message) = ArtistMessage::parse_from_bytes(&entity.extension_data.value) else {
+            continue;
+        };
+        let Some(id) = entity.entity_uri.strip_prefix(ARTIST_PREFIX) else {
+            continue;
+        };
+        let smallest = portraits(&message)
+            .into_iter()
+            .min_by_key(|image| wire::image_width(image));
 
-            found.insert(
-                id.to_owned(),
-                SavedArtist {
-                    id: id.to_owned(),
-                    name: match message.name() {
-                        "" => UNKNOWN.to_owned(),
-                        name => name.to_owned(),
-                    },
-                    cover: smallest.and_then(|image| wire::image_url(image.file_id())),
-                    added_at: None,
+        found.insert(
+            id.to_owned(),
+            SavedArtist {
+                id: id.to_owned(),
+                name: match message.name() {
+                    "" => UNKNOWN.to_owned(),
+                    name => name.to_owned(),
                 },
-            );
-        }
+                cover: smallest.and_then(|image| wire::image_url(image.file_id())),
+                added_at: None,
+            },
+        );
     }
 
     Ok(found)
@@ -419,7 +405,7 @@ fn top_track_uris(artist: &ArtistMessage, country: &str) -> Vec<String> {
         })
         .into_iter()
         .flat_map(|tracks| tracks.track.iter())
-        .filter_map(|track| collection::base62(track.gid()))
+        .filter_map(|track| metadata::base62(track.gid()))
         .map(|id| format!("{TRACK_PREFIX}{id}"))
         .collect()
 }
@@ -433,7 +419,7 @@ fn release_uris(artist: &ArtistMessage) -> Vec<String> {
         .chain(artist.single_group.iter())
         .chain(artist.compilation_group.iter())
         .flat_map(|group| group.album.iter())
-        .filter_map(|album| collection::base62(album.gid()))
+        .filter_map(|album| metadata::base62(album.gid()))
         .filter(|id| seen.insert(id.clone()))
         .map(|id| format!("{ALBUM_PREFIX}{id}"))
         .collect()
@@ -465,9 +451,8 @@ mod tests {
             cover: None,
             cover_large: None,
             release_type,
-            year: 0,
-            track_count: 0,
-            release_date: date.to_owned(),
+            track_count: None,
+            release_date: crate::ReleaseDate::parse(date),
             label: String::new(),
             copyrights: Vec::new(),
             added_at: None,

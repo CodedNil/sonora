@@ -354,7 +354,7 @@ fn group_albums(parsed: &[Tagged]) -> Vec<Album> {
                 .cloned()
                 .unwrap_or_else(|| wire::shared_artists(&tracks));
             let name = tracks[0].album.clone();
-            let year = album_year(indices, parsed);
+            let date = album_date(indices, parsed);
             let release = indices
                 .iter()
                 .find_map(|&i| parsed[i].release)
@@ -371,7 +371,7 @@ fn group_albums(parsed: &[Tagged]) -> Vec<Album> {
                 &name,
                 &album_artists,
                 &tracks,
-                year,
+                date,
                 release,
                 label,
             ))
@@ -382,10 +382,10 @@ fn group_albums(parsed: &[Tagged]) -> Vec<Album> {
 /// The year an album is dated by: the first year any of its tracks carries, and the year in its
 /// folder's name when none of them does. The years come from the scan's own reads, so dating an
 /// album of a hundred tracks costs nothing on top.
-fn album_year(indices: &[usize], parsed: &[Tagged]) -> i32 {
+fn album_date(indices: &[usize], parsed: &[Tagged]) -> Option<crate::ReleaseDate> {
     indices
         .iter()
-        .find_map(|&i| parsed[i].year)
+        .find_map(|&i| parsed[i].track.release_date)
         .or_else(|| {
             parsed[indices[0]]
                 .track
@@ -394,8 +394,8 @@ fn album_year(indices: &[usize], parsed: &[Tagged]) -> i32 {
                 .and_then(wire::path_from_track_id)
                 .and_then(Path::parent)
                 .and_then(|dir| dated(&folder_name(dir)).1)
+                .and_then(crate::ReleaseDate::from_year)
         })
-        .unwrap_or(0)
 }
 
 /// Groups track credits by artist id, keeping the first spelling and best available cover.

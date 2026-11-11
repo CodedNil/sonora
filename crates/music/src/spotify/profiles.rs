@@ -192,22 +192,26 @@ fn listed(found: &Listed) -> Option<Playlist> {
     Some(Playlist {
         id: id.to_owned(),
         name: name.to_owned(),
-        owner_id: found.owner_uri.as_deref().map(username).unwrap_or_default(),
+        owner_id: found
+            .owner_uri
+            .as_deref()
+            .map(username)
+            .filter(|id| !id.is_empty()),
         owner: found
             .owner_name
             .clone()
             .or_else(|| found.owner_uri.as_deref().map(username))
             .unwrap_or_default(),
         owned: false,
-        collaborative: false,
+        can_edit_tracks: false,
         blend: false,
-        public: true,
+        public: Some(true),
         cover: found
             .image_url
             .as_deref()
             .filter(|url| wire::fetchable(url))
             .map(str::to_owned),
-        track_count: 0,
+        track_count: None,
         modified_at: None,
     })
 }

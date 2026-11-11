@@ -1709,7 +1709,8 @@ impl MusicApi for AppleClient {
         // way, so the count does not climb a page at a time.
         Ok(PlaylistDetail {
             playlist: Playlist {
-                track_count: total.unwrap_or(tracks.len() as u32),
+                track_count: total
+                    .or_else(|| continuation.is_none().then_some(tracks.len() as u32)),
                 ..playlist
             },
             tracks,

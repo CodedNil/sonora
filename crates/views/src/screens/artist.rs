@@ -976,10 +976,35 @@ impl ArtistView {
         Some(Origin::artist(detail.id()?).named(name))
     }
 
+    /// Builds the artist's grid-page controls for the Popular section heading.
+    fn popular_pager(&self, cx: &Context<Self>) -> AnyElement {
+        let pages = Shape::new(self.width, self.popular.len()).pages;
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .children([true, false].map(|previous| {
+                let (id, disabled) = match previous {
+                    true => ("artist-popular-previous", self.popular_page == 0),
+                    false => ("artist-popular-next", self.popular_page + 1 >= pages),
+                };
+                page::arrow_button(id, previous)
+                    .disabled(self.popular.is_empty() || disabled)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.popular_page = match previous {
+                            true => this.popular_page.saturating_sub(1),
+                            false => (this.popular_page + 1).min(pages.saturating_sub(1)),
+                        };
+                        this.track_context = None;
+                        cx.notify();
+                    }))
+            }))
+            .into_any_element()
+    }
+
     fn popular(&self, cx: &mut Context<Self>) -> AnyElement {
         let tracks = self.popular.clone();
         let from = self.playing_from(cx);
-        let pages = Shape::new(self.width, tracks.len()).pages;
         let queued = tracks.clone();
         let playback = self.playback.clone();
         let opened = cx.entity().downgrade();
@@ -991,21 +1016,10 @@ impl ArtistView {
             self.width,
             self.popular_page,
         )
-        .title("artist-popular")
-        .eyebrow(i18n::lookup("artist-popular-eyebrow", None))
         .vacancy("artist-popular-empty")
         .detailed()
+        .without_header()
         .loading(self.detail.read(cx).is_loading())
-        .on_previous(cx.listener(|this, _, _, cx| {
-            this.popular_page = this.popular_page.saturating_sub(1);
-            this.track_context = None;
-            cx.notify();
-        }))
-        .on_next(cx.listener(move |this, _, _, cx| {
-            this.popular_page = (this.popular_page + 1).min(pages.saturating_sub(1));
-            this.track_context = None;
-            cx.notify();
-        }))
         .on_context_menu(move |place, event, _, cx| {
             let Some(view) = opened.upgrade() else {
                 return;
@@ -1287,7 +1301,6 @@ impl Render for ArtistView {
             ))
         });
 
-        let listed = self.mode == Mode::List;
         let release_padding = self.release_padding;
         let head = self.header(cx);
         let cover = theme.metrics.cover;
@@ -1309,6 +1322,10 @@ impl Render for ArtistView {
             Mode::List => self.listed(cx),
         };
         let favorites = self.favorites_link(cx);
+        let popular_pager = match self.mode {
+            Mode::Grid => Some(self.popular_pager(cx)),
+            Mode::List => None,
+        };
         let grid = self.releases(window, cx);
         let about = self.about(cx);
         while self.rails.is_empty() {
@@ -1335,19 +1352,24 @@ impl Render for ArtistView {
                     .children(banner)
                     .child(head)
                     .children(favorites)
-                    .when(listed, |this| {
+                    .child({
                         let label = t!("artist-popular");
-                        this.child(
+                        div().pb_3().child(page::row(
                             div()
                                 .id("artist-popular-heading")
                                 .role(Role::Heading)
                                 .aria_level(2)
                                 .aria_label(label.clone())
-                                .pb_3()
                                 .text_size(theme.text(Text::Title))
                                 .font_weight(FontWeight::BOLD)
                                 .child(label),
-                        )
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .children(popular_pager)
+                                .child(self.toolbar.clone()),
+                        ))
                     }),
             )
             .child(tracks)

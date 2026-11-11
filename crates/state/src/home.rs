@@ -514,7 +514,7 @@ mod tests {
                 name: format!("Artist {artist}"),
                 id: Some(format!("artist-{artist}")),
             }],
-            duration: Duration::from_secs(180),
+            duration: Some(Duration::from_secs(180)),
             ..Default::default()
         }
     }

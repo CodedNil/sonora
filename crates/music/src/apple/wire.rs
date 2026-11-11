@@ -24,7 +24,7 @@ use serde_json::value::RawValue;
 
 use crate::{
     Album, Artist, ArtistProfile, ArtistRef, PinTarget, PinTargetKind, Playlist, ReleaseType,
-    SavedArtist, Track, calendar,
+    SavedArtist, Track,
 };
 
 /// The size artwork is asked to render at, and the larger one for a page header.
@@ -734,10 +734,9 @@ pub fn banner(attributes: &Attributes) -> Option<String> {
     })
 }
 
-/// An ISO-8601 stamp as seconds since the epoch. Apple writes them two ways, `2026-09-15` and
-/// `2026-09-15T12:03:39Z`, and only the date part matters for sorting a library.
-pub fn moment(stamp: Option<&str>) -> Option<i64> {
-    calendar::seconds(stamp?)
+/// Reads either a date-only or complete Apple timestamp.
+pub fn moment(stamp: Option<&str>) -> Option<crate::Timestamp> {
+    crate::parse_timestamp(stamp?)
 }
 
 /// The artists of a resource. Apple only names them in one string unless the relationship was
@@ -839,12 +838,11 @@ pub fn album(value: &Resource) -> Option<Album> {
         cover: artwork(attributes, ART),
         cover_large: artwork(attributes, HERO),
         release_type: release_type(attributes),
-        year: release
-            .get(..4)
-            .and_then(|year| year.parse().ok())
-            .unwrap_or(0),
-        track_count: number(&attributes.track_count),
-        release_date: release,
+        track_count: attributes
+            .track_count
+            .as_u64()
+            .map(|count| count.min(u64::from(u32::MAX)) as u32),
+        release_date: crate::ReleaseDate::parse(&release),
         label: text(&attributes.record_label).unwrap_or_default(),
         copyrights: text(&attributes.copyright).into_iter().collect(),
         added_at: moment(attributes.date_added.as_str()),
@@ -891,15 +889,15 @@ pub fn playlist(value: &Resource) -> Option<Playlist> {
     Some(Playlist {
         id: id.to_owned(),
         name: text(&attributes.name)?,
-        owner: curator.clone(),
-        owner_id: curator,
-        owned: false,
-        collaborative: false,
-        blend: false,
-        public: true,
+        owner: curator,
+        public: Some(true),
         cover: artwork(attributes, ART),
-        track_count: value.relationships.tracks.rows().len() as u32,
+        track_count: attributes
+            .track_count
+            .as_u64()
+            .map(|count| count.min(u64::from(u32::MAX)) as u32),
         modified_at: moment(attributes.last_modified_date.as_str()),
+        ..Default::default()
     })
 }
 
@@ -911,15 +909,13 @@ pub fn library_playlist(value: &Resource, owner: &str) -> Option<Playlist> {
         id: id.to_owned(),
         name: text(&attributes.name)?,
         owner: owner.to_owned(),
-        owner_id: owner.to_owned(),
         owned: attributes.can_edit.as_bool().unwrap_or(false),
-        collaborative: attributes.has_collaboration.as_bool().unwrap_or(false),
-        blend: false,
-        public: attributes.is_public.as_bool().unwrap_or(false),
+        can_edit_tracks: attributes.can_edit.as_bool().unwrap_or(false),
+        public: attributes.is_public.as_bool(),
         cover: artwork(attributes, ART),
-        track_count: 0,
         modified_at: moment(attributes.last_modified_date.as_str())
             .or_else(|| moment(attributes.date_added.as_str())),
+        ..Default::default()
     })
 }
 
@@ -969,7 +965,7 @@ pub fn artist(value: &Resource, root: &str) -> Option<Artist> {
 /// Orders releases by release date, newest first, keeping the order Apple gave for releases on
 /// the same day.
 pub fn newest_first(mut albums: Vec<Album>) -> Vec<Album> {
-    albums.sort_by(|a, b| b.release_date.cmp(&a.release_date));
+    albums.sort_by_key(|album| std::cmp::Reverse(album.release_date));
     albums
 }
 
@@ -1111,23 +1107,26 @@ fn song_as(value: &Resource, id: String, root: &str) -> Option<Track> {
             .and_then(|album| album.id.as_str())
             .map(str::to_owned),
         cover: artwork(attributes, ART),
-        duration: Duration::from_millis(attributes.duration_in_millis.as_u64().unwrap_or(0)),
+        duration: attributes
+            .duration_in_millis
+            .as_u64()
+            .map(Duration::from_millis),
         added_at: moment(attributes.date_added.as_str()),
-        added_by: None,
-        playcount: None,
-        popularity: 0,
+        release_date: attributes
+            .release_date
+            .as_str()
+            .and_then(crate::ReleaseDate::parse),
         explicit: attributes.content_rating.as_str() == Some("explicit"),
         track_number: number(&attributes.track_number),
         disc_number: number(&attributes.disc_number),
-        tags: attributes
+        genres: attributes
             .genre_names
             .iter()
             .filter_map(Leaf::as_str)
             .filter(|genre| *genre != root)
             .map(str::to_owned)
             .collect(),
-        languages: Vec::new(),
-        credits: Vec::new(),
+        ..Default::default()
     })
 }
 
@@ -1221,10 +1220,10 @@ mod tests {
         assert_eq!(track.id.as_deref(), Some("1440857781"));
         assert_eq!(track.name, "Blue Monday");
         assert_eq!(track.album_id.as_deref(), Some("888"));
-        assert_eq!(track.duration, Duration::from_millis(447_000));
+        assert_eq!(track.duration, Some(Duration::from_millis(447_000)));
         assert!(track.explicit);
         assert!(track.playable);
-        assert_eq!(track.tags, vec!["Alternative"]);
+        assert_eq!(track.genres, vec!["Alternative"]);
         assert_eq!(
             track.cover.as_deref(),
             Some("https://is1.mzstatic.com/a/600x600bb.jpg")
@@ -1258,7 +1257,10 @@ mod tests {
         });
         let track = library_song(&read(&row), "Music").unwrap();
         assert_eq!(track.id.as_deref(), Some("1440857781"));
-        assert_eq!(track.added_at, Some(1_739_441_080));
+        assert_eq!(
+            track.added_at.map(|stamp| stamp.as_second()),
+            Some(1_739_441_080)
+        );
     }
 
     #[test]
@@ -1285,22 +1287,12 @@ mod tests {
         });
         let album = library_album(&read(&row)).unwrap();
         assert_eq!(album.id, "617154241");
-        assert_eq!(album.year, 1987);
-        assert_eq!(album.track_count, 24);
-        assert_eq!(album.added_at, Some(1_760_400_000));
-    }
-
-    #[test]
-    fn dates_come_back_as_seconds() {
-        assert_eq!(moment(Some("1970-01-01")), Some(0));
-        assert_eq!(moment(Some("2026-09-15")), Some(1_789_430_400));
-        assert_eq!(moment(Some("2026-09-15T12:03:39Z")), Some(1_789_473_819));
+        assert_eq!(album.year(), Some(1987));
+        assert_eq!(album.track_count, Some(24));
         assert_eq!(
-            moment(Some("2026-09-15T12:03:39.456Z")),
-            Some(1_789_473_819)
+            album.added_at.map(|stamp| stamp.as_second()),
+            Some(1_760_400_000)
         );
-        assert_eq!(moment(Some("not a date")), None);
-        assert_eq!(moment(None), None);
     }
 
     #[test]
@@ -1328,7 +1320,7 @@ mod tests {
         let playlist = library_playlist(&read(&row), "Me").unwrap();
         assert_eq!(playlist.id, "p.abc");
         assert!(playlist.owned);
-        assert!(!playlist.public);
+        assert_eq!(playlist.public, Some(false));
         assert_eq!(playlist.owner, "Me");
     }
 

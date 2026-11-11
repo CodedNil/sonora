@@ -5,12 +5,13 @@ use librespot_core::Session;
 use serde::Deserialize;
 
 use super::query;
+use super::wire::Artists;
+use super::wire::{Artwork as Cover, Copyrights, Date as PathDate, Image};
 use crate::spotify::wire;
-use crate::{Album, AlbumDetail, ArtistRef, ReleaseType, Track};
+use crate::{Album, AlbumDetail, ReleaseType, Track};
 
 const PAGE_LIMIT: usize = 50;
 const ALBUM_PREFIX: &str = "spotify:album:";
-const ARTIST_PREFIX: &str = "spotify:artist:";
 const TRACK_PREFIX: &str = "spotify:track:";
 const UNKNOWN: &str = "Unknown";
 
@@ -37,56 +38,6 @@ struct PathAlbum {
     copyright: Copyrights,
     #[serde(rename = "tracksV2")]
     tracks: AlbumTracks,
-}
-
-#[derive(Deserialize)]
-struct PathDate {
-    #[serde(rename = "isoString")]
-    iso: String,
-    precision: String,
-}
-
-#[derive(Default, Deserialize)]
-struct Artists {
-    #[serde(default)]
-    items: Vec<PathArtist>,
-}
-
-#[derive(Deserialize)]
-struct PathArtist {
-    uri: String,
-    profile: Profile,
-}
-
-#[derive(Deserialize)]
-struct Profile {
-    name: String,
-}
-
-#[derive(Default, Deserialize)]
-struct Cover {
-    #[serde(default)]
-    sources: Vec<Image>,
-}
-
-#[derive(Deserialize)]
-struct Image {
-    height: u32,
-    url: String,
-}
-
-#[derive(Default, Deserialize)]
-struct Copyrights {
-    #[serde(default)]
-    items: Vec<Copyright>,
-}
-
-#[derive(Deserialize)]
-struct Copyright {
-    text: String,
-    /// `P` for the sound recording, `C` for the work.
-    #[serde(rename = "type", default)]
-    kind: String,
 }
 
 #[derive(Deserialize)]
@@ -136,7 +87,7 @@ struct ContentRating {
 #[derive(Default, Deserialize)]
 struct PathDuration {
     #[serde(rename = "totalMilliseconds", default)]
-    milliseconds: u64,
+    milliseconds: Option<u64>,
 }
 
 struct Page {
@@ -195,12 +146,7 @@ fn page(data: Data) -> Result<Page> {
 }
 
 fn album_from(album: &PathAlbum) -> Album {
-    let (artists, artist_refs) = artists(&album.artists);
-    let release_date = album.date.as_ref().map(date).unwrap_or_default();
-    let year = release_date
-        .get(..4)
-        .and_then(|year| year.parse().ok())
-        .unwrap_or_default();
+    let (artists, artist_refs) = album.artists.credits();
 
     Album {
         id: album
@@ -214,9 +160,8 @@ fn album_from(album: &PathAlbum) -> Album {
         cover: cover(&album.cover.sources, false),
         cover_large: cover(&album.cover.sources, true),
         release_type: release_type(&album.kind),
-        year,
-        track_count: album.tracks.total_count as u32,
-        release_date,
+        track_count: Some(album.tracks.total_count as u32),
+        release_date: album.date.as_ref().and_then(PathDate::release),
         label: album.label.clone(),
         copyrights: album
             .copyright
@@ -232,7 +177,7 @@ fn album_from(album: &PathAlbum) -> Album {
 }
 
 fn track_from(track: PathTrack, album: &Album) -> Result<Track> {
-    let (artists, artist_refs) = artists(&track.artists);
+    let (artists, artist_refs) = track.artists.credits();
     let playcount = track
         .playcount
         .map(|count| {
@@ -253,57 +198,31 @@ fn track_from(track: PathTrack, album: &Album) -> Result<Track> {
         album: album.name.clone(),
         album_id: Some(album.id.clone()),
         cover: album.cover.clone(),
-        duration: Duration::from_millis(track.duration.milliseconds),
+        duration: track.duration.milliseconds.map(Duration::from_millis),
         added_at: None,
         added_by: None,
+        release_date: album.release_date,
         playcount,
-        popularity: 0,
+        popularity: None,
         explicit: track.content_rating.label == "EXPLICIT",
         track_number: track.track_number,
         disc_number: track.disc_number,
-        tags: Vec::new(),
-        languages: Vec::new(),
-        credits: Vec::new(),
+        ..Default::default()
     })
-}
-
-fn artists(artists: &Artists) -> (String, Vec<ArtistRef>) {
-    let refs: Vec<_> = artists
-        .items
-        .iter()
-        .filter_map(|artist| {
-            let name = non_empty(&artist.profile.name)?.to_owned();
-            Some(ArtistRef {
-                name,
-                id: artist.uri.strip_prefix(ARTIST_PREFIX).map(str::to_owned),
-            })
-        })
-        .collect();
-    let names = refs
-        .iter()
-        .map(|artist| artist.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    (names, refs)
 }
 
 /// The smallest cover for a list row, or with `large` the largest Spotify lists, which is 640
 /// pixels for nearly every album.
 fn cover(sources: &[Image], large: bool) -> Option<String> {
     let source = match large {
-        true => sources.iter().max_by_key(|source| source.height),
-        false => sources.iter().min_by_key(|source| source.height),
+        true => sources
+            .iter()
+            .max_by_key(|source| source.height.unwrap_or_default()),
+        false => sources
+            .iter()
+            .min_by_key(|source| source.height.unwrap_or_default()),
     }?;
     non_empty(&source.url).map(str::to_owned)
-}
-
-fn date(date: &PathDate) -> String {
-    let length = match date.precision.as_str() {
-        "YEAR" => 4,
-        "MONTH" => 7,
-        _ => 10,
-    };
-    date.iso.get(..length).unwrap_or(&date.iso).to_owned()
 }
 
 pub(super) fn release_type(kind: &str) -> ReleaseType {
@@ -336,7 +255,13 @@ mod tests {
         let data: Data = serde_json::from_slice(body).unwrap();
         let page = page(data).unwrap();
         assert_eq!(page.album.id, "album1");
-        assert_eq!(page.album.release_date, "2005");
+        assert_eq!(
+            page.album
+                .release_date
+                .map(|date| date.to_string())
+                .as_deref(),
+            Some("2005")
+        );
         assert_eq!(page.album.cover.as_deref(), Some("small"));
         assert_eq!(page.album.cover_large.as_deref(), Some("large"));
         assert_eq!(page.items, 1);
@@ -368,9 +293,8 @@ mod tests {
             cover: None,
             cover_large: None,
             release_type: ReleaseType::Album,
-            year: 0,
-            track_count: 1,
-            release_date: String::new(),
+            track_count: Some(1),
+            release_date: None,
             label: String::new(),
             copyrights: Vec::new(),
             added_at: None,

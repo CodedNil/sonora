@@ -308,23 +308,46 @@ devices-session-people = { $count ->
 fullscreen-artwork = Artwork
 fullscreen-panels = Now playing views
 
-# filters
-filter-history = Filter listening history
+# listening history
 history-empty = Tracks you play will appear here.
 history-not-loaded = Listening history could not be loaded.
 history-clear = Clear history
 history-clear-title = Clear listening history
 history-clear-confirm = Every play is removed from this device. This cannot be undone.
+
+# filters
+filter-history = Filter listening history
 filter-library = Filter your library
 filter-album = Filter album tracks
+filter-tracks = Filter tracks
 filter-reset = Reset filters
+filter-collaborations = Collaborations
 filter-duration = Duration
 filter-year = Year
+filter-play-count = Play count
+filter-popularity = { song-popularity }
+filter-bpm = BPM
+filter-genre = { column-genre }
+filter-mood = Mood
+filter-tag = Tag
 filter-hide-explicit = Hide explicit
 filter-playable = Playable only
 filter-favorites = Favorites only
 filter-downloaded = Downloaded
 filter-owned = By you
+
+# track metadata
+mood-name = { $mood ->
+    [energetic] Energetic
+    [danceable] Danceable
+    [positive] Positive
+    [negative] Negative
+    [sad] Sad
+    [calming] Calming
+    [instrumental] Instrumental
+    [acoustic] Acoustic
+   *[other] { $fallback }
+    }
 
 # view
 view-list = List
