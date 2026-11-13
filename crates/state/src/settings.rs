@@ -18,6 +18,7 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tracing::{debug, error, info, warn};
 
 use anyhow::{Context as _, Result};
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -70,10 +71,10 @@ impl ConnectName {
 
     pub fn key(self) -> &'static str {
         match self {
-            Self::Sonora => "settings-spotify-connect-name-sonora",
+            Self::Sonora => "common-app-name",
             Self::Both => "settings-spotify-connect-name-both",
             Self::Computer => "settings-spotify-connect-name-computer",
-            Self::Custom => "settings-spotify-connect-name-custom",
+            Self::Custom => "common-custom",
         }
     }
 }
@@ -116,10 +117,10 @@ impl DiscordName {
 
     pub fn key(self) -> &'static str {
         match self {
-            Self::Sonora => "settings-discord-name-sonora",
+            Self::Sonora => "common-app-name",
             Self::Provider => "settings-discord-name-provider",
             Self::Music => "settings-discord-name-music",
-            Self::Title => "settings-discord-name-title",
+            Self::Title => "column-title",
             Self::Artist => "settings-discord-name-artist",
             Self::ArtistTitle => "settings-discord-name-artist-title",
         }
@@ -177,6 +178,70 @@ pub enum SideTab {
     Lyrics,
     /// The people in the Sonora Session or Spotify Jam the listener is in.
     Members,
+}
+
+/// Which right-sidebar cards show, and which one, if any, fills the panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Cards {
+    pub lyrics: bool,
+    pub queue: bool,
+    pub expanded: Option<SideTab>,
+}
+
+impl Default for Cards {
+    fn default() -> Self {
+        Self {
+            lyrics: true,
+            queue: true,
+            expanded: None,
+        }
+    }
+}
+
+impl Cards {
+    pub fn shows(self, tab: SideTab) -> bool {
+        match tab {
+            SideTab::Lyrics => self.lyrics,
+            SideTab::Queue => self.queue,
+            SideTab::Members => false,
+        }
+    }
+
+    /// Whether any card shows at all.
+    pub fn any(self) -> bool {
+        self.lyrics || self.queue
+    }
+
+    /// Shows or hides `tab`. Hiding the card that fills the panel puts the rest back.
+    pub fn toggled(self, tab: SideTab) -> Self {
+        self.showing(tab, !self.shows(tab))
+    }
+
+    /// Shows or hides `tab`.
+    pub fn showing(mut self, tab: SideTab, shown: bool) -> Self {
+        match tab {
+            SideTab::Lyrics => self.lyrics = shown,
+            SideTab::Queue => self.queue = shown,
+            SideTab::Members => return self,
+        }
+        if !shown && self.expanded == Some(tab) {
+            self.expanded = None;
+        }
+        self
+    }
+
+    /// Lets `tab` fill the panel, or puts it back among the others if it already does.
+    pub fn expand(self, tab: SideTab) -> Self {
+        let shown = self.showing(tab, true);
+        Self {
+            expanded: match self.expanded == Some(tab) {
+                true => None,
+                false => Some(tab),
+            },
+            ..shown
+        }
+    }
 }
 
 /// The writing systems lyrics romanization applies to. Only CJK are enabled by default.
@@ -472,7 +537,6 @@ struct Values {
     panel_lyrics_scale: f32,
     fullscreen_lyrics_scale: f32,
     romanization_scripts: RomanizationScripts,
-    adaptive_menu: bool,
     check_updates: bool,
     /// The release channel chosen in settings, by its id. Empty follows the running build's own
     /// channel, and a copy a package manager installed ignores it.
@@ -488,6 +552,20 @@ struct Values {
     local_folders: Vec<PathBuf>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     hidden_nav: Vec<String>,
+    /// The saved sidebar, toolbar alignment or hidden location of each chrome entry.
+    /// It wins over `hidden_nav`, which predates it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    nav_places: BTreeMap<String, String>,
+    /// Chrome entries in the order the user chose. New entries are inserted beside their
+    /// default neighbours without changing the saved entries' relative order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    nav_order: Vec<String>,
+    /// The right sidebar's sections by id, in the order the user put them, and the ones they
+    /// hid. A section the order leaves out keeps its own place after the rest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    stage_order: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    stage_hidden: Vec<String>,
     /// Missing system requirements the user asked never to hear about again.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     silenced_requirements: Vec<String>,
@@ -683,7 +761,6 @@ impl Default for Values {
             panel_lyrics_scale: DEFAULT_LYRICS_SCALE,
             fullscreen_lyrics_scale: DEFAULT_LYRICS_SCALE,
             romanization_scripts: RomanizationScripts::default(),
-            adaptive_menu: false,
             check_updates: cfg!(target_os = "windows") || updates_itself(),
             update_channel: String::new(),
             close_to_tray: true,
@@ -694,6 +771,10 @@ impl Default for Values {
             startup: DEFAULT_STARTUP.to_owned(),
             local_folders: Vec::new(),
             hidden_nav: Vec::new(),
+            nav_places: BTreeMap::new(),
+            nav_order: Vec::new(),
+            stage_order: Vec::new(),
+            stage_hidden: Vec::new(),
             silenced_requirements: Vec::new(),
             scrobbling: BTreeMap::new(),
             unscrobbled: BTreeSet::new(),
@@ -705,17 +786,26 @@ impl Default for Values {
 impl Values {
     /// The values as they are used, with whatever a hand edit or an older Sonora left settled.
     fn settled(mut self) -> Self {
+        if let Some(device) = self
+            .output_device
+            .as_deref()
+            .and_then(music::output::upgrade_output_key)
+        {
+            self.output_device = Some(device);
+        }
         self.settle_equalizer();
         self
     }
 }
 
-/// One narrowed filter axis as stored per table: a flag that is on, or a range the user
-/// shrank. Whole ranges and flags that are off read as untouched and take no space.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// A saved table filter: a flag, narrowed range, picked choices, or text query. Empty filters take no space.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum FilterValue {
     Flag(bool),
     Range(f32, f32),
+    /// The ids of the options picked on a choice filter.
+    Choice(Vec<String>),
+    Text(String),
 }
 
 /// Everything `state.sqlite` holds under the `runtime` key: values the app changes on its own
@@ -726,10 +816,11 @@ struct StateValues {
     volume: f32,
     sidebar_width: f32,
     sidebar_open: bool,
+    #[serde(alias = "sidebar_compact")]
     sidebar_rail: bool,
     sidebar_right_width: f32,
     sidebar_right_open: bool,
-    sidebar_right_tab: SideTab,
+    sidebar_cards: Cards,
     fullscreen_tab: Option<SideTab>,
     shuffle: bool,
     repeat: Repeat,
@@ -744,6 +835,7 @@ struct StateValues {
     sidebar_full_library: bool,
     sidebar_pin_sort: String,
     sidebar_pin_reversed: bool,
+    #[serde(deserialize_with = "read_resume")]
     resume: Option<Resume>,
     window: Option<Frame>,
     system_theme: String,
@@ -762,7 +854,7 @@ impl Default for StateValues {
             sidebar_rail: false,
             sidebar_right_width: DEFAULT_SIDEBAR_RIGHT_WIDTH,
             sidebar_right_open: false,
-            sidebar_right_tab: SideTab::Queue,
+            sidebar_cards: Cards::default(),
             fullscreen_tab: Some(SideTab::Lyrics),
             shuffle: false,
             repeat: Repeat::Off,
@@ -924,7 +1016,115 @@ pub struct Reloaded;
 
 impl EventEmitter<Reloaded> for AppSettings {}
 
+/// Declares plain settings accessors while keeping preference and runtime persistence separate.
+macro_rules! accessors {
+    ($save:ident; $($(#[$get_doc:meta])* $get:ident, $(#[$set_doc:meta])* $set:ident: $ty:ty => $($field:ident).+;)*) => {
+        $(
+            $(#[$get_doc])*
+            pub fn $get(&self) -> $ty {
+                self.$($field).+
+            }
+
+            $(#[$set_doc])*
+            pub fn $set(&mut self, value: $ty, cx: &mut Context<Self>) {
+                self.$($field).+ = value;
+                self.$save(cx);
+            }
+        )*
+    };
+}
+
 impl AppSettings {
+    accessors! {
+        schedule_save;
+        normalisation, set_normalisation: bool => values.normalisation;
+        gapless, set_gapless: bool => values.gapless;
+        keep_tracks, set_keep_tracks: bool => values.keep_tracks;
+        offline_mode, set_offline_mode: bool => values.offline_mode;
+        /// Whether Sonora shows up as a Spotify Connect device while a Spotify account is signed in.
+        spotify_connect, set_spotify_connect: bool => values.spotify_connect;
+        /// How Sonora is named in the device list of Spotify's apps.
+        spotify_connect_name, set_spotify_connect_name: ConnectName => values.spotify_connect_name;
+        /// Whether the player bar shows the Sessions button.
+        sessions_button, set_sessions_button: bool => values.sessions_button;
+        /// Whether Sonora Sessions go through the official server.
+        sessions_official, set_sessions_official: bool => values.sessions_official;
+        /// Whether the playing track is published to a local Discord client.
+        discord_presence, set_discord_presence: bool => values.discord_presence;
+        /// What the Discord status names itself after "listening to".
+        discord_name, set_discord_name: DiscordName => values.discord_name;
+        /// Whether the Discord status stays up while the track is paused.
+        discord_show_paused, set_discord_show_paused: bool => values.discord_show_paused;
+        /// Whether the Discord status carries the badge of the provider the track came from.
+        discord_badge, set_discord_badge: bool => values.discord_badge;
+        /// Whether the Discord status steps aside while Spotify Connect has playback, here or on
+        /// another of the account's devices, for a listener who shows Spotify's own status instead.
+        discord_hide_on_connect, set_discord_hide_on_connect: bool => values.discord_hide_on_connect;
+        /// Whether the Discord status leaves the track out and only says that music is playing.
+        discord_without_details, set_discord_without_details: bool => values.discord_without_details;
+        /// Whether the Discord status carries a button that opens the Sonora project page.
+        discord_sonora_button, set_discord_sonora_button: bool => values.discord_sonora_button;
+        /// Whether the Discord status carries a button that opens the track on its provider.
+        discord_provider_button, set_discord_provider_button: bool => values.discord_provider_button;
+        /// Whether a local file's artist and album may be sent to a public catalogue to find a cover
+        /// for its Discord status. Streamed tracks are looked up regardless.
+        artwork_for_local_files, set_artwork_for_local_files: bool => values.artwork_for_local_files;
+        lyrics_for_local_files, set_lyrics_for_local_files: bool => values.lyrics_for_local_files;
+        output_rate, set_output_rate: Option<u32> => values.output_rate;
+        output_buffer, set_output_buffer: Option<u32> => values.output_buffer;
+        output_match_rate, set_output_match_rate: bool => values.output_match_rate;
+        lyrics_enabled, set_lyrics_enabled: bool => values.lyrics_enabled;
+        /// Whether lyrics timed word by word are shown ahead of any others, whatever their source.
+        lyrics_word_synced_first, set_lyrics_word_synced_first: bool => values.lyrics_word_synced_first;
+        karaoke_lyrics, set_karaoke_lyrics: bool => values.karaoke_lyrics;
+        blur_lyrics, set_blur_lyrics: bool => values.blur_lyrics;
+        romanized_lyrics, set_romanized_lyrics: bool => values.romanized_lyrics;
+        check_updates, set_check_updates: bool => values.check_updates;
+        close_to_tray, set_close_to_tray: bool => values.close_to_tray;
+        tray_icon, set_tray_icon: bool => values.tray_icon;
+        /// Whether music keeps the system awake and, in fullscreen, the display.
+        stay_awake, set_stay_awake: bool => values.stay_awake;
+        adaptive_theme, set_adaptive_theme: bool => values.appearance.adaptive_theme;
+        /// Whether the listener asked for a see-through player bar. What the bar does is
+        /// `player_bar_translucent`, which also needs the blur.
+        player_bar_transparent,
+        /// Lets the page scroll under the player bar, or restores the solid bar below the page.
+        set_player_bar_transparent: bool => values.appearance.player_bar_transparent;
+        /// Whether fullscreen paints the ambient background sampled from the cover.
+        ambient, set_ambient: bool => values.appearance.ambient;
+        /// Whether the ambient background drifts. Off leaves it a still gradient, which is what
+        /// the system reduce-motion preference does too.
+        ambient_motion, set_ambient_motion: bool => values.appearance.ambient_motion;
+        /// Whether the visualizer ignores Sonora's volume and draws the track at its own level.
+        visualizer_absolute, set_visualizer_absolute: bool => values.appearance.visualizer_absolute;
+        /// Whether the app paints its frosted treatments. See `ui::blurring`.
+        blur, set_blur: bool => values.appearance.blur;
+        blur_window, set_blur_window: bool => values.appearance.blur_window;
+        /// Whether opening the fullscreen view also puts the window into OS fullscreen.
+        os_fullscreen, set_os_fullscreen: bool => values.appearance.os_fullscreen;
+        window_controls, set_window_controls: bool => values.appearance.window_controls;
+        controls_on_left, set_controls_on_left: bool => values.appearance.controls_on_left;
+        transparent, set_transparent: bool => values.appearance.transparent;
+    }
+
+    accessors! {
+        schedule_state_save;
+        sidebar_rail, set_sidebar_rail: bool => state.sidebar_rail;
+        sidebar_right_width, set_sidebar_right_width: f32 => state.sidebar_right_width;
+        sidebar_right_open, set_sidebar_right_open: bool => state.sidebar_right_open;
+        /// The single panel selected beside the fullscreen artwork.
+        fullscreen_tab,
+        /// Remembers the fullscreen panel, or the artwork-only view.
+        set_fullscreen_tab: Option<SideTab> => state.fullscreen_tab;
+        shuffle, set_shuffle: bool => state.shuffle;
+        repeat, set_repeat: Repeat => state.repeat;
+        radio, set_radio: bool => state.radio;
+        /// Whether the sidebar's pinned section is expanded. Collapsed on a first run.
+        sidebar_pinned_open, set_sidebar_pinned_open: bool => state.sidebar_pinned_open;
+        /// Whether the sidebar lists the rest of the library under the pins.
+        sidebar_full_library, set_sidebar_full_library: bool => state.sidebar_full_library;
+    }
+
     /// Loads from the standard config and data paths.
     pub fn load(database: Database) -> Self {
         Self::load_from(settings_path(), StateStore::new(database))
@@ -936,7 +1136,7 @@ impl AppSettings {
             Ok(bytes) => (Some(bytes), true),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, true),
             Err(error) => {
-                log::warn!("settings: cannot read {}: {error}", path.display());
+                warn!("settings: cannot read {}: {error}", path.display());
                 (None, false)
             }
         };
@@ -948,7 +1148,7 @@ impl AppSettings {
                 (Values::default().settled(), writable, Some(bytes), None)
             }
             Some((Err(error), _)) => {
-                log::warn!("settings: cannot parse {}: {error}", path.display());
+                warn!("settings: cannot parse {}: {error}", path.display());
                 (Values::default().settled(), false, None, Some(error.line()))
             }
             // The default provider list already has Subsonic, so a fresh install marks it offered
@@ -966,7 +1166,7 @@ impl AppSettings {
             Ok(Some(saved)) => saved,
             Ok(None) => StateValues::default(),
             Err(error) => {
-                log::warn!("settings: cannot load app state: {error:#}");
+                warn!("settings: cannot load app state: {error:#}");
                 StateValues::default()
             }
         };
@@ -1009,18 +1209,6 @@ impl AppSettings {
         self.state.volume.clamp(0., 1.)
     }
 
-    pub fn normalisation(&self) -> bool {
-        self.values.normalisation
-    }
-
-    pub fn gapless(&self) -> bool {
-        self.values.gapless
-    }
-
-    pub fn keep_tracks(&self) -> bool {
-        self.values.keep_tracks
-    }
-
     /// The cache limit in gigabytes, held within the setting's bounds whatever a hand-edited
     /// settings file says.
     pub fn cache_gb(&self) -> u32 {
@@ -1028,33 +1216,9 @@ impl AppSettings {
         self.values.cache_gb.clamp(low, high)
     }
 
-    pub fn offline_mode(&self) -> bool {
-        self.values.offline_mode
-    }
-
-    /// Whether Sonora shows up as a Spotify Connect device while a Spotify account is signed in.
-    pub fn spotify_connect(&self) -> bool {
-        self.values.spotify_connect
-    }
-
-    /// How Sonora is named in the device list of Spotify's apps.
-    pub fn spotify_connect_name(&self) -> ConnectName {
-        self.values.spotify_connect_name
-    }
-
     /// The name Sonora goes by in that list when it is `ConnectName::Custom`.
     pub fn spotify_connect_custom_name(&self) -> &str {
         &self.values.spotify_connect_custom_name
-    }
-
-    /// Whether the player bar shows the Sessions button.
-    pub fn sessions_button(&self) -> bool {
-        self.values.sessions_button
-    }
-
-    /// Whether Sonora Sessions go through the official server.
-    pub fn sessions_official(&self) -> bool {
-        self.values.sessions_official
     }
 
     /// The address of the server to use instead of the official one, as typed.
@@ -1062,71 +1226,8 @@ impl AppSettings {
         &self.values.sessions_server
     }
 
-    /// Whether the playing track is published to a local Discord client.
-    pub fn discord_presence(&self) -> bool {
-        self.values.discord_presence
-    }
-
-    /// What the Discord status names itself after "listening to".
-    pub fn discord_name(&self) -> DiscordName {
-        self.values.discord_name
-    }
-
-    /// Whether the Discord status stays up while the track is paused.
-    pub fn discord_show_paused(&self) -> bool {
-        self.values.discord_show_paused
-    }
-
-    /// Whether the Discord status carries the badge of the provider the track came from.
-    pub fn discord_badge(&self) -> bool {
-        self.values.discord_badge
-    }
-
-    /// Whether the Discord status steps aside while Spotify Connect has playback, here or on
-    /// another of the account's devices, for a listener who shows Spotify's own status instead.
-    pub fn discord_hide_on_connect(&self) -> bool {
-        self.values.discord_hide_on_connect
-    }
-
-    /// Whether the Discord status leaves the track out and only says that music is playing.
-    pub fn discord_without_details(&self) -> bool {
-        self.values.discord_without_details
-    }
-
-    /// Whether the Discord status carries a button that opens the Sonora project page.
-    pub fn discord_sonora_button(&self) -> bool {
-        self.values.discord_sonora_button
-    }
-
-    /// Whether the Discord status carries a button that opens the track on its provider.
-    pub fn discord_provider_button(&self) -> bool {
-        self.values.discord_provider_button
-    }
-
-    /// Whether a local file's artist and album may be sent to a public catalogue to find a cover
-    /// for its Discord status. Streamed tracks are looked up regardless.
-    pub fn artwork_for_local_files(&self) -> bool {
-        self.values.artwork_for_local_files
-    }
-
-    pub fn lyrics_for_local_files(&self) -> bool {
-        self.values.lyrics_for_local_files
-    }
-
     pub fn output_device(&self) -> Option<&str> {
         self.values.output_device.as_deref()
-    }
-
-    pub fn output_rate(&self) -> Option<u32> {
-        self.values.output_rate
-    }
-
-    pub fn output_buffer(&self) -> Option<u32> {
-        self.values.output_buffer
-    }
-
-    pub fn output_match_rate(&self) -> bool {
-        self.values.output_match_rate
     }
 
     /// How a Subsonic server is asked to convert tracks. A format this build does not know reads
@@ -1146,10 +1247,6 @@ impl AppSettings {
     /// the best.
     pub fn quality(&self) -> Quality {
         Quality::from_id(&self.values.stream_quality).unwrap_or_default()
-    }
-
-    pub fn lyrics_enabled(&self) -> bool {
-        self.values.lyrics_enabled
     }
 
     pub fn lyrics_providers(&self) -> &[String] {
@@ -1180,28 +1277,11 @@ impl AppSettings {
         self.schedule_save(cx);
     }
 
-    /// Whether lyrics timed word by word are shown ahead of any others, whatever their source.
-    pub fn lyrics_word_synced_first(&self) -> bool {
-        self.values.lyrics_word_synced_first
-    }
-
     pub fn lyrics_provider_enabled(&self, provider: &str) -> bool {
         self.values
             .lyrics_providers
             .iter()
             .any(|name| name == provider)
-    }
-
-    pub fn karaoke_lyrics(&self) -> bool {
-        self.values.karaoke_lyrics
-    }
-
-    pub fn blur_lyrics(&self) -> bool {
-        self.values.blur_lyrics
-    }
-
-    pub fn romanized_lyrics(&self) -> bool {
-        self.values.romanized_lyrics
     }
 
     pub fn panel_lyrics_scale(&self) -> f32 {
@@ -1220,29 +1300,8 @@ impl AppSettings {
         self.values.romanization_scripts
     }
 
-    pub fn adaptive_menu(&self) -> bool {
-        self.values.adaptive_menu
-    }
-
     pub fn update_channel(&self) -> Channel {
         Channel::from_id(&self.values.update_channel)
-    }
-
-    pub fn check_updates(&self) -> bool {
-        self.values.check_updates
-    }
-
-    pub fn close_to_tray(&self) -> bool {
-        self.values.close_to_tray
-    }
-
-    pub fn tray_icon(&self) -> bool {
-        self.values.tray_icon
-    }
-
-    /// Whether music keeps the system awake and, in fullscreen, the display.
-    pub fn stay_awake(&self) -> bool {
-        self.values.stay_awake
     }
 
     /// Whether plays from the provider with this slug are submitted to the linked scrobbling
@@ -1273,44 +1332,9 @@ impl AppSettings {
         self.state.sidebar_open
     }
 
-    pub fn sidebar_rail(&self) -> bool {
-        self.state.sidebar_rail
-    }
-
-    pub fn sidebar_right_width(&self) -> f32 {
-        self.state.sidebar_right_width
-    }
-
-    pub fn sidebar_right_open(&self) -> bool {
-        self.state.sidebar_right_open
-    }
-
-    /// The queue stands in for the lyrics while they are turned off.
-    pub fn sidebar_right_tab(&self) -> SideTab {
-        match self.state.sidebar_right_tab {
-            SideTab::Lyrics if !self.lyrics_enabled() => SideTab::Queue,
-            tab => tab,
-        }
-    }
-
-    /// The panel the fullscreen view last showed beside the cover, or `None` when it showed the
-    /// artwork alone, or while lyrics are turned off.
-    pub fn fullscreen_tab(&self) -> Option<SideTab> {
-        self.state
-            .fullscreen_tab
-            .filter(|tab| *tab != SideTab::Lyrics || self.lyrics_enabled())
-    }
-
-    pub fn shuffle(&self) -> bool {
-        self.state.shuffle
-    }
-
-    pub fn repeat(&self) -> Repeat {
-        self.state.repeat
-    }
-
-    pub fn radio(&self) -> bool {
-        self.state.radio
+    /// The cards the right sidebar shows.
+    pub fn sidebar_cards(&self) -> Cards {
+        self.state.sidebar_cards
     }
 
     pub fn language(&self) -> &str {
@@ -1371,36 +1395,15 @@ impl AppSettings {
             .or_else(|| family.variants.first())
     }
 
-    pub fn adaptive_theme(&self) -> bool {
-        self.values.appearance.adaptive_theme
-    }
-
     /// The arrangement of the workspace's playback controls. Unknown saved ids use Classic.
     pub fn player_bar_layout(&self) -> PlayerBarLayout {
         PlayerBarLayout::from_id(&self.values.appearance.player_bar_layout)
-    }
-
-    /// Whether the listener asked for a see-through player bar. What the bar does is
-    /// `player_bar_translucent`, which also needs the blur.
-    pub fn player_bar_transparent(&self) -> bool {
-        self.values.appearance.player_bar_transparent
     }
 
     /// Whether the player bar is drawn see-through with pages scrolling under it. It takes Blur
     /// UI as well, since without the blur the bar's text would sit on the bare page.
     pub fn player_bar_translucent(&self) -> bool {
         self.player_bar_transparent() && self.blur()
-    }
-
-    /// Whether fullscreen paints the ambient background sampled from the cover.
-    pub fn ambient(&self) -> bool {
-        self.values.appearance.ambient
-    }
-
-    /// Whether the ambient background drifts. Off leaves it a still gradient, which is what
-    /// the system reduce-motion preference does too.
-    pub fn ambient_motion(&self) -> bool {
-        self.values.appearance.ambient_motion
     }
 
     /// Whether the playing cover should colour the theme, given whether fullscreen is up. The
@@ -1419,11 +1422,6 @@ impl AppSettings {
         }
     }
 
-    /// Whether the visualizer ignores Sonora's volume and draws the track at its own level.
-    pub fn visualizer_absolute(&self) -> bool {
-        self.values.appearance.visualizer_absolute
-    }
-
     /// The views of the fullscreen player the visualizer is drawn in.
     pub fn visualizer_screens(&self) -> VisualizerScreens {
         self.values.appearance.visualizer_screens
@@ -1439,20 +1437,6 @@ impl AppSettings {
 
     pub fn rounding(&self) -> &str {
         &self.values.appearance.rounding
-    }
-
-    /// Whether the app paints its frosted treatments. See `ui::blurring`.
-    pub fn blur(&self) -> bool {
-        self.values.appearance.blur
-    }
-
-    pub fn blur_window(&self) -> bool {
-        self.values.appearance.blur_window
-    }
-
-    /// Whether opening the fullscreen view also puts the window into OS fullscreen.
-    pub fn os_fullscreen(&self) -> bool {
-        self.values.appearance.os_fullscreen
     }
 
     pub fn stillness(&self) -> Stillness {
@@ -1508,17 +1492,9 @@ impl AppSettings {
         Rounding::from_id(&self.values.appearance.window_rounding)
     }
 
-    pub fn window_controls(&self) -> bool {
-        self.values.appearance.window_controls
-    }
-
     #[cfg(not(target_os = "macos"))]
     pub fn traffic_light_controls(&self) -> bool {
         self.values.appearance.traffic_light_controls
-    }
-
-    pub fn controls_on_left(&self) -> bool {
-        self.values.appearance.controls_on_left
     }
 
     pub fn font_size(&self) -> f32 {
@@ -1526,10 +1502,6 @@ impl AppSettings {
             .appearance
             .font_size
             .clamp(ui::MIN_FONT, ui::MAX_FONT)
-    }
-
-    pub fn transparent(&self) -> bool {
-        self.values.appearance.transparent
     }
 
     pub fn transparency(&self) -> f32 {
@@ -1581,7 +1553,7 @@ impl AppSettings {
         };
         let directory = themes_path(&self.path);
         if let Err(error) = themes::remove(&family, &directory) {
-            log::warn!("settings: cannot delete theme {id}: {error:#}");
+            warn!("settings: cannot delete theme {id}: {error:#}");
             Toasts::about(
                 Outcome::Failed,
                 "toast-theme-delete-failed",
@@ -1590,7 +1562,7 @@ impl AppSettings {
             );
             return false;
         }
-        log::info!("settings: deleted theme {id}");
+        info!("settings: deleted theme {id}");
         let loaded = themes::load(&directory, &self.themes);
         self.families = themes::catalog(&loaded.themes);
         self.themes = loaded.themes;
@@ -1608,7 +1580,7 @@ impl AppSettings {
     pub fn ensure_themes_directory(&self) -> PathBuf {
         let path = themes_path(&self.path);
         if let Err(error) = fs::create_dir_all(&path) {
-            log::warn!("settings: cannot create {}: {error}", path.display());
+            warn!("settings: cannot create {}: {error}", path.display());
         }
         path
     }
@@ -1628,38 +1600,8 @@ impl AppSettings {
         self.save_state_quietly(cx);
     }
 
-    pub fn set_normalisation(&mut self, normalisation: bool, cx: &mut Context<Self>) {
-        self.values.normalisation = normalisation;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_gapless(&mut self, gapless: bool, cx: &mut Context<Self>) {
-        self.values.gapless = gapless;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_keep_tracks(&mut self, keep_tracks: bool, cx: &mut Context<Self>) {
-        self.values.keep_tracks = keep_tracks;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_offline_mode(&mut self, offline_mode: bool, cx: &mut Context<Self>) {
-        self.values.offline_mode = offline_mode;
-        self.schedule_save(cx);
-    }
-
     pub fn set_cache_gb(&mut self, cache_gb: u32, cx: &mut Context<Self>) {
         self.values.cache_gb = cache_gb;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_spotify_connect(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        self.values.spotify_connect = enabled;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_spotify_connect_name(&mut self, name: ConnectName, cx: &mut Context<Self>) {
-        self.values.spotify_connect_name = name;
         self.schedule_save(cx);
     }
 
@@ -1671,31 +1613,11 @@ impl AppSettings {
         self.schedule_save(cx);
     }
 
-    pub fn set_sessions_button(&mut self, shown: bool, cx: &mut Context<Self>) {
-        self.values.sessions_button = shown;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_sessions_official(&mut self, official: bool, cx: &mut Context<Self>) {
-        self.values.sessions_official = official;
-        self.schedule_save(cx);
-    }
-
     pub fn set_sessions_server(&mut self, server: String, cx: &mut Context<Self>) {
         if self.values.sessions_server == server {
             return;
         }
         self.values.sessions_server = server;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_discord_presence(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        self.values.discord_presence = enabled;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_discord_name(&mut self, name: DiscordName, cx: &mut Context<Self>) {
-        self.values.discord_name = name;
         self.schedule_save(cx);
     }
 
@@ -1708,68 +1630,8 @@ impl AppSettings {
         self.schedule_save(cx);
     }
 
-    pub fn set_discord_show_paused(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        self.values.discord_show_paused = enabled;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_discord_badge(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        self.values.discord_badge = enabled;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_discord_hide_on_connect(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        self.values.discord_hide_on_connect = enabled;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_discord_without_details(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        self.values.discord_without_details = enabled;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_discord_sonora_button(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        self.values.discord_sonora_button = enabled;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_discord_provider_button(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        self.values.discord_provider_button = enabled;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_artwork_for_local_files(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        self.values.artwork_for_local_files = enabled;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_lyrics_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        self.values.lyrics_enabled = enabled;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_lyrics_for_local_files(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        self.values.lyrics_for_local_files = enabled;
-        self.schedule_save(cx);
-    }
-
     pub fn set_output_device(&mut self, id: Option<String>, cx: &mut Context<Self>) {
         self.values.output_device = id;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_output_rate(&mut self, rate: Option<u32>, cx: &mut Context<Self>) {
-        self.values.output_rate = rate;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_output_buffer(&mut self, frames: Option<u32>, cx: &mut Context<Self>) {
-        self.values.output_buffer = frames;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_output_match_rate(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.values.output_match_rate = on;
         self.schedule_save(cx);
     }
 
@@ -1790,26 +1652,6 @@ impl AppSettings {
             self.values.lyrics_providers.push(provider.to_owned());
         }
         self.values.lyrics_providers.sort();
-        self.schedule_save(cx);
-    }
-
-    pub fn set_lyrics_word_synced_first(&mut self, first: bool, cx: &mut Context<Self>) {
-        self.values.lyrics_word_synced_first = first;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_karaoke_lyrics(&mut self, karaoke: bool, cx: &mut Context<Self>) {
-        self.values.karaoke_lyrics = karaoke;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_blur_lyrics(&mut self, blur: bool, cx: &mut Context<Self>) {
-        self.values.blur_lyrics = blur;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_romanized_lyrics(&mut self, romanized: bool, cx: &mut Context<Self>) {
-        self.values.romanized_lyrics = romanized;
         self.schedule_save(cx);
     }
 
@@ -1836,33 +1678,8 @@ impl AppSettings {
         self.schedule_save(cx);
     }
 
-    pub fn set_adaptive_menu(&mut self, adaptive_menu: bool, cx: &mut Context<Self>) {
-        self.values.adaptive_menu = adaptive_menu;
-        self.schedule_save(cx);
-    }
-
     pub fn set_update_channel(&mut self, channel: Channel, cx: &mut Context<Self>) {
         self.values.update_channel = channel.id().to_owned();
-        self.schedule_save(cx);
-    }
-
-    pub fn set_check_updates(&mut self, check_updates: bool, cx: &mut Context<Self>) {
-        self.values.check_updates = check_updates;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_close_to_tray(&mut self, close_to_tray: bool, cx: &mut Context<Self>) {
-        self.values.close_to_tray = close_to_tray;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_tray_icon(&mut self, tray_icon: bool, cx: &mut Context<Self>) {
-        self.values.tray_icon = tray_icon;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_stay_awake(&mut self, stay_awake: bool, cx: &mut Context<Self>) {
-        self.values.stay_awake = stay_awake;
         self.schedule_save(cx);
     }
 
@@ -2021,44 +1838,11 @@ impl AppSettings {
         self.schedule_state_save(cx);
     }
 
-    pub fn set_sidebar_right_width(&mut self, width: f32, cx: &mut Context<Self>) {
-        self.state.sidebar_right_width = width;
-        self.schedule_state_save(cx);
-    }
-
-    pub fn set_sidebar_right_open(&mut self, open: bool, cx: &mut Context<Self>) {
-        self.state.sidebar_right_open = open;
-        self.schedule_state_save(cx);
-    }
-
-    pub fn set_sidebar_right_tab(&mut self, tab: SideTab, cx: &mut Context<Self>) {
-        if self.state.sidebar_right_tab == tab {
+    pub fn set_sidebar_cards(&mut self, cards: Cards, cx: &mut Context<Self>) {
+        if self.state.sidebar_cards == cards {
             return;
         }
-        self.state.sidebar_right_tab = tab;
-        self.schedule_state_save(cx);
-    }
-
-    pub fn set_fullscreen_tab(&mut self, tab: Option<SideTab>, cx: &mut Context<Self>) {
-        if self.state.fullscreen_tab == tab {
-            return;
-        }
-        self.state.fullscreen_tab = tab;
-        self.schedule_state_save(cx);
-    }
-
-    pub fn set_shuffle(&mut self, shuffle: bool, cx: &mut Context<Self>) {
-        self.state.shuffle = shuffle;
-        self.schedule_state_save(cx);
-    }
-
-    pub fn set_repeat(&mut self, repeat: Repeat, cx: &mut Context<Self>) {
-        self.state.repeat = repeat;
-        self.schedule_state_save(cx);
-    }
-
-    pub fn set_radio(&mut self, radio: bool, cx: &mut Context<Self>) {
-        self.state.radio = radio;
+        self.state.sidebar_cards = cards;
         self.schedule_state_save(cx);
     }
 
@@ -2077,26 +1861,6 @@ impl AppSettings {
         self.values.font = font;
         cx.refresh_windows();
         self.schedule_save(cx);
-    }
-
-    /// Whether the sidebar's pinned section is expanded. Collapsed on a first run.
-    pub fn sidebar_pinned_open(&self) -> bool {
-        self.state.sidebar_pinned_open
-    }
-
-    pub fn set_sidebar_pinned_open(&mut self, open: bool, cx: &mut Context<Self>) {
-        self.state.sidebar_pinned_open = open;
-        self.schedule_state_save(cx);
-    }
-
-    /// Whether the sidebar lists the rest of the library under the pins.
-    pub fn sidebar_full_library(&self) -> bool {
-        self.state.sidebar_full_library
-    }
-
-    pub fn set_sidebar_full_library(&mut self, full: bool, cx: &mut Context<Self>) {
-        self.state.sidebar_full_library = full;
-        self.schedule_state_save(cx);
     }
 
     pub fn sidebar_pin_sort(&self) -> Option<PinSort> {
@@ -2177,14 +1941,60 @@ impl AppSettings {
         !self.values.hidden_nav.iter().any(|hidden| hidden == entry)
     }
 
-    pub fn set_nav_shown(&mut self, entry: &str, shown: bool, cx: &mut Context<Self>) {
-        if self.nav_shown(entry) == shown {
+    /// Where the user put a navigation entry, as the id they chose, or `None` if they never
+    /// moved it. An entry hidden before places existed reads as `hidden`.
+    pub fn nav_place(&self, entry: &str) -> Option<&str> {
+        match self.values.nav_places.get(entry) {
+            Some(place) => Some(place),
+            None if !self.nav_shown(entry) => Some("hidden"),
+            None => None,
+        }
+    }
+
+    /// The navigation entries the user has ordered, by id, first to last.
+    pub fn nav_order(&self) -> &[String] {
+        &self.values.nav_order
+    }
+
+    /// Saves the shared order of navigation entries and toolbar control groups.
+    pub fn set_nav_order(&mut self, entries: Vec<String>, cx: &mut Context<Self>) {
+        self.values.nav_order = entries;
+        self.schedule_save(cx);
+    }
+
+    /// The right sidebar's sections the user has ordered, by id, first to last.
+    pub fn stage_order(&self) -> &[String] {
+        &self.values.stage_order
+    }
+
+    pub fn stage_shown(&self, section: &str) -> bool {
+        !self
+            .values
+            .stage_hidden
+            .iter()
+            .any(|hidden| hidden == section)
+    }
+
+    /// Saves the right sidebar's sections: every id in the order they show, and whether each
+    /// one does.
+    pub fn set_stage(&mut self, sections: Vec<(String, bool)>, cx: &mut Context<Self>) {
+        self.values.stage_hidden = sections
+            .iter()
+            .filter(|(_, shown)| !shown)
+            .map(|(id, _)| id.clone())
+            .collect();
+        self.values.stage_order = sections.into_iter().map(|(id, _)| id).collect();
+        self.schedule_save(cx);
+    }
+
+    pub fn set_nav_place(&mut self, entry: &str, place: &str, cx: &mut Context<Self>) {
+        if self.values.nav_places.get(entry).map(String::as_str) == Some(place) {
             return;
         }
-        match shown {
-            true => self.values.hidden_nav.retain(|hidden| hidden != entry),
-            false => self.values.hidden_nav.push(entry.to_owned()),
-        }
+        self.values.hidden_nav.retain(|hidden| hidden != entry);
+        self.values
+            .nav_places
+            .insert(entry.to_owned(), place.to_owned());
         self.schedule_save(cx);
     }
 
@@ -2248,30 +2058,9 @@ impl AppSettings {
         true
     }
 
-    pub fn set_adaptive_theme(&mut self, adaptive: bool, cx: &mut Context<Self>) {
-        self.values.appearance.adaptive_theme = adaptive;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_ambient(&mut self, ambient: bool, cx: &mut Context<Self>) {
-        self.values.appearance.ambient = ambient;
-        self.schedule_save(cx);
-    }
-
     /// Applies a player bar layout immediately and saves it in the appearance preferences.
     pub fn set_player_bar_layout(&mut self, layout: PlayerBarLayout, cx: &mut Context<Self>) {
         self.values.appearance.player_bar_layout = layout.id().to_owned();
-        self.schedule_save(cx);
-    }
-
-    /// Lets the page scroll under the player bar, or restores the solid bar below the page.
-    pub fn set_player_bar_transparent(&mut self, transparent: bool, cx: &mut Context<Self>) {
-        self.values.appearance.player_bar_transparent = transparent;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_ambient_motion(&mut self, motion: bool, cx: &mut Context<Self>) {
-        self.values.appearance.ambient_motion = motion;
         self.schedule_save(cx);
     }
 
@@ -2282,11 +2071,6 @@ impl AppSettings {
         if style.shown() {
             self.values.appearance.visualizer_style = style.id().to_owned();
         }
-        self.schedule_save(cx);
-    }
-
-    pub fn set_visualizer_absolute(&mut self, absolute: bool, cx: &mut Context<Self>) {
-        self.values.appearance.visualizer_absolute = absolute;
         self.schedule_save(cx);
     }
 
@@ -2315,21 +2099,6 @@ impl AppSettings {
 
     pub fn set_rounding(&mut self, rounding: impl Into<String>, cx: &mut Context<Self>) {
         self.values.appearance.rounding = rounding.into();
-        self.schedule_save(cx);
-    }
-
-    pub fn set_blur(&mut self, blur: bool, cx: &mut Context<Self>) {
-        self.values.appearance.blur = blur;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_blur_window(&mut self, blur: bool, cx: &mut Context<Self>) {
-        self.values.appearance.blur_window = blur;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_os_fullscreen(&mut self, value: bool, cx: &mut Context<Self>) {
-        self.values.appearance.os_fullscreen = value;
         self.schedule_save(cx);
     }
 
@@ -2384,19 +2153,9 @@ impl AppSettings {
         self.schedule_save(cx);
     }
 
-    pub fn set_window_controls(&mut self, shown: bool, cx: &mut Context<Self>) {
-        self.values.appearance.window_controls = shown;
-        self.schedule_save(cx);
-    }
-
     #[cfg(not(target_os = "macos"))]
     pub fn set_traffic_light_controls(&mut self, traffic_light: bool, cx: &mut Context<Self>) {
         self.values.appearance.traffic_light_controls = traffic_light;
-        self.schedule_save(cx);
-    }
-
-    pub fn set_controls_on_left(&mut self, left: bool, cx: &mut Context<Self>) {
-        self.values.appearance.controls_on_left = left;
         self.schedule_save(cx);
     }
 
@@ -2407,11 +2166,6 @@ impl AppSettings {
 
     pub fn reset_font_size(&mut self, cx: &mut Context<Self>) {
         self.set_font_size(DEFAULT_FONT_SIZE, cx);
-    }
-
-    pub fn set_transparent(&mut self, transparent: bool, cx: &mut Context<Self>) {
-        self.values.appearance.transparent = transparent;
-        self.schedule_save(cx);
     }
 
     pub fn set_transparency(&mut self, transparency: f32, cx: &mut Context<Self>) {
@@ -2478,7 +2232,7 @@ impl AppSettings {
 
     fn save_state_now(&self) {
         if let Err(error) = self.store.save(&self.state) {
-            log::error!("settings: cannot save app state: {error:#}");
+            error!("settings: cannot save app state: {error:#}");
         }
     }
 
@@ -2506,14 +2260,14 @@ impl AppSettings {
             return SettingsSave::Complete;
         };
         if let Err(error) = fs::create_dir_all(parent) {
-            log::error!("settings: cannot create {}: {error}", parent.display());
+            error!("settings: cannot create {}: {error}", parent.display());
             return SettingsSave::Retry(error.to_string());
         }
 
         let bytes = match serde_json::to_vec_pretty(&self.values) {
             Ok(bytes) => bytes,
             Err(error) => {
-                log::error!("settings: cannot serialize values: {error}");
+                error!("settings: cannot serialize values: {error}");
                 return SettingsSave::Complete;
             }
         };
@@ -2521,12 +2275,12 @@ impl AppSettings {
             Ok(bytes) => Some(bytes),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => {
-                log::warn!("settings: cannot read {}: {error}", self.path.display());
+                warn!("settings: cannot read {}: {error}", self.path.display());
                 return SettingsSave::Retry(error.to_string());
             }
         };
         if current != self.disk {
-            log::warn!(
+            warn!(
                 "settings: not saving {}, file changed on disk",
                 self.path.display()
             );
@@ -2539,7 +2293,7 @@ impl AppSettings {
             return SettingsSave::Complete;
         }
         if let Err(error) = save_settings(&self.path, &bytes, current.as_deref()) {
-            log::error!("settings: cannot write {}: {error:#}", self.path.display());
+            error!("settings: cannot write {}: {error:#}", self.path.display());
             return SettingsSave::Retry(format!("{error:#}"));
         }
         self.disk = Some(bytes);
@@ -2554,12 +2308,12 @@ impl AppSettings {
             return;
         };
         if let Err(error) = fs::create_dir_all(folder) {
-            log::warn!("settings: cannot create {}: {error}", folder.display());
+            warn!("settings: cannot create {}: {error}", folder.display());
             return;
         }
         let themes = themes_path(&self.path);
         if let Err(error) = fs::create_dir_all(&themes) {
-            log::warn!("settings: cannot create {}: {error}", themes.display());
+            warn!("settings: cannot create {}: {error}", themes.display());
         }
         let case_insensitive = filesystem_ignores_case(&themes);
 
@@ -2591,19 +2345,19 @@ impl AppSettings {
                         sender.send(changed).ok();
                     }
                 }
-                Err(error) => log::warn!("settings: watch failed: {error}"),
+                Err(error) => warn!("settings: watch failed: {error}"),
             },
             Config::default().with_follow_symlinks(false),
         );
         let mut watcher = match watcher {
             Ok(watcher) => watcher,
             Err(error) => {
-                log::warn!("settings: cannot watch {}: {error}", folder.display());
+                warn!("settings: cannot watch {}: {error}", folder.display());
                 return;
             }
         };
         if let Err(error) = watcher.watch(&folder, RecursiveMode::Recursive) {
-            log::warn!("settings: cannot watch {}: {error}", folder.display());
+            warn!("settings: cannot watch {}: {error}", folder.display());
             return;
         }
 
@@ -2720,7 +2474,7 @@ impl AppSettings {
                 return SettingsReload::Unchanged;
             }
             Err(error) => {
-                log::warn!("settings: cannot read {}: {error}", self.path.display());
+                warn!("settings: cannot read {}: {error}", self.path.display());
                 return SettingsReload::Retry;
             }
         };
@@ -2738,7 +2492,7 @@ impl AppSettings {
         let values = match serde_json::from_slice::<Values>(json(&bytes)) {
             Ok(values) => offer_subsonic_lyrics(values).settled(),
             Err(error) => {
-                log::warn!("settings: cannot parse {}: {error}", self.path.display());
+                warn!("settings: cannot parse {}: {error}", self.path.display());
                 let newly_broken = self.broken != Some(error.line());
                 self.writable = false;
                 self.broken = Some(error.line());
@@ -2750,7 +2504,7 @@ impl AppSettings {
             }
         };
 
-        log::info!("settings: reloaded {}", self.path.display());
+        info!("settings: reloaded {}", self.path.display());
         let previous = std::mem::replace(&mut self.values, values);
         self.disk = Some(bytes);
         self.writable = true;
@@ -3003,7 +2757,7 @@ fn write_settings(path: &Path, bytes: &[u8]) -> Result<()> {
         .context("cannot replace settings file")?;
     #[cfg(unix)]
     if let Err(error) = fs::File::open(parent).and_then(|folder| folder.sync_all()) {
-        log::debug!("settings: cannot sync {}: {error}", parent.display());
+        debug!("settings: cannot sync {}: {error}", parent.display());
     }
     Ok(())
 }
@@ -3046,10 +2800,44 @@ fn take(pinned: &mut Vec<Held>, slug: &str, pin: &Pin) -> bool {
     true
 }
 
+/// Keeps queue identity and order across metadata changes without invalidating other settings.
+fn read_resume<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Resume>, D::Error> {
+    let mut value = serde_json::Value::deserialize(deserializer)?;
+    let defaults =
+        serde_json::to_value(music::Track::default()).map_err(serde::de::Error::custom)?;
+    for field in ["current", "past", "upcoming"] {
+        let Some(entries) = value.get_mut(field) else {
+            continue;
+        };
+        let entries = match entries {
+            serde_json::Value::Array(entries) => entries.as_mut_slice(),
+            entry => std::slice::from_mut(entry),
+        };
+        for entry in entries
+            .iter_mut()
+            .filter_map(serde_json::Value::as_object_mut)
+            .filter(|entry| !entry.contains_key("track"))
+        {
+            let mut track = defaults.as_object().cloned().unwrap_or_default();
+            track.extend(entry.clone());
+            track.insert("playable".into(), true.into());
+            entry.insert("track".into(), track.into());
+        }
+    }
+    Ok(serde_json::from_value(value).ok().flatten())
+}
+
 /// Carries the position over from the previous record while the same track is current on the
 /// same provider.
 fn carry(previous: Option<&Resume>, next: &mut Resume) {
-    let playing = |resume: &Resume| resume.current.as_ref().map(|stub| stub.id.clone());
+    let playing = |resume: &Resume| {
+        resume
+            .current
+            .as_ref()
+            .and_then(|entry| entry.track.id.clone())
+    };
     let same = previous.filter(|old| old.provider == next.provider);
     next.position = same
         .filter(|old| playing(old) == playing(next))
@@ -3139,7 +2927,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
-    use crate::queue::Stub;
+    use crate::queue::SavedEntry;
     use ui::PinKind;
 
     #[test]
@@ -3234,9 +3022,12 @@ mod tests {
         Resume {
             provider: provider.to_owned(),
             position,
-            current: Some(Stub {
-                id: playing.to_owned(),
-                ..Stub::default()
+            current: Some(SavedEntry {
+                track: music::Track {
+                    id: Some(playing.to_owned()),
+                    ..Default::default()
+                },
+                ..SavedEntry::default()
             }),
             ..Resume::default()
         }

@@ -1,7 +1,7 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
-use std::sync::atomic::{AtomicU64, Ordering};
+use tracing::{debug, info, warn};
 
 use anyhow::{Context as _, Result};
 
@@ -18,9 +18,6 @@ const MOVED: &[(&str, &[&str])] = &[
     ("tidal", &[FILE]),
     ("youtube", &[FILE, "cookies.json"]),
 ];
-
-/// Tells apart the temporary files of two writes running at once in one process.
-static WRITES: AtomicU64 = AtomicU64::new(0);
 
 /// Runs the move out of the cache folder once per process, before the first provider looks.
 static MIGRATION: Once = Once::new();
@@ -40,6 +37,19 @@ pub(crate) fn dir(slug: &str) -> PathBuf {
     accounts().join(slug)
 }
 
+/// Keeps network failures retryable while treating a refused stored sign-in as no account.
+/// Only pass the opening request here; failures after it opens retain their original meaning.
+pub(crate) fn restored<T>(provider: &str, opened: Result<T>) -> Result<Option<T>> {
+    match opened {
+        Ok(opened) => Ok(Some(opened)),
+        Err(error) if crate::trouble::offline(&format!("{error:#}")) => Err(error),
+        Err(error) => {
+            warn!("{provider}: the stored sign-in is no longer usable: {error:#}");
+            Ok(None)
+        }
+    }
+}
+
 /// Writes a credential file readable by the owner alone, creating its folder first. The bytes
 /// go to a temporary file beside it that is synced and then renamed over the old one, so a
 /// crash leaves either the old sign-in or the new one and never half of either. It fails when
@@ -57,23 +67,23 @@ pub(crate) fn write(path: &Path, contents: &[u8]) -> Result<()> {
         .parent()
         .with_context(|| format!("cannot find the folder of {}", path.display()))?;
     create_private(parent)?;
-    let name = path
-        .file_name()
-        .with_context(|| format!("cannot name a temporary file for {}", path.display()))?
-        .to_string_lossy();
-    let temporary = parent.join(format!(
-        ".{name}.{}.{}.tmp",
-        std::process::id(),
-        WRITES.fetch_add(1, Ordering::Relaxed)
-    ));
-    let written = write_synced(&temporary, contents).and_then(|()| {
-        std::fs::rename(&temporary, path)
-            .with_context(|| format!("cannot move credentials into {}", path.display()))
-    });
-    if written.is_err() {
-        remove(&temporary);
-        return written;
-    }
+    // tempfile creates Unix files with mode 0600 and removes an unfinished write on drop.
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).with_context(|| {
+        format!(
+            "cannot create temporary credentials in {}",
+            parent.display()
+        )
+    })?;
+    temporary
+        .write_all(contents)
+        .with_context(|| format!("cannot write credentials for {}", path.display()))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("cannot sync credentials for {}", path.display()))?;
+    temporary
+        .persist(path)
+        .with_context(|| format!("cannot move credentials into {}", path.display()))?;
     sync_folder(parent);
     Ok(())
 }
@@ -86,7 +96,7 @@ pub(crate) fn secure(path: &Path) {
         if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             && error.kind() != std::io::ErrorKind::NotFound
         {
-            log::warn!("credentials: cannot restrict {}: {error}", path.display());
+            warn!("credentials: cannot restrict {}: {error}", path.display());
         }
     }
     #[cfg(not(unix))]
@@ -98,7 +108,7 @@ pub(crate) fn remove(path: &Path) {
     if let Err(error) = std::fs::remove_file(path)
         && error.kind() != std::io::ErrorKind::NotFound
     {
-        log::warn!("credentials: cannot remove {}: {error}", path.display());
+        warn!("credentials: cannot remove {}: {error}", path.display());
     }
 }
 
@@ -132,10 +142,10 @@ fn migrate() {
                     .with_context(|| format!("cannot read {}", from.display()))
                     .and_then(|body| write(&to, &body));
                 if let Err(error) = moved {
-                    log::warn!("credentials: cannot move {}: {error:#}", from.display());
+                    warn!("credentials: cannot move {}: {error:#}", from.display());
                     continue;
                 }
-                log::info!("credentials: moved {} to {}", from.display(), to.display());
+                info!("credentials: moved {} to {}", from.display(), to.display());
             }
             remove(&from);
         }
@@ -165,30 +175,12 @@ fn create_private(folder: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Writes a new file that only its owner can read on unix and syncs it to disk.
-fn write_synced(path: &Path, contents: &[u8]) -> Result<()> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(path)
-        .with_context(|| format!("cannot create {}", path.display()))?;
-    file.write_all(contents)
-        .with_context(|| format!("cannot write {}", path.display()))?;
-    file.sync_all()
-        .with_context(|| format!("cannot sync {}", path.display()))
-}
-
 /// Syncs a folder so a rename inside it survives a crash. Only unix can open a folder for this,
 /// and a failure costs at most the latest write, so it is logged rather than returned.
 fn sync_folder(folder: &Path) {
     #[cfg(unix)]
     if let Err(error) = std::fs::File::open(folder).and_then(|opened| opened.sync_all()) {
-        log::debug!("credentials: cannot sync {}: {error}", folder.display());
+        debug!("credentials: cannot sync {}: {error}", folder.display());
     }
     #[cfg(not(unix))]
     let _ = folder;

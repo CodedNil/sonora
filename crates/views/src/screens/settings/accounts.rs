@@ -149,7 +149,7 @@ impl SettingsView {
 
         drill(
             "music-folders",
-            t!("settings-local-folder"),
+            t!("settings-page-music-folders"),
             Some(value),
             cx,
         )
@@ -175,7 +175,7 @@ impl SettingsView {
         // that is the longest part, so it says so rather than showing nothing.
         let note = match (scanning, scan.done()) {
             (Some(progress), _) => Some(match progress.percent() {
-                Some(percent) => t!("settings-scan-progress", percent = percent),
+                Some(percent) => t!("common-progress", percent = percent),
                 None => t!("settings-scan-walking"),
             }),
             (None, Some(took)) => Some(t!("settings-scan-done", seconds = text::lapsed(took))),
@@ -202,7 +202,7 @@ impl SettingsView {
             div()
                 .id("local-folders")
                 .role(Role::List)
-                .aria_label(t!("settings-local-folder"))
+                .aria_label(t!("settings-page-music-folders"))
                 .flex()
                 .flex_col()
                 .children(items)
@@ -715,7 +715,7 @@ impl SettingsView {
             )
             .action(
                 Button::new("settings-submit-server")
-                    .label(t!("login-server-submit"))
+                    .label(t!("common-connect"))
                     .primary()
                     .on_click(cx.listener(|this, _, _, cx| this.submit_credentials(cx))),
             )
@@ -939,7 +939,7 @@ impl RenderOnce for ProviderRow {
             Offer::SignIn => Role::Button,
             Offer::Cancel(_) => Role::Group,
         };
-        let hint = matches!(offer, Offer::SignIn).then(|| t!("settings-provider-sign-in"));
+        let hint = matches!(offer, Offer::SignIn).then(|| t!("common-sign-in"));
         let description = status
             .iter()
             .chain(hint.iter())

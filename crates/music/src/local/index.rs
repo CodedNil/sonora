@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use tracing::warn;
 
 use anyhow::{Context as _, Result};
 use rusqlite::{Connection, params};
@@ -74,7 +75,7 @@ impl Index {
         match self.read() {
             Ok(remembered) => remembered,
             Err(error) => {
-                log::warn!("local: cannot read the scan index: {error:#}");
+                warn!("local: cannot read the scan index: {error:#}");
                 Remembered::default()
             }
         }
@@ -87,7 +88,7 @@ impl Index {
             return;
         }
         if let Err(error) = self.write(changes) {
-            log::warn!("local: cannot record the scan index: {error:#}");
+            warn!("local: cannot record the scan index: {error:#}");
         }
     }
 
@@ -104,7 +105,7 @@ impl Index {
             })
             .context("cannot open the cache");
         if let Err(error) = forgotten {
-            log::warn!("local: cannot forget the scanned folders: {error:#}");
+            warn!("local: cannot forget the scanned folders: {error:#}");
         }
     }
 
@@ -133,7 +134,7 @@ impl Index {
             Ok(())
         })();
         if let Err(error) = dropped {
-            log::warn!("local: cannot forget an edited file: {error:#}");
+            warn!("local: cannot forget an edited file: {error:#}");
         }
     }
 

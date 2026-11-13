@@ -3,6 +3,7 @@ use gpui::{App, Context, Entity, FocusHandle, Global, Render, SharedString, Wind
 use i18n::t;
 use music::{Album, SavedArtist, Track};
 use state::{Detail, History, Io, Outcome, Shelf, Sonora, Toasts, equalizer_profile_label};
+use tracing::warn;
 use ui::{Button, Dismiss, FORM_CONTEXT, Modal, Submit};
 
 #[derive(Clone)]
@@ -25,8 +26,8 @@ pub(crate) enum Kind {
 impl Kind {
     fn title(&self) -> gpui::SharedString {
         match self {
-            Self::PlaylistSongs(_) => t!("confirm-remove-playlist-title"),
-            Self::History(_) => t!("confirm-remove-history-title"),
+            Self::PlaylistSongs(_) => t!("menu-remove-from-playlist"),
+            Self::History(_) => t!("menu-remove-from-history"),
             Self::DeleteTrackFiles(_) => t!("confirm-delete-track-files-title"),
             Self::Widevine => t!("confirm-uninstall-widevine-title"),
             Self::Soloist => t!("confirm-remove-soloist-title"),
@@ -50,7 +51,7 @@ impl Kind {
             Self::Downloads => t!("confirm-remove-downloads"),
             Self::EqualizerProfile(ref name) => {
                 let name = equalizer_profile_label(name);
-                t!("equalizer-delete-confirm", name = &name)
+                t!("common-delete-confirm", name = &name)
             }
         }
     }
@@ -58,7 +59,7 @@ impl Kind {
     fn action(&self) -> gpui::SharedString {
         match self {
             Self::Widevine => t!("settings-widevine-uninstall"),
-            Self::Soloist => t!("settings-soloist-remove"),
+            Self::Soloist => t!("common-remove"),
             Self::Downloads => t!("settings-downloads-remove"),
             _ => t!("common-delete"),
         }
@@ -253,9 +254,7 @@ impl Confirm {
                                     Ok(()) => deleted.push(id),
                                     Err(error) => {
                                         failed += 1;
-                                        log::warn!(
-                                            "local: cannot delete track file {id}: {error:#}"
-                                        );
+                                        warn!("local: cannot delete track file {id}: {error:#}");
                                     }
                                 }
                             }
@@ -274,7 +273,7 @@ impl Confirm {
                             });
                         }
                         Err(error) => {
-                            log::warn!("local: deletion task failed: {error}");
+                            warn!("local: deletion task failed: {error}");
                             cx.update(|cx| {
                                 Toasts::show(Outcome::Failed, "toast-local-delete-failed", cx);
                             });

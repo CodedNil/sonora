@@ -6,6 +6,7 @@
 //! the engine's.
 
 use std::time::Duration;
+use tracing::{debug, warn};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -75,17 +76,15 @@ impl Deezer {
     async fn recall(&self, id: &str, served: &str) -> Option<Loaded> {
         let kept = self.shelf.as_ref()?.find(id, served).await?;
         let facts = serde_json::from_slice::<Facts>(&kept.facts)
-            .inspect_err(|error| {
-                log::warn!("playback: the kept facts of {id} do not read: {error}")
-            })
+            .inspect_err(|error| warn!("playback: the kept facts of {id} do not read: {error}"))
             .ok()?;
         let key = self.client.track_key(&facts.effective_id);
         let stream = Stream::pulling(kept.source, Some(kept.length), Striped::new(&key))
             .primed()
             .await
-            .inspect_err(|error| log::warn!("playback: the kept copy of {id} broke: {error:#}"))
+            .inspect_err(|error| warn!("playback: the kept copy of {id} broke: {error:#}"))
             .ok()?;
-        log::debug!("playback: {id} started from the vault");
+        debug!("playback: {id} started from the vault");
         Some(Loaded {
             stream,
             duration: facts.duration_s.map(Duration::from_secs),
@@ -97,7 +96,7 @@ impl Deezer {
 #[async_trait]
 impl Fetch for Deezer {
     type Loaded = Loaded;
-    type Source = rodio::Decoder<Reader<Striped>>;
+    type Source = crate::decode::Decoder<Reader<Striped>>;
 
     fn name(&self) -> &'static str {
         "deezer"
@@ -163,7 +162,7 @@ impl Fetch for Deezer {
     /// Builds a decoder over a stream and places it at `at`. The bytes past the preroll are
     /// still arriving, so this only reads the header.
     fn open(&self, id: &str, loaded: &Loaded, at: Duration) -> Option<Self::Source> {
-        let mut builder = rodio::Decoder::builder()
+        let mut builder = crate::decode::Decoder::builder()
             .with_data(loaded.stream.reader())
             .with_seekable(true);
         if let Some(total) = loaded.stream.total() {
@@ -172,11 +171,11 @@ impl Fetch for Deezer {
         let mut decoder = match builder.build() {
             Ok(decoder) => decoder,
             Err(error) => {
-                log::warn!("playback: cannot decode the deezer track {id}: {error}");
+                warn!("playback: cannot decode the deezer track {id}: {error}");
                 return None;
             }
         };
-        log::debug!(
+        debug!(
             "playback: {id} decodes at {} Hz, {} channels, {:?} long",
             decoder.sample_rate(),
             decoder.channels(),
@@ -185,7 +184,7 @@ impl Fetch for Deezer {
         if !at.is_zero()
             && let Err(error) = decoder.try_seek(at)
         {
-            log::warn!(
+            warn!(
                 "playback: cannot start the deezer track {id} at {}s: {error}",
                 at.as_secs()
             );

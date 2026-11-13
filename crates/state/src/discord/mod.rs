@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::warn;
 
 use discord_rich_presence::{DiscordIpc, activity};
 use gpui::{App, AppContext as _, Context, Entity, Global, Task};
@@ -148,7 +149,7 @@ impl Discord {
         let worker = io.spawn(run(receiver));
         let _worker = cx.spawn(async move |_, _| {
             if let Err(error) = worker.await {
-                log::warn!("discord: the presence worker stopped: {error}");
+                warn!("discord: the presence worker stopped: {error}");
             }
         });
 
@@ -214,7 +215,7 @@ impl Discord {
                         this.found.insert(query, cover);
                         this.publish(cx);
                     }
-                    Err(error) => log::warn!("discord: cannot look up the artwork: {error:#}"),
+                    Err(error) => warn!("discord: cannot look up the artwork: {error:#}"),
                 }
             })
             .ok();
@@ -283,7 +284,10 @@ impl Discord {
             self.timing
                 .track_started_at(track, playback.live_position())
         });
-        let duration = track.duration.as_secs() as i64;
+        let duration = track
+            .duration
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or(0);
         let public_art = provider.is_some_and(|provider| provider.public_art());
         let lookup = !track.id.as_deref().is_some_and(music::is_local_id)
             || settings.artwork_for_local_files();
@@ -359,7 +363,7 @@ async fn run(mut receiver: watch::Receiver<Shown>) {
         .await;
 
         let Ok((used, wanted, result)) = attempted else {
-            log::warn!("discord: the presence thread went away");
+            warn!("discord: the presence thread went away");
             return;
         };
         client = used;
@@ -422,7 +426,7 @@ fn complain(reported: &mut Option<String>, failure: String) {
         return;
     }
 
-    log::warn!("discord: cannot show the presence: {failure}");
+    warn!("discord: cannot show the presence: {failure}");
     *reported = Some(failure);
 }
 

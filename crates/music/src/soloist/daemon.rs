@@ -4,6 +4,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
+use tracing::{debug, trace};
 
 use anyhow::{Context as _, Result};
 use tokio::io::{AsyncBufReadExt as _, AsyncRead, BufReader};
@@ -97,8 +98,8 @@ async fn forward(stream: impl AsyncRead + Unpin, key: String, lines: UnboundedSe
         let line = line.replace(&key, "<key>");
         // with all its logs on the program prints its internals, the account among them
         match line.contains(INTERNAL) {
-            true => log::trace!("soloist: {line}"),
-            false => log::debug!("soloist: {line}"),
+            true => trace!("soloist: {line}"),
+            false => debug!("soloist: {line}"),
         }
         if lines.send(line).is_err() {
             // keep reading, or the program would block on a full pipe

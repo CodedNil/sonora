@@ -2,9 +2,7 @@ use std::time::Duration;
 
 use opensubsonic::data::{AlbumId3, ArtistId3, Child, ItemGenre, RecordLabel};
 
-use crate::{
-    Album, ArtistRef, Playlist, ReleaseType, SavedArtist, Track, UserProfile, iso_8601_to_epoch,
-};
+use crate::{Album, ArtistRef, Playlist, ReleaseType, SavedArtist, Track, UserProfile};
 
 pub fn track(song: Child, cover: Option<String>) -> Track {
     let (artists, artist_refs) = artists_of(
@@ -22,17 +20,23 @@ pub fn track(song: Child, cover: Option<String>) -> Track {
         album: song.album.unwrap_or_default(),
         album_id: song.album_id.filter(|id| !id.is_empty()),
         cover,
-        duration: Duration::from_secs(song.duration.unwrap_or(0).max(0) as u64),
-        added_at: iso_8601_to_epoch(song.created.as_deref()),
-        added_by: None,
+        duration: song
+            .duration
+            .and_then(|value| u64::try_from(value).ok())
+            .map(Duration::from_secs),
+        added_at: song.created.as_deref().and_then(crate::parse_timestamp),
+        release_date: song.year.and_then(crate::ReleaseDate::from_year),
         playcount: song.play_count.map(|count| count as u64),
-        popularity: 0,
         explicit: song.explicit_status.as_deref() == Some("explicit"),
         track_number: song.track.unwrap_or(0).max(0) as u32,
         disc_number: song.disc_number.unwrap_or(1).max(1) as u32,
-        tags: genres(song.genres.as_deref(), song.genre),
-        languages: Vec::new(),
-        credits: Vec::new(),
+        genres: genres(song.genres.as_deref(), song.genre),
+        moods: song.moods.unwrap_or_default(),
+        bpm: song
+            .bpm
+            .and_then(|bpm| u16::try_from(bpm).ok())
+            .filter(|bpm| *bpm > 0),
+        ..Default::default()
     }
 }
 
@@ -64,7 +68,6 @@ pub fn album(source: AlbumId3, cover: Option<String>, cover_large: Option<String
         source.artists.as_ref(),
         source.display_artist,
     );
-    let year = source.year.unwrap_or(0);
     let label = labels(source.record_labels.as_deref());
     Album {
         id: source.id,
@@ -74,15 +77,13 @@ pub fn album(source: AlbumId3, cover: Option<String>, cover_large: Option<String
         cover,
         cover_large,
         release_type: release_type(source.release_types.as_deref(), source.is_compilation),
-        year,
-        track_count: source.song_count.unwrap_or(0).max(0) as u32,
-        release_date: match year {
-            0 => String::new(),
-            _ => year.to_string(),
-        },
+        track_count: source
+            .song_count
+            .and_then(|count| u32::try_from(count).ok()),
+        release_date: source.year.and_then(crate::ReleaseDate::from_year),
         label,
         copyrights: Vec::new(),
-        added_at: iso_8601_to_epoch(source.created.as_deref()),
+        added_at: source.created.as_deref().and_then(crate::parse_timestamp),
     }
 }
 
@@ -111,8 +112,8 @@ pub fn playlist(
     id: &str,
     name: &str,
     owner: Option<&str>,
-    public: bool,
-    track_count: u32,
+    public: Option<bool>,
+    track_count: Option<u32>,
     cover: Option<String>,
     username: &str,
 ) -> Playlist {
@@ -121,14 +122,13 @@ pub fn playlist(
         id: id.to_owned(),
         name: name.to_owned(),
         owner: owner.clone(),
-        owner_id: owner.clone(),
+        owner_id: (!owner.is_empty()).then(|| owner.clone()),
         owned: !owner.is_empty() && owner == username,
-        collaborative: false,
-        blend: false,
+        can_edit_tracks: !owner.is_empty() && owner == username,
         public,
         cover,
         track_count,
-        modified_at: None,
+        ..Default::default()
     }
 }
 
@@ -156,24 +156,11 @@ pub(crate) fn artists_of(
     display: Option<String>,
 ) -> (String, Vec<ArtistRef>) {
     if let Some(list) = many.filter(|list| !list.is_empty()) {
-        let refs = list
-            .iter()
-            .map(|item| ArtistRef {
-                name: item.name.clone(),
-                id: Some(item.id.clone()),
-            })
-            .collect();
-        return match display {
-            Some(name) => (name, refs),
-            None => {
-                let joined = list
-                    .iter()
-                    .map(|item| item.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                (joined, refs)
-            }
-        };
+        let (joined, refs) = ArtistRef::credits(list.iter().map(|item| ArtistRef {
+            name: item.name.clone(),
+            id: Some(item.id.clone()),
+        }));
+        return (display.unwrap_or(joined), refs);
     }
     let name = display.or(artist).unwrap_or_default();
     let id = artist_id.filter(|id| !id.is_empty());

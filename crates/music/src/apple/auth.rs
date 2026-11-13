@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::{debug, warn};
 
 use anyhow::{Context as _, Result, bail};
 use base64::Engine as _;
@@ -78,7 +79,7 @@ pub(crate) fn load() -> Option<String> {
     match serde_json::from_slice::<Credentials>(&body) {
         Ok(stored) => Some(stored.user_token),
         Err(error) => {
-            log::warn!("apple: cannot read the stored credentials: {error}");
+            warn!("apple: cannot read the stored credentials: {error}");
             None
         }
     }
@@ -142,14 +143,14 @@ pub async fn bearer(http: &reqwest::Client) -> Result<String> {
         return Ok(token);
     }
     if let Some(token) = kept() {
-        log::debug!("apple: using the bearer token the last launch kept");
+        debug!("apple: using the bearer token the last launch kept");
         *BEARER
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(token.clone());
         return Ok(token);
     }
     let token = read_bearer(http).await?;
-    log::debug!("apple: read a bearer token of {} characters", token.len());
+    debug!("apple: read a bearer token of {} characters", token.len());
     keep(&token);
     *BEARER
         .lock()
@@ -186,10 +187,10 @@ fn keep(token: &str) {
         token: token.to_owned(),
     }) {
         Ok(body) => body,
-        Err(error) => return log::warn!("apple: cannot encode the bearer token: {error}"),
+        Err(error) => return warn!("apple: cannot encode the bearer token: {error}"),
     };
     if let Err(error) = credentials::write(&credentials::dir("apple").join(KEPT), &body) {
-        log::warn!("apple: cannot keep the bearer token: {error:#}");
+        warn!("apple: cannot keep the bearer token: {error:#}");
     }
 }
 

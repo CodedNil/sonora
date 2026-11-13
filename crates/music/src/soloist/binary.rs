@@ -10,6 +10,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::{info, warn};
 
 use anyhow::{Context as _, Result, bail, ensure};
 
@@ -131,7 +132,7 @@ pub fn installed() -> Option<Build> {
         return None;
     }
     probe(&path)
-        .inspect_err(|error| log::warn!("soloist: the installed program is unusable: {error:#}"))
+        .inspect_err(|error| warn!("soloist: the installed program is unusable: {error:#}"))
         .ok()
 }
 
@@ -140,13 +141,13 @@ pub fn installed() -> Option<Build> {
 pub async fn fetch() -> Result<Build> {
     let name = archive().context("spotify builds no soloist for this computer")?;
     let url = format!("{CDN}/{name}");
-    log::info!("soloist: fetching {name} from spotify");
+    info!("soloist: fetching {name} from spotify");
     let removals = REMOVALS.load(Ordering::Relaxed);
     let bytes = download(&url).await?;
     let build = tokio::task::spawn_blocking(move || install(&bytes, name, removals))
         .await
         .context("the soloist install stopped")??;
-    log::info!("soloist: {} is installed", build.version);
+    info!("soloist: {} is installed", build.version);
     Ok(build)
 }
 

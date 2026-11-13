@@ -9,6 +9,7 @@
 //! and this only keeps track of where it stands.
 
 use std::time::Duration;
+use tracing::warn;
 
 use gpui::{App, Context, Entity, EventEmitter, Task};
 use music::soloist::{self, Build, Trouble};
@@ -230,8 +231,8 @@ impl Soloist {
                 this.task = None;
                 match switched {
                     Ok(Ok(())) => {}
-                    Ok(Err(error)) => log::warn!("soloist: cannot switch: {error:#}"),
-                    Err(error) => log::warn!("soloist: cannot switch: {error}"),
+                    Ok(Err(error)) => warn!("soloist: cannot switch: {error:#}"),
+                    Err(error) => warn!("soloist: cannot switch: {error}"),
                 }
                 this.settle(cx);
             })
@@ -287,7 +288,7 @@ impl Soloist {
                         }
                     }
                     Err(error) => {
-                        log::warn!("soloist: cannot download the program: {error}");
+                        warn!("soloist: cannot download the program: {error}");
                         if waiting {
                             this.problem = Some(SoloistProblem::Download(error));
                             this.state = SoloistState::Setup(SoloistStep::Consent);
@@ -348,7 +349,7 @@ impl Soloist {
                         Toasts::show(Outcome::Done, "toast-soloist-ready", cx);
                     }
                     Ok(Err(trouble)) => {
-                        log::warn!("soloist: pairing failed: {trouble:?}");
+                        warn!("soloist: pairing failed: {trouble:?}");
                         this.problem = Some(match trouble {
                             Trouble::Key => SoloistProblem::Key,
                             Trouble::Account(account) => SoloistProblem::Account(account),
@@ -402,7 +403,7 @@ impl Soloist {
                 Err(error) => Err(error.to_string()),
             };
             if let Err(error) = off {
-                log::warn!("soloist: cannot switch off before removing: {error}");
+                warn!("soloist: cannot switch off before removing: {error}");
                 this.update(cx, |this, cx| {
                     this.task = None;
                     Toasts::with_detail(
@@ -441,7 +442,7 @@ impl Soloist {
                 };
                 let error = removed.err();
                 if let Some(error) = error {
-                    log::warn!("soloist: cannot remove the setup: {error}");
+                    warn!("soloist: cannot remove the setup: {error}");
                     Toasts::with_detail(
                         Outcome::Failed,
                         "toast-soloist-remove-failed",
@@ -470,8 +471,8 @@ impl Soloist {
                         this.build = Some(build);
                         this.settle(cx);
                     }
-                    Ok(Err(error)) => log::warn!("soloist: cannot refresh the program: {error:#}"),
-                    Err(error) => log::warn!("soloist: cannot refresh the program: {error}"),
+                    Ok(Err(error)) => warn!("soloist: cannot refresh the program: {error:#}"),
+                    Err(error) => warn!("soloist: cannot refresh the program: {error}"),
                 }
             })
             .ok();

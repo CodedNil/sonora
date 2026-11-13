@@ -395,7 +395,13 @@ impl EqualizerView {
         div()
             .flex()
             .flex_col()
-            .child(heading("equalizer-filters", FILTERS_ICON, Some(add), cx))
+            .child(heading(
+                "equalizer-filters",
+                "tool-filters",
+                FILTERS_ICON,
+                Some(add),
+                cx,
+            ))
             .map(|group| match rows.is_empty() {
                 true => group.child(
                     vacant(empty.clone(), cx)
@@ -411,7 +417,7 @@ impl EqualizerView {
                     div()
                         .id("equalizer-filter-list")
                         .role(Role::List)
-                        .aria_label(t!("equalizer-filters"))
+                        .aria_label(t!("tool-filters"))
                         .flex()
                         .flex_col()
                         .when(!wide, |list| list.gap_1())

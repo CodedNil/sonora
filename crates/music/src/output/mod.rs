@@ -11,8 +11,8 @@
 //! A device the system no longer lists is gone, which is not a failure: the default plays in its
 //! place without trying it, and it is played on again once it is back.
 //!
-//! On Linux cpal plays through PulseAudio when a server answers, PipeWire's `pipewire-pulse`
-//! included, and ALSA otherwise. A sound server offers its own outputs, and a sound card's own
+//! On Linux cpal prefers native PipeWire, falling back to ALSA.
+//! A sound server offers its own outputs, and a sound card's own
 //! ALSA device can still be picked to play past it.
 //!
 //! On macOS every device is listed a second time under "Direct to hardware", where playing on it
@@ -33,10 +33,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
+use tracing::{debug, info, warn};
 
 use anyhow::{Context as _, Result, bail};
-use cpal::traits::{DeviceTrait as _, HostTrait as _};
-use rodio::{DeviceSinkBuilder, MixerDeviceSink, Source};
+use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
+use rodio::Source;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
@@ -193,7 +194,6 @@ pub struct Failure {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Server {
     PipeWire,
-    PulseAudio,
 }
 
 /// The device Sonora holds when a direct device is chosen, and why a hold or a rate went wrong. The
@@ -400,9 +400,9 @@ struct Device {
     /// What the sound server last said of the sink, which `info` hands out in place of its own.
     sink: Mutex<Option<Sink>>,
 
-    /// rodio's handle on the open cpal stream, and the mixer every engine's chain is added to.
+    /// The open cpal stream and the mixer every engine's chain is added to.
     /// Dropping it closes the stream, which happens when the last output lets go of this device.
-    stream: MixerDeviceSink,
+    stream: DeviceStream,
 
     /// Which outputs play on the stream, and whether it still runs for none of them.
     activity: Mutex<Activity>,
@@ -417,6 +417,29 @@ struct Activity {
     playing: usize,
     /// When the last output stopped, while the stream still runs to play its buffer out.
     resting: Option<Instant>,
+}
+
+/// The shared mixer and its device stream. CPAL keeps a newly opened stream paused.
+struct DeviceStream {
+    mixer: rodio::mixer::Mixer,
+    stream: cpal::Stream,
+    failed: Arc<AtomicBool>,
+}
+
+impl DeviceStream {
+    fn play(&self) {
+        if let Err(error) = self.stream.play() {
+            warn!("output: cannot start the audio stream: {error}");
+            self.failed.store(true, Ordering::Release);
+        }
+    }
+
+    fn pause(&self) {
+        if let Err(error) = self.stream.pause() {
+            warn!("output: cannot pause the audio stream: {error}");
+            self.failed.store(true, Ordering::Release);
+        }
+    }
 }
 
 impl Device {
@@ -522,7 +545,6 @@ impl Device {
         let (name, _) = cpal_describe(&device);
         let failed = Arc::new(AtomicBool::new(false));
         let (stream, buffer) = open_stream(device, &id, &config, frames, &failed)?;
-        stream.pause();
         let buffers = buffers(&config, buffer);
         let sink = read_sink(&id);
         Ok(Self {
@@ -654,7 +676,7 @@ impl Device {
 
     /// Puts one engine's chain into the mixer.
     fn add(&self, source: impl Source + Send + 'static) {
-        self.stream.mixer().add(source);
+        self.stream.mixer.add(source);
     }
 
     /// Which device it is and what its stream runs at, with what the sound server last said of
@@ -1084,7 +1106,7 @@ fn sync_hold() {
             }
             Ok(None) => {}
             Err(error) => {
-                log::warn!("output: cannot take {id} for direct output: {error:#}");
+                warn!("output: cannot take {id} for direct output: {error:#}");
                 taken = Some(format!("{error:#}"));
             }
         }
@@ -1195,14 +1217,14 @@ fn reopen_at_wanted() {
     if let Some(hog) = hold.hog.as_mut() {
         let failure = match wanted {
             Some(wanted) if hog.rate() != Some(wanted) && hog.rates().contains(&wanted) => {
-                log::info!("output: running {} at {wanted} Hz", hog.id());
+                info!("output: running {} at {wanted} Hz", hog.id());
                 hog.set_rate(wanted).err()
             }
             Some(_) => None,
             None => hog.restore().err(),
         }
         .map(|error| {
-            log::warn!("output: {error:#}");
+            warn!("output: {error:#}");
             format!("{error:#}")
         });
         let changed = failure != hold.rate;
@@ -1219,7 +1241,7 @@ fn reopen_at_wanted() {
         && rate != open.info.format.rate
         && open.info.rates.contains(&rate)
     {
-        log::info!("output: reopening {} at {rate} Hz", open.info.id);
+        info!("output: reopening {} at {rate} Hz", open.info.id);
         open.retire();
     }
 }
@@ -1238,7 +1260,7 @@ pub fn choose_buffer(frames: Option<u32>) {
         && frames != open.info.buffer
         && open.info.buffers.contains(&frames)
     {
-        log::info!("output: reopening {} with {frames} frames", open.info.id);
+        info!("output: reopening {} with {frames} frames", open.info.id);
         open.retire();
     }
 }
@@ -1388,15 +1410,22 @@ pub fn output_key(device: &str, port: Option<&Port>) -> String {
 }
 
 /// The key an output saved by an older Sonora goes by now, or `None` when `key` is current.
-/// Device rules once keyed a sound server's sink by its bare name, which cpal now puts behind its
-/// `pulseaudio` host.
+/// Device rules once used a bare sink name or a PulseAudio host prefix.
 #[cfg(target_os = "linux")]
 pub fn upgrade_output_key(key: &str) -> Option<String> {
-    let device = key.split_once('#').map_or(key, |(device, _)| device);
-    if device.parse::<cpal::DeviceId>().is_ok() {
-        return None;
-    }
-    Some(format!("{}:{key}", cpal::HostId::PulseAudio))
+    let (device, port) = key
+        .split_once('#')
+        .map_or((key, None), |(device, port)| (device, Some(port)));
+    let name = match device.strip_prefix("pulseaudio:") {
+        Some(name) => name,
+        None if device.parse::<cpal::DeviceId>().is_ok() || device.contains(':') => return None,
+        None => device,
+    };
+    let device = cpal::DeviceId::new(cpal::HostId::PipeWire, name).to_string();
+    Some(match port {
+        Some(port) => format!("{device}#{port}"),
+        None => device,
+    })
 }
 
 /// The key an output saved by an older Sonora goes by now. Every key is current here, since only
@@ -1460,7 +1489,9 @@ fn system_default(host: &cpal::Host) -> Option<String> {
 /// The device saved as `id`, looked up on `host`, or on Linux on the ALSA host for a sound card's
 /// own device. `None` when it is not connected or `id` names nothing here.
 fn find_device(host: &cpal::Host, id: &str) -> Option<cpal::Device> {
-    let id: cpal::DeviceId = plain(id).parse().ok()?;
+    let old = plain(id);
+    let upgraded = upgrade_output_key(old);
+    let id: cpal::DeviceId = upgraded.as_deref().unwrap_or(old).parse().ok()?;
     #[cfg(target_os = "linux")]
     if id.host() == cpal::HostId::Alsa {
         return output_alsa::device(host, id.id());
@@ -1539,13 +1570,13 @@ fn open_stream(
     config: &cpal::SupportedStreamConfig,
     frames: u32,
     failed: &Arc<AtomicBool>,
-) -> Result<(MixerDeviceSink, u32)> {
+) -> Result<(DeviceStream, u32)> {
     let frames = match buffer_range(config) {
         Some((min, max)) => frames.clamp(min, max),
         None => frames,
     };
     let latency = f64::from(frames) * 1_000. / f64::from(config.sample_rate().max(1));
-    log::info!(
+    info!(
         "output: using {} at {} Hz, {} channels, {}, {frames} frames ({latency:.1} ms)",
         id,
         config.sample_rate(),
@@ -1553,27 +1584,70 @@ fn open_stream(
         config.sample_format()
     );
 
-    let stream_failed = failed.clone();
-    let builder = DeviceSinkBuilder::default()
-        .with_device(device)
-        .with_config(&config.config())
-        .with_buffer_size(cpal::BufferSize::Fixed(frames))
-        .with_sample_format(config.sample_format())
-        .with_error_callback(move |error| match error.kind() {
-            cpal::ErrorKind::Xrun => log::debug!("output: buffer underrun"),
-            // the server moves a stream that follows the default on its own
-            cpal::ErrorKind::DeviceChanged => log::info!("output: the system default moved"),
-            cpal::ErrorKind::RealtimeDenied => log::debug!("output: {error}"),
-            _ => {
-                log::warn!("output: audio output failed: {error}");
-                stream_failed.store(true, Ordering::Release);
+    let channels = rodio::ChannelCount::new(config.channels()).context("no output channels")?;
+    let rate = rodio::SampleRate::new(config.sample_rate()).context("no output sample rate")?;
+    let (mixer, samples) = rodio::mixer::mixer(channels, rate);
+    let mut stream_config = config.config();
+    stream_config.buffer_size = cpal::BufferSize::Fixed(frames);
+    macro_rules! open {
+        ($sample:ty) => {
+            sample_stream::<$sample>(&device, stream_config, samples, failed.clone())
+        };
+    }
+    let stream = match config.sample_format() {
+        cpal::SampleFormat::F32 => open!(f32),
+        cpal::SampleFormat::F64 => open!(f64),
+        cpal::SampleFormat::I8 => open!(i8),
+        cpal::SampleFormat::I16 => open!(i16),
+        cpal::SampleFormat::I24 => open!(cpal::I24),
+        cpal::SampleFormat::I32 => open!(i32),
+        cpal::SampleFormat::I64 => open!(i64),
+        cpal::SampleFormat::U8 => open!(u8),
+        cpal::SampleFormat::U16 => open!(u16),
+        cpal::SampleFormat::U24 => open!(cpal::U24),
+        cpal::SampleFormat::U32 => open!(u32),
+        cpal::SampleFormat::U64 => open!(u64),
+        format => bail!("unsupported output sample format {format}"),
+    }
+    .context("cannot open the audio output")?;
+    Ok((
+        DeviceStream {
+            mixer,
+            stream,
+            failed: failed.clone(),
+        },
+        frames,
+    ))
+}
+
+/// Copies the mixer into the device's native sample format without allocating on the audio thread.
+fn sample_stream<T>(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    mut samples: rodio::mixer::MixerSource,
+    failed: Arc<AtomicBool>,
+) -> std::result::Result<cpal::Stream, cpal::Error>
+where
+    T: cpal::SizedSample + cpal::FromSample<f32>,
+{
+    device.build_output_stream(
+        config,
+        move |output: &mut [T], _| {
+            for sample in output {
+                *sample = samples.next().map(T::from_sample).unwrap_or(T::EQUILIBRIUM);
             }
-        });
-    let mut stream = builder
-        .open_stream()
-        .map_err(|error| anyhow::Error::new(error).context("cannot open the audio output"))?;
-    stream.log_on_drop(false);
-    Ok((stream, frames))
+        },
+        move |error| match error.kind() {
+            cpal::ErrorKind::Xrun => debug!("output: buffer underrun"),
+            cpal::ErrorKind::DeviceChanged => info!("output: the system default moved"),
+            cpal::ErrorKind::RealtimeDenied => debug!("output: {error}"),
+            _ => {
+                warn!("output: audio output failed: {error}");
+                failed.store(true, Ordering::Release);
+            }
+        },
+        None,
+    )
 }
 
 /// Looks at `device` every `DEVICE_POLL` for as long as it is open, playing or not, and retires
@@ -1590,7 +1664,7 @@ fn spawn_watcher(device: Weak<Device>) {
                     return;
                 };
                 if device.outdated() {
-                    log::info!("output: {} changed, reopening", device.info.id);
+                    info!("output: {} changed, reopening", device.info.id);
                     device.retire();
                     return;
                 }
@@ -1601,7 +1675,7 @@ fn spawn_watcher(device: Weak<Device>) {
             }
         });
     if let Err(error) = spawned {
-        log::warn!("output: cannot watch the output device: {error}");
+        warn!("output: cannot watch the output device: {error}");
     }
 }
 

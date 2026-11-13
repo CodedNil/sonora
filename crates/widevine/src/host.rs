@@ -7,6 +7,7 @@
 
 use std::io::{self, BufWriter, Read, Write};
 use std::path::Path;
+use tracing::info;
 
 use anyhow::{Context as _, Result, bail};
 
@@ -36,7 +37,7 @@ pub fn serve(module: &Path) -> Result<()> {
             return Err(error);
         }
     };
-    log::info!("widevine: host opened {}", module.display());
+    info!("widevine: host opened {}", module.display());
 
     let mut payload = Vec::new();
     let mut subs = Vec::new();

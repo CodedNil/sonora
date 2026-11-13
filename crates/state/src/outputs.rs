@@ -1,4 +1,5 @@
 use std::time::Duration;
+use tracing::{info, warn};
 
 use anyhow::Result;
 use gpui::{App, Context, Entity, Subscription, Task};
@@ -179,7 +180,7 @@ impl Outputs {
         let taken = output::hold_failure();
         if taken != self.hold_failure {
             if let Some(error) = taken.clone() {
-                log::warn!("playback: cannot play directly on the device: {error}");
+                warn!("playback: cannot play directly on the device: {error}");
                 Toasts::with_detail(
                     Outcome::Failed,
                     "toast-output-direct-failed",
@@ -193,7 +194,7 @@ impl Outputs {
         let rate = output::rate_failure();
         if rate != self.rate_failure {
             if let Some(error) = rate.clone() {
-                log::warn!("playback: cannot switch the sample rate: {error}");
+                warn!("playback: cannot switch the sample rate: {error}");
                 Toasts::with_detail(Outcome::Failed, "toast-output-rate-failed", None, error, cx);
             }
             self.rate_failure = rate;
@@ -340,7 +341,7 @@ impl Outputs {
         let opened = match opened {
             Ok(opened) => opened,
             Err(error) => {
-                log::warn!("playback: cannot select the output device: {error:#}");
+                warn!("playback: cannot select the output device: {error:#}");
                 self.toast_rejected(id.as_deref(), &error, cx);
                 cx.notify();
                 return;
@@ -369,7 +370,7 @@ impl Outputs {
         if self.settings.read(cx).output_device() != Some(failure.id.as_str()) {
             return;
         }
-        log::warn!(
+        warn!(
             "playback: forgetting the saved output device, which would not open: {}",
             failure.error
         );
@@ -429,7 +430,7 @@ impl Outputs {
                 this.listing = None;
                 this.listed = true;
                 if let Some(id) = retired.filter(|id| this.selected.as_ref() == Some(id)) {
-                    log::info!(
+                    info!(
                         "playback: the saved output device {id} is not offered here anymore, \
                          playing on the system default"
                     );

@@ -156,7 +156,7 @@ impl Sample {
             album: track.album.clone().into(),
             album_id: track.album_id.clone(),
             cover: track.cover.clone(),
-            duration: track.duration,
+            duration: track.duration.unwrap_or_default(),
         }
     }
 

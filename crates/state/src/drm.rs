@@ -12,6 +12,7 @@
 
 use gpui::{App, Context, Entity, Task};
 use music::drm::{self, Offer, Origin};
+use tracing::warn;
 
 use crate::{Io, Outcome, Session, SessionEvent, Toasts};
 
@@ -194,7 +195,7 @@ impl Drm {
                         this.offer = Some(offer);
                     }
                     Ok(Err(error)) => {
-                        log::warn!("drm: cannot download the widevine module: {error:#}");
+                        warn!("drm: cannot download the widevine module: {error:#}");
                         this.state = this.fall_back(CdmState::Missing);
                         failed("toast-widevine-download-failed", format!("{error:#}"), cx);
                     }
@@ -228,7 +229,7 @@ impl Drm {
                         CdmState::Ready(found.origin)
                     }
                     Ok(Err(error)) => {
-                        log::warn!("drm: cannot install the widevine module: {error:#}");
+                        warn!("drm: cannot install the widevine module: {error:#}");
                         failed("toast-widevine-install-failed", format!("{error:#}"), cx);
                         this.fall_back(CdmState::Missing)
                     }
@@ -264,7 +265,7 @@ impl Drm {
                     Ok(Ok(Some(found))) => CdmState::Ready(found.origin),
                     Ok(Ok(None)) => CdmState::Declined,
                     Ok(Err(error)) => {
-                        log::warn!("drm: cannot remove the widevine module: {error:#}");
+                        warn!("drm: cannot remove the widevine module: {error:#}");
                         failed("toast-widevine-remove-failed", format!("{error:#}"), cx);
                         match drm::find() {
                             Some(found) => CdmState::Ready(found.origin),
@@ -297,7 +298,7 @@ impl Drm {
             this.update(cx, |this, _| {
                 this.task = None;
                 if let Ok(Err(error)) = fetched {
-                    log::warn!("drm: cannot refresh the widevine module: {error:#}");
+                    warn!("drm: cannot refresh the widevine module: {error:#}");
                 }
             })
             .ok();

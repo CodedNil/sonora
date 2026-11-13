@@ -1,5 +1,6 @@
 use std::io::Read as _;
 use std::time::Duration;
+use tracing::warn;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -190,13 +191,13 @@ impl LyricsProvider for Kugou {
                     .candidates(&song)
                     .await
                     .inspect_err(|error| {
-                        log::warn!("lyrics: kugou did not list {}: {error:#}", song.hash)
+                        warn!("lyrics: kugou did not list {}: {error:#}", song.hash)
                     })
                     .ok()?;
                 let mut hits = Vec::new();
                 for candidate in worded_first(candidates) {
                     let Ok(krc) = kugou.krc(&candidate).await.inspect_err(|error| {
-                        log::warn!(
+                        warn!(
                             "lyrics: kugou did not hand over {}: {error:#}",
                             candidate.id
                         )

@@ -20,6 +20,7 @@ mod host {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, TryLockError, Weak};
     use std::time::{Duration, Instant};
+    use tracing::{info, warn};
 
     use anyhow::{Context as _, Result, anyhow, bail};
 
@@ -125,7 +126,7 @@ mod host {
                 slot = STARTED.wait(slot).unwrap_or_else(PoisonError::into_inner);
             }
             if let Some(stale) = slot.link.take() {
-                log::warn!(
+                warn!(
                     "widevine: cdm host {} is gone, starting a fresh one",
                     stale.pid
                 );
@@ -237,14 +238,14 @@ mod host {
         let Some(found) = crate::find() else {
             bail!("no widevine module was found, so there is no cdm to open");
         };
-        log::info!(
+        info!(
             "widevine: opening the {:?} cdm at {}",
             found.origin,
             found.path.display()
         );
         let link = Link::start(&found.path)
             .with_context(|| format!("cannot open the widevine cdm at {}", found.path.display()))?;
-        log::info!("widevine: cdm host {} is up", link.pid);
+        info!("widevine: cdm host {} is up", link.pid);
         Ok(link)
     }
 
@@ -368,7 +369,7 @@ mod host {
             }
             self.disarm();
             self.broken.store(true, Ordering::Release);
-            log::warn!(
+            warn!(
                 "widevine: cdm host {} did not answer within {}s, killing it",
                 self.pid,
                 PATIENCE.as_secs()
@@ -439,7 +440,7 @@ mod host {
         /// it, and says so in the log.
         fn retire(&self, error: io::Error) -> anyhow::Error {
             self.broken.store(true, Ordering::Release);
-            log::warn!(
+            warn!(
                 "widevine: cdm host {} stopped answering, the next track starts a fresh one: {error}",
                 self.pid
             );
@@ -464,7 +465,7 @@ mod host {
                 .name("widevine-reap".into())
                 .spawn(move || reap(child));
             if let Err(error) = reaper {
-                log::warn!("widevine: cannot reap the cdm host: {error}");
+                warn!("widevine: cannot reap the cdm host: {error}");
             }
         }
     }
@@ -531,7 +532,7 @@ mod host {
                 Ok(Some(_)) | Err(_) => return,
             }
         }
-        log::warn!("widevine: cdm host {} did not exit, killing it", child.id());
+        warn!("widevine: cdm host {} did not exit, killing it", child.id());
         child.kill().ok();
         child.wait().ok();
     }
@@ -568,7 +569,7 @@ mod host {
                 slot.link = None;
                 slot.idle = None;
                 drop(slot);
-                log::info!("widevine: closing idle cdm host {}", link.pid);
+                info!("widevine: closing idle cdm host {}", link.pid);
                 return;
             }
         }

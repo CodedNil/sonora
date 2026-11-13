@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::warn;
 
 use cli::commands::{
     self, Item, Kind, Level, PlaybackCommand, ProviderCommand, QueueCommand, Request, SearchQuery,
@@ -280,7 +281,7 @@ impl Control {
                         Reply::Failed(missed.failure)
                     }
                     Err(error) => {
-                        log::warn!("control: cannot queue: {error:#}");
+                        warn!("control: cannot queue: {error:#}");
                         Reply::Failed(Failure::Malformed)
                     }
                 };
@@ -343,7 +344,7 @@ impl Control {
                 let found = match fetched {
                     Ok(found) => this.hits(&query, found, client.as_ref(), cx),
                     Err(error) => {
-                        log::warn!("control: cannot search: {error:#}");
+                        warn!("control: cannot search: {error:#}");
                         Err(Failure::Unfetched(query.text.clone()))
                     }
                 };
@@ -365,7 +366,7 @@ impl Control {
         cx: &mut App,
     ) -> Result<Vec<wire::Hit>, Failure> {
         if let (Err(error), Err(_), Err(_), Err(_)) = (&tracks, &albums, &playlists, &artists) {
-            log::warn!("control: cannot search: {error:#}");
+            warn!("control: cannot search: {error:#}");
             noted(error, cx);
             return Err(Failure::Unfetched(query.text.clone()));
         }
@@ -617,7 +618,7 @@ fn wire_hit(hit: Hit, client: &dyn MusicApi) -> Option<wire::Hit> {
             track.id?,
             track.name,
             track.artists,
-            Some(track.duration.as_secs()),
+            track.duration.map(|duration| duration.as_secs()),
         ),
         Hit::Album(album) => (
             Kind::Album,
@@ -672,7 +673,8 @@ fn moment(playback: &Playback, time: Time, cx: &App) -> Duration {
             playback.live_position(),
             playback
                 .track()
-                .map_or(Duration::ZERO, |track| track.duration),
+                .and_then(|track| track.duration)
+                .unwrap_or_default(),
         ),
     };
     let target = match time {
@@ -759,7 +761,7 @@ fn wire_track(track: &Track) -> wire::Track {
         artists,
         album: track.album.clone(),
         cover: track.cover.clone(),
-        duration: track.duration.as_secs(),
+        duration: track.duration.map(|duration| duration.as_secs()),
     }
 }
 
@@ -844,7 +846,7 @@ async fn fetch(
         }
     };
     fetched.map_err(|error| {
-        log::warn!("control: cannot fetch {link}: {error:#}");
+        warn!("control: cannot fetch {link}: {error:#}");
         Missed {
             failure: Failure::Unfetched(link),
             error: Some(error),

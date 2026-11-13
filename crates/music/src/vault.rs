@@ -37,6 +37,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
+use tracing::{debug, info, warn};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use bytes::Bytes;
@@ -196,7 +197,7 @@ impl Vault {
             .and_then(|()| create_private(&root.join(FOREIGN)))
             .and_then(|()| create_private(&folder))
         {
-            log::warn!("vault: {player} keeps no files: {error:#}");
+            warn!("vault: {player} keeps no files: {error:#}");
             return None;
         }
         let limit = LIMIT.load(Ordering::Relaxed);
@@ -226,7 +227,7 @@ impl Vault {
     pub fn unlock(&self, master: &[u8]) {
         let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, VERSION).extract(master);
         if self.keys.set(prk).is_err() {
-            log::debug!("vault: already unlocked");
+            debug!("vault: already unlocked");
         }
         self.settled.send_replace(true);
     }
@@ -257,7 +258,7 @@ impl Vault {
             .await
             .is_err()
         {
-            log::warn!("vault: still locked after {UNLOCK_WAIT:?}, looking past it");
+            warn!("vault: still locked after {UNLOCK_WAIT:?}, looking past it");
         }
         self.keys.get()
     }
@@ -285,12 +286,12 @@ impl Vault {
             };
             if let Err(error) = removed {
                 failed = true;
-                log::warn!("vault: cannot forget the cached tracks: {error}");
+                warn!("vault: cannot forget the cached tracks: {error}");
             }
         }
         drop(players);
         if !failed {
-            log::info!("vault: forgot every cached track");
+            info!("vault: forgot every cached track");
         }
         *self.used.lock().unwrap_or_else(|held| held.into_inner()) = None;
     }
@@ -320,9 +321,9 @@ impl Vault {
     /// Removes every download.
     pub fn forget_downloads(&self) {
         match fs::remove_dir_all(&self.pinned) {
-            Ok(()) => log::info!("vault: removed every download"),
+            Ok(()) => info!("vault: removed every download"),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => log::warn!("vault: cannot remove the downloads: {error}"),
+            Err(error) => warn!("vault: cannot remove the downloads: {error}"),
         }
     }
 
@@ -424,7 +425,7 @@ impl Shelf {
         match promoted {
             Ok(kept) => Some(kept),
             Err(error) => {
-                log::warn!("vault: cannot move a cached track to the downloads: {error:#}");
+                warn!("vault: cannot move a cached track to the downloads: {error:#}");
                 self.find_in(prk, Place::Cache, id, variant)
             }
         }
@@ -454,7 +455,7 @@ impl Shelf {
         let pending = match self.begin(place, id, variant, Box::new(facts)) {
             Ok(pending) => pending,
             Err(error) => {
-                log::debug!("vault: not keeping a {} track: {error:#}", self.provider);
+                debug!("vault: not keeping a {} track: {error:#}", self.provider);
                 None
             }
         };
@@ -519,9 +520,9 @@ impl Shelf {
             return;
         };
         match fs::remove_file(path) {
-            Ok(()) => log::debug!("vault: removed a {} download", self.provider),
+            Ok(()) => debug!("vault: removed a {} download", self.provider),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => log::warn!("vault: cannot remove a {} download: {error}", self.provider),
+            Err(error) => warn!("vault: cannot remove a {} download: {error}", self.provider),
         }
     }
 
@@ -537,7 +538,7 @@ impl Shelf {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
             Err(error) => {
-                log::warn!("vault: cannot open a kept track: {error}");
+                warn!("vault: cannot open a kept track: {error}");
                 return None;
             }
         };
@@ -553,7 +554,7 @@ impl Shelf {
                 Some(kept)
             }
             Err(error) => {
-                log::warn!(
+                warn!(
                     "vault: dropping a damaged {} track: {error:#}",
                     self.provider
                 );
@@ -576,7 +577,7 @@ impl Shelf {
         }
         pending.commit()?;
         fs::remove_file(&kept.source.path).ok();
-        log::debug!(
+        debug!(
             "vault: moved a cached {} track to the downloads",
             self.provider
         );
@@ -741,7 +742,7 @@ impl Source for Sealed {
     async fn chunk(&mut self) -> Result<Option<Bytes>> {
         let chunk = self.open_next();
         if let Err(error) = &chunk {
-            log::warn!("vault: dropping a damaged track: {error:#}");
+            warn!("vault: dropping a damaged track: {error:#}");
             fs::remove_file(&self.path).ok();
         }
         chunk
@@ -884,7 +885,7 @@ impl<S: Source> Source for Recording<S> {
             };
             match written {
                 Ok(pending) => self.pending = pending,
-                Err(error) => log::warn!("vault: cannot keep the track: {error:#}"),
+                Err(error) => warn!("vault: cannot keep the track: {error:#}"),
             }
         }
         Ok(chunk)
@@ -960,7 +961,7 @@ impl Pending {
         self.file.flush()?;
         let size = self.file.metadata()?.len();
         fs::rename(&self.temporary, &self.path).context("cannot move the entry into place")?;
-        log::debug!(
+        debug!(
             "vault: kept a track, {:.1} MiB",
             size as f64 / (1024.0 * 1024.0)
         );

@@ -1,9 +1,10 @@
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{App, ClickEvent, ClipboardItem, Entity, Pixels, SharedString, Window, div, px};
 use i18n::t;
-use music::{Album, GenreItem, MediaKind, Playlist, SavedArtist, Track};
+use music::{Album, MediaKind, Playlist, SavedArtist, Track};
 use router::{Destination, navigate};
 use state::{
     Addition, Collection, Detail, History, Library, Origin, Outcome, Playback, Progress,
@@ -34,42 +35,21 @@ pub(crate) enum Item {
     Playlist(Playlist),
     Artist(SavedArtist),
     Track(Track),
+    Pin(Pin),
 }
 
 impl Item {
-    /// The item behind a shelf card; a genre has no menu.
-    pub(crate) fn of(item: &GenreItem) -> Option<Self> {
-        match item {
-            GenreItem::Album(album) => Some(Self::Album(album.clone())),
-            GenreItem::Playlist(playlist) => Some(Self::Playlist(playlist.clone())),
-            GenreItem::Artist(artist) => Some(Self::Artist(artist.clone())),
-            GenreItem::Track(track) => Some(Self::Track(track.clone())),
-            GenreItem::Genre(_) => None,
-        }
-    }
-
-    /// The item's menu. A track's carries the playlist and artist submenus, whose state
+    /// The item's menu. A track's carries the playlist and Go to submenus, whose state
     /// `menus` holds; the rest need only the playback.
-    pub(crate) fn menu(
-        &self,
-        menus: &ItemMenu,
-        playback: Entity<Playback>,
-        opened_here: bool,
-        cx: &App,
-    ) -> Menu {
+    pub(crate) fn menu(&self, menus: &ItemMenu, playback: Entity<Playback>, cx: &App) -> Menu {
         match self {
             Self::Album(album) => album_menu(album.clone(), playback, menus, cx),
             Self::Playlist(playlist) => playlist_menu(playlist.clone(), playback, cx),
-            Self::Artist(artist) => artist_menu(artist.clone(), playback, opened_here, cx),
+            Self::Artist(artist) => artist_menu(artist.clone(), playback, cx),
             Self::Track(track) => menus.for_track(track, cx),
+            Self::Pin(pin) => item_menu(pin, menus, playback, cx),
         }
     }
-}
-
-#[derive(Clone, Copy, Default)]
-pub(crate) struct TrackColumns {
-    pub album: bool,
-    pub artists: bool,
 }
 
 #[derive(Clone)]
@@ -101,73 +81,35 @@ impl ItemMenu {
     }
 
     pub fn for_track(&self, track: &Track, cx: &App) -> Menu {
-        self.build(
-            std::slice::from_ref(track),
-            None,
-            None,
-            None,
-            TrackColumns::default(),
-            cx,
-        )
+        self.build(std::slice::from_ref(track), None, None, cx)
     }
 
-    pub fn for_table_tracks(&self, tracks: &[Track], columns: TrackColumns, cx: &App) -> Menu {
-        self.build(tracks, None, None, None, columns, cx)
+    pub fn for_table_tracks(&self, tracks: &[Track], cx: &App) -> Menu {
+        self.build(tracks, None, None, cx)
     }
 
-    pub fn for_album_tracks(
-        &self,
-        tracks: &[Track],
-        album_id: &str,
-        columns: TrackColumns,
-        cx: &App,
-    ) -> Menu {
-        self.build(tracks, None, None, Some(album_id), columns, cx)
-    }
-
-    pub fn for_playlist_tracks(
-        &self,
-        tracks: &[Track],
-        detail: Entity<Detail>,
-        columns: TrackColumns,
-        cx: &App,
-    ) -> Menu {
+    pub fn for_playlist_tracks(&self, tracks: &[Track], detail: Entity<Detail>, cx: &App) -> Menu {
         let ids: Vec<String> = tracks.iter().filter_map(|track| track.id.clone()).collect();
         let count = tracks.len();
+        let remove = MenuItem::new(
+            "remove-from-playlist",
+            counted(
+                "menu-remove-from-playlist",
+                "menu-remove-tracks-from-playlist",
+                count,
+            ),
+        )
+        .icon("icons/x.svg");
         let remove = match ids.is_empty() {
-            true => MenuItem::new(
-                "remove-from-playlist",
-                counted(
-                    "menu-remove-from-playlist",
-                    "menu-remove-tracks-from-playlist",
-                    count,
-                ),
-            )
-            .icon("icons/x.svg")
-            .disabled(),
-            false => MenuItem::new(
-                "remove-from-playlist",
-                counted(
-                    "menu-remove-from-playlist",
-                    "menu-remove-tracks-from-playlist",
-                    count,
-                ),
-            )
-            .icon("icons/x.svg")
-            .on_click(move |_, _, cx| {
+            true => remove.disabled(),
+            false => remove.on_click(move |_, _, cx| {
                 Confirm::playlist_songs(ids.clone(), detail.clone(), count, cx)
             }),
         };
-        self.build(tracks, Some(remove), None, None, columns, cx)
+        self.build(tracks, Some(remove), None, cx)
     }
 
-    pub fn for_history_tracks(
-        &self,
-        tracks: &[Track],
-        history: Entity<History>,
-        columns: TrackColumns,
-        cx: &App,
-    ) -> Menu {
+    pub fn for_history_tracks(&self, tracks: &[Track], history: Entity<History>, cx: &App) -> Menu {
         let held = tracks.to_vec();
         let forget = MenuItem::new(
             "remove-from-history",
@@ -179,7 +121,7 @@ impl ItemMenu {
         )
         .icon("icons/trash-2.svg")
         .on_click(move |_, _, cx| Confirm::history_songs(held.clone(), history.clone(), cx));
-        self.build(tracks, None, Some(forget), None, columns, cx)
+        self.build(tracks, None, Some(forget), cx)
     }
 
     /// The Save to submenu for `addition`: the `lead` rows, New playlist, then the playlists on
@@ -200,7 +142,7 @@ impl ItemMenu {
             .state(shelf)
             .playlists()
             .iter()
-            .filter(|playlist| playlist.owned || playlist.collaborative)
+            .filter(|playlist| playlist.can_edit_tracks)
             .cloned()
             .collect();
         let ids = match &addition {
@@ -248,7 +190,7 @@ impl ItemMenu {
                 })
                 .when(unmatched, |menu| {
                     menu.item(
-                        MenuItem::new("no-matching-playlists", t!("search-no-matches")).disabled(),
+                        MenuItem::new("no-matching-playlists", t!("common-no-matches")).disabled(),
                     )
                 })
                 .items(found.into_iter().map(|playlist| {
@@ -317,10 +259,8 @@ impl ItemMenu {
     fn build(
         &self,
         tracks: &[Track],
-        library_action: Option<MenuItem>,
+        context_action: Option<MenuItem>,
         trailing: Option<MenuItem>,
-        current_album: Option<&str>,
-        columns: TrackColumns,
         cx: &App,
     ) -> Menu {
         let Some(track) = tracks.first() else {
@@ -337,6 +277,8 @@ impl ItemMenu {
                 .filter(|id| !music::is_local_id(id))
                 .collect(),
         };
+        let library = Sonora::global(cx).library.clone();
+        let barren = ids.is_empty();
         let shelf = match imported {
             true => Shelf::Local,
             false => Shelf::Streaming,
@@ -391,22 +333,34 @@ impl ItemMenu {
                     .disabled(),
             ),
         };
-        let album = match (many, columns.album, track.album_id.clone()) {
-            (true, _, _) | (false, true, _) => None,
-            (false, false, Some(id)) if Some(id.as_str()) == current_album => None,
-            (false, false, Some(id)) => Some(
-                MenuItem::new("go-to-album", t!("menu-go-to-album"))
-                    .icon("icons/disc-3.svg")
-                    .on_click(move |_, _, cx| navigate(Destination::Album(id.clone().into()), cx)),
-            ),
-            (false, false, None) => Some(
-                MenuItem::new("go-to-album", t!("menu-go-to-album"))
-                    .icon("icons/disc-3.svg")
-                    .disabled(),
-            ),
-        };
+        let toggle_library = library_toggle(tracks, &library, cx);
+        let editable = Sonora::global(cx)
+            .session
+            .read(cx)
+            .shape_of(shelf)
+            .editable();
+        let membership = (!barren && editable).then(|| library_membership(tracks, &library, cx));
+        let download = (!imported)
+            .then(|| download_item(tracks, &ids, cx))
+            .flatten();
 
-        let artists = track
+        let current = router::trail(cx).read(cx).current();
+        let album = (!many)
+            .then(|| {
+                navigation_item(
+                    "go-to-album",
+                    "menu-go-to-album",
+                    "icons/disc-3.svg",
+                    track
+                        .album_id
+                        .clone()
+                        .map(|id| Destination::Album(id.into())),
+                    &current,
+                )
+            })
+            .flatten();
+
+        let mut artists = track
             .artist_refs
             .iter()
             .filter_map(|artist| {
@@ -414,24 +368,26 @@ impl ItemMenu {
                 Some((artist.name.clone(), id))
             })
             .collect::<Vec<_>>();
-        let artist = match (many, columns.artists, artists.len()) {
-            (true, _, _) | (false, true, _) => None,
-            (false, false, 0) => Some(
+        let known_artists = !artists.is_empty();
+        let mut seen = HashSet::new();
+        artists.retain(|(_, id)| {
+            seen.insert(id.clone()) && current != Destination::Artist(id.clone().into())
+        });
+        let artist = match (many || (known_artists && artists.is_empty()), artists.len()) {
+            (true, _) => None,
+            (false, 0) => Some(
                 MenuItem::new("go-to-artist", t!("menu-go-to-artist"))
                     .icon("icons/user.svg")
                     .disabled(),
             ),
-            (false, false, 1) => {
-                let id = artists[0].1.clone();
-                Some(
-                    MenuItem::new("go-to-artist", t!("menu-go-to-artist"))
-                        .icon("icons/user.svg")
-                        .on_click(move |_, _, cx| {
-                            navigate(Destination::Artist(id.clone().into()), cx)
-                        }),
-                )
-            }
-            (false, false, _) => {
+            (false, 1) => navigation_item(
+                "go-to-artist",
+                "menu-go-to-artist",
+                "icons/user.svg",
+                Some(Destination::Artist(artists[0].1.clone().into())),
+                &current,
+            ),
+            (false, _) => {
                 let artist_menu = Menu::new("artist-submenu")
                     .w(gpui::px(220.))
                     .max_h(gpui::px(360.))
@@ -448,19 +404,17 @@ impl ItemMenu {
             }
         };
 
-        let details = match (many, track.id.clone()) {
-            (true, _) => None,
-            (false, Some(id)) => Some(
-                MenuItem::new("view-details", t!("menu-view-details"))
-                    .icon("icons/info.svg")
-                    .on_click(move |_, _, cx| navigate(Destination::Song(id.clone().into()), cx)),
-            ),
-            (false, None) => Some(
-                MenuItem::new("view-details", t!("menu-view-details"))
-                    .icon("icons/info.svg")
-                    .disabled(),
-            ),
-        };
+        let details = (!many)
+            .then(|| {
+                navigation_item(
+                    "view-details",
+                    "menu-view-details",
+                    "icons/info.svg",
+                    track.id.clone().map(|id| Destination::Song(id.into())),
+                    &current,
+                )
+            })
+            .flatten();
 
         let pinnable = (!many).then(|| track.pin()).flatten();
         let edit = (!many && imported).then(|| {
@@ -501,7 +455,13 @@ impl ItemMenu {
                 .relative()
                 .when(many, |menu| menu.min_w(SELECTION_MENU_WIDTH)),
             vec![
-                add_to_playlist.into_iter().chain(library_action).collect(),
+                add_to_playlist
+                    .into_iter()
+                    .chain([toggle_library])
+                    .chain(context_action)
+                    .chain(membership)
+                    .chain(download)
+                    .collect(),
                 vec![next, queue, last],
                 album.into_iter().chain(artist).chain(radio).collect(),
                 details
@@ -514,6 +474,24 @@ impl ItemMenu {
             ],
         )
     }
+}
+
+/// Omits navigation to the page already open, using the same rule on cards, tables and players.
+fn navigation_item(
+    id: &'static str,
+    label: &'static str,
+    icon: &'static str,
+    destination: Option<Destination>,
+    current: &Destination,
+) -> Option<MenuItem> {
+    if destination.as_ref() == Some(current) {
+        return None;
+    }
+    let item = MenuItem::new(id, i18n::lookup(label, None)).icon(icon);
+    Some(match destination {
+        Some(destination) => item.on_click(move |_, _, cx| navigate(destination.clone(), cx)),
+        None => item.disabled(),
+    })
 }
 
 /// A queue item for the playable tracks of a selection. It is disabled when there are none, and
@@ -576,15 +554,15 @@ fn item_shell(id: &'static str, tiles: Vec<Tile>) -> Menu {
 /// Fluent `key`. It is left out while that page is the one on screen, as an artist's menu
 /// leaves out its own.
 fn open_item(destination: Destination, key: &'static str, cx: &App) -> Vec<MenuItem> {
-    if router::trail(cx).read(cx).current() == destination {
-        return Vec::new();
-    }
-
-    vec![
-        MenuItem::new("open-page", i18n::lookup(key, None))
-            .icon("icons/info.svg")
-            .on_click(move |_, _, cx| navigate(destination.clone(), cx)),
-    ]
+    navigation_item(
+        "open-page",
+        key,
+        "icons/info.svg",
+        Some(destination),
+        &router::trail(cx).read(cx).current(),
+    )
+    .into_iter()
+    .collect()
 }
 
 /// One toggle of the tile row on top of an item menu. A tile with no click is drawn disabled.
@@ -841,6 +819,154 @@ fn track_tiles(
         .collect()
 }
 
+/// Adds or removes favorites for every actionable track in the selection.
+fn library_toggle(tracks: &[Track], library: &Entity<Library>, cx: &App) -> MenuItem {
+    let count = tracks.len();
+    let actionable: Vec<Track> = tracks
+        .iter()
+        .filter(|track| {
+            track
+                .id
+                .as_deref()
+                .is_some_and(|id| !library.read(cx).pending(id))
+        })
+        .cloned()
+        .collect();
+    let saved = !actionable.is_empty()
+        && actionable.iter().all(|track| {
+            track
+                .id
+                .as_deref()
+                .is_some_and(|id| library.read(cx).saved(id))
+        });
+    let item = MenuItem::new(
+        "toggle-library",
+        match saved {
+            true => counted(
+                "menu-remove-from-library",
+                "menu-remove-tracks-from-library",
+                count,
+            ),
+            false => counted("menu-add-to-library", "menu-add-tracks-to-library", count),
+        },
+    )
+    .icon(match saved {
+        true => "icons/heart-off.svg",
+        false => "icons/heart.svg",
+    });
+
+    match actionable.is_empty() {
+        true => item.disabled(),
+        false => {
+            let library = library.clone();
+            item.on_click(move |_, _, cx| {
+                if saved {
+                    Confirm::library_songs(actionable.clone(), cx);
+                    return;
+                }
+                library.update(cx, |library, cx| {
+                    let tracks = actionable
+                        .iter()
+                        .filter(|track| !track.id.as_deref().is_some_and(|id| library.saved(id)))
+                        .cloned()
+                        .collect();
+                    library.save_tracks(tracks, true, cx);
+                });
+            })
+        }
+    }
+}
+
+/// Adds tracks to or removes them from a provider's separate library.
+fn library_membership(tracks: &[Track], library: &Entity<Library>, cx: &App) -> MenuItem {
+    let count = tracks.len();
+    let actionable: Vec<Track> = tracks
+        .iter()
+        .filter(|track| {
+            track
+                .id
+                .as_deref()
+                .is_some_and(|id| !library.read(cx).pending_library(id))
+        })
+        .cloned()
+        .collect();
+    let present = !actionable.is_empty()
+        && actionable.iter().all(|track| {
+            track
+                .id
+                .as_deref()
+                .is_some_and(|id| library.read(cx).in_library(id))
+        });
+    let item = MenuItem::new(
+        "toggle-library-membership",
+        match present {
+            true => counted("menu-library-remove", "menu-library-remove-tracks", count),
+            false => counted("menu-library-add", "menu-library-add-tracks", count),
+        },
+    )
+    .icon(match present {
+        true => "icons/library-big-off.svg",
+        false => "icons/library-big.svg",
+    });
+
+    match actionable.is_empty() {
+        true => item.disabled(),
+        false => {
+            let library = library.clone();
+            item.on_click(move |_, _, cx| {
+                library.update(cx, |library, cx| {
+                    for track in actionable.clone() {
+                        let there = track.id.as_deref().is_some_and(|id| library.in_library(id));
+                        if there == present {
+                            library.set_track_in_library(track, !present, cx);
+                        }
+                    }
+                });
+            })
+        }
+    }
+}
+
+/// Downloads the streaming tracks of a selection, or removes their downloads once all are in.
+fn download_item(tracks: &[Track], ids: &[String], cx: &App) -> Option<MenuItem> {
+    if ids.is_empty() {
+        return None;
+    }
+    let sonora = Sonora::global(cx);
+    let downloads = sonora.downloads.clone();
+    let all = ids.iter().all(|id| downloads.read(cx).has(id));
+    if !all && !sonora.session.read(cx).capabilities().downloads {
+        return None;
+    }
+    let count = ids.len();
+    Some(match all {
+        true => {
+            let ids = ids.to_vec();
+            MenuItem::new(
+                "remove-download",
+                counted("menu-remove-download", "menu-remove-downloads", count),
+            )
+            .icon("icons/trash-2.svg")
+            .on_click(move |_, _, cx| {
+                downloads.update(cx, |downloads, cx| downloads.remove_tracks(&ids, cx))
+            })
+        }
+        false => {
+            let tracks = tracks.to_vec();
+            MenuItem::new(
+                "download",
+                counted("menu-download", "menu-download-tracks", count),
+            )
+            .icon("icons/download.svg")
+            .on_click(move |_, _, cx| {
+                downloads.update(cx, |downloads, cx| {
+                    downloads.download_tracks(tracks.clone(), cx)
+                })
+            })
+        }
+    })
+}
+
 /// The download tile, drawn the way a detail page's download button is. It shows the plain
 /// arrow until the download is asked for, then a ring that fills as it arrives, and a red ring
 /// once it failed. Picking it starts the download, or retries a failed one, and once the
@@ -1077,28 +1203,22 @@ fn artist_tiles(artist: &SavedArtist, cx: &App) -> Vec<Tile> {
         .collect()
 }
 
-/// An artist's menu: the tiles on top, then the artist page unless it is open already, playing
-/// and queueing the artist, and the link.
-pub(crate) fn artist_menu(
-    artist: SavedArtist,
-    playback: Entity<Playback>,
-    opened_here: bool,
-    cx: &App,
-) -> Menu {
+pub(crate) fn artist_menu(artist: SavedArtist, playback: Entity<Playback>, cx: &App) -> Menu {
     let artist_id = artist.id.clone();
     let opened = artist_id.clone();
     let played = Origin::artist(artist_id.clone()).named(artist.name.clone());
     let queued_from = played.clone();
     let playing = playback.clone();
 
-    let open = match opened_here {
-        true => Vec::new(),
-        false => vec![
-            MenuItem::new("open-artist", t!("menu-go-to-artist"))
-                .icon("icons/info.svg")
-                .on_click(move |_, _, cx| navigate(Destination::Artist(opened.clone().into()), cx)),
-        ],
-    };
+    let open = navigation_item(
+        "open-artist",
+        "menu-go-to-artist",
+        "icons/user.svg",
+        Some(Destination::Artist(opened.into())),
+        &router::trail(cx).read(cx).current(),
+    )
+    .into_iter()
+    .collect();
 
     sections(
         item_shell("artist-context-menu", artist_tiles(&artist, cx)),
@@ -1169,28 +1289,34 @@ pub(crate) fn playlist_menu(playlist: Playlist, playback: Entity<Playback>, cx: 
     let from = Origin::playlist(playlist.id.clone()).named(playlist.name.clone());
     let copied = playlist.id.clone();
     let id = playlist.id.clone();
-    let public = playlist.public;
     let imported = music::is_local_id(&playlist.id);
     let tiles = playlist_tiles(&playlist, cx);
-    let visibility = (!imported).then(|| {
-        MenuItem::new(
-            "playlist-visibility",
-            match public {
-                true => t!("menu-make-playlist-private"),
-                false => t!("menu-make-playlist-public"),
-            },
-        )
-        .icon("icons/user.svg")
-        .on_click({
-            let id = id.clone();
-            move |_, _, cx| {
-                let library = Sonora::global(cx).library.clone();
-                library.update(cx, |library, cx| {
-                    library.set_playlist_public(id.clone(), !public, cx)
-                });
-            }
-        })
-    });
+    let current = playlist.public;
+    let visibility = [true, false]
+        .into_iter()
+        .filter(move |target| !imported && current != Some(*target))
+        .map(|public| {
+            MenuItem::new(
+                match public {
+                    true => "playlist-make-public",
+                    false => "playlist-make-private",
+                },
+                match public {
+                    true => t!("menu-make-playlist-public"),
+                    false => t!("menu-make-playlist-private"),
+                },
+            )
+            .icon("icons/user.svg")
+            .on_click({
+                let id = id.clone();
+                move |_, _, cx| {
+                    let library = Sonora::global(cx).library.clone();
+                    library.update(cx, |library, cx| {
+                        library.set_playlist_public(id.clone(), public, cx)
+                    });
+                }
+            })
+        });
     let actions = match playlist.owned {
         true => visibility
             .into_iter()
@@ -1265,7 +1391,6 @@ pub(crate) fn item_menu(
                 .cloned()
                 .unwrap_or_else(|| pinned_artist(pin)),
             playback.clone(),
-            false,
             cx,
         )),
         PinKind::Song => saved_track(&pin.id, cx).map(|track| tracks.for_track(&track, cx)),
@@ -1287,14 +1412,18 @@ fn sparse_menu(pin: &Pin, playback: Entity<Playback>, cx: &App) -> Menu {
     let destination = Destination::from(pin);
     let copied = pin.id.clone();
     let kind = media_kind(pin.kind);
-    let open = MenuItem::new("open-pin", i18n::lookup(open_key(pin.kind), None))
-        .icon("icons/info.svg")
-        .on_click(move |_, _, cx| navigate(destination.clone(), cx));
+    let open = navigation_item(
+        "open-pin",
+        open_key(pin.kind),
+        "icons/info.svg",
+        Some(destination),
+        &router::trail(cx).read(cx).current(),
+    );
 
     sections(
         Menu::new("pin-context-menu").min_w(ITEM_MENU_WIDTH),
         vec![
-            vec![open],
+            open.into_iter().collect(),
             transport_items(pin, playback),
             vec![copy_link_item("copy-pin-link", kind, Some(&copied), cx)],
             vec![pin_action(pin, cx)],

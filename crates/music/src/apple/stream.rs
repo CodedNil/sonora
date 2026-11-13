@@ -5,6 +5,7 @@
 //! clear MP4, and the engine is what turns that into sound.
 
 use std::time::Duration;
+use tracing::{debug, info, warn};
 
 use anyhow::{Context as _, Result, bail};
 use base64::Engine as _;
@@ -108,7 +109,7 @@ pub async fn prepare(
     let (mut media, resolved) = match recalled {
         Some(recalled) => recalled,
         None => {
-            log::info!("apple: resolving track {adam_id}");
+            info!("apple: resolving track {adam_id}");
             let resolved = resolve(http, adam_id, &bearer, user_token, quality).await?;
             let response = open_asset(http, &resolved.asset, user_token).await?;
             let total = response.content_length();
@@ -131,7 +132,7 @@ pub async fn prepare(
         }
     };
 
-    log::info!("apple: opening widevine");
+    info!("apple: opening widevine");
     let init = widevine::pssh(&resolved.key_id);
     // One exchange at a time, held until the license is in. Preloading the next track while
     // this one licenses is the ordinary case, and the CDM cannot have two challenges open.
@@ -146,7 +147,7 @@ pub async fn prepare(
     .await
     .context("the widevine challenge task failed")??;
 
-    log::info!("apple: requesting license");
+    info!("apple: requesting license");
     let license = license(http, &challenge, &resolved, adam_id, &bearer, user_token).await?;
     let cdm = tokio::task::spawn_blocking(move || -> Result<Cdm> {
         cdm.accept(&license)?;
@@ -155,7 +156,7 @@ pub async fn prepare(
     .await
     .context("the widevine license task failed")??;
     drop(licensing);
-    log::info!("apple: license accepted");
+    info!("apple: license accepted");
 
     media.license(cdm, resolved.key_id.clone())?;
     media.release_when_downloaded();
@@ -171,9 +172,9 @@ pub async fn prepare(
 async fn recall(shelf: &Shelf, adam_id: &str, variant: &str) -> Option<(Media, Resolved)> {
     let kept = shelf.find(adam_id, variant).await?;
     let facts = serde_json::from_slice::<Facts>(&kept.facts)
-        .inspect_err(|error| log::warn!("apple: the kept facts of {adam_id} do not read: {error}"))
+        .inspect_err(|error| warn!("apple: the kept facts of {adam_id} do not read: {error}"))
         .ok()?;
-    log::info!("apple: {adam_id} comes from the vault and is licensed again");
+    info!("apple: {adam_id} comes from the vault and is licensed again");
     let resolved = Resolved {
         asset: String::new(),
         key_uri: facts.key_uri,
@@ -226,7 +227,7 @@ pub async fn resolve(
         .and_then(|songs| songs.first())
         .context("apple web playback listed no song")?;
     let (flavor, asset) = select(song, quality)?;
-    log::info!("apple: selected {flavor}");
+    info!("apple: selected {flavor}");
 
     let playlist = read_playlist(http, &asset).await?;
     let (file, key_uri) =
@@ -239,7 +240,7 @@ pub async fn resolve(
         .decode(encoded)
         .context("the widevine key id is not base64")?;
     if key_id.len() != 16 {
-        log::warn!("apple: the key id is {} bytes rather than 16", key_id.len());
+        warn!("apple: the key id is {} bytes rather than 16", key_id.len());
     }
 
     Ok(Resolved {
@@ -266,7 +267,7 @@ fn select(song: &serde_json::Value, quality: Quality) -> Result<(&'static str, S
         .and_then(serde_json::Value::as_array)
         .context("the song carries no assets")?;
     for asset in assets {
-        log::debug!(
+        debug!(
             "apple: asset flavor {}",
             asset
                 .get("flavor")
@@ -349,7 +350,7 @@ fn parse_playlist(playlist: &str, base: &str) -> Option<(String, String)> {
         if let Some(rest) = line.strip_prefix("#EXT-X-KEY:") {
             // The key lines name a key id and a key system, never a credential, and which ones
             // an asset carries is the first thing to look at when a track will not open.
-            log::debug!("apple: playlist key {rest}");
+            debug!("apple: playlist key {rest}");
             let attributes = attributes(rest);
             let value = |wanted: &str| {
                 attributes

@@ -262,12 +262,14 @@ mod tests {
     }
 
     /// Opens the actual playback decoder while the sequential download remains gated.
-    async fn decoder(stream: Stream, prepared: Prepared, at: Duration) -> rodio::Decoder<Input> {
+    async fn decoder(
+        stream: Stream,
+        prepared: Prepared,
+        at: Duration,
+    ) -> crate::decode::Decoder<Input> {
         let task = tokio::task::spawn_blocking(move || {
             let total = stream.total();
-            let mut builder = rodio::Decoder::builder()
-                .with_symphonia_decoder::<crate::aac::Aac>()
-                .with_data(prepared.reader(&stream));
+            let mut builder = crate::decode::Decoder::builder().with_data(prepared.reader(&stream));
             if let Some(total) = total {
                 builder = builder.with_byte_len(total);
             }

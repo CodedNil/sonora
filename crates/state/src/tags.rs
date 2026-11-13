@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use tracing::warn;
 
 use gpui::{Context, Entity, SharedString, Task};
 use music::{MusicApi, Track, TrackTags};
@@ -84,7 +85,7 @@ impl Tags {
                 this.state = match read {
                     Ok(tags) => TagState::Ready(Box::new(tags)),
                     Err(error) => {
-                        log::warn!("tags: cannot read the tags: {error:#}");
+                        warn!("tags: cannot read the tags: {error:#}");
                         TagState::Failed(format!("{error:#}"))
                     }
                 };
@@ -128,7 +129,7 @@ impl Tags {
                         Toasts::linked(Outcome::Done, "toast-tags-saved", name, target, cx);
                     }
                     Err(error) => {
-                        log::warn!("tags: cannot save the tags: {error:#}");
+                        warn!("tags: cannot save the tags: {error:#}");
                         Toasts::show(Outcome::Failed, "toast-tags-failed", cx);
                     }
                 }

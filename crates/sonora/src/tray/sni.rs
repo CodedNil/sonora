@@ -3,6 +3,7 @@ use ksni::blocking::{Handle, TrayMethods as _};
 use ksni::menu::{CheckmarkItem, MenuItem, StandardItem};
 use ksni::{Category, ToolTip};
 use tokio::sync::mpsc::UnboundedSender;
+use tracing::warn;
 
 use super::{Art, Event, Shown};
 
@@ -39,7 +40,7 @@ impl Icon {
                     })
                 }
                 Err(error) => {
-                    log::warn!("tray: cannot decode the tray icon: {error:#}");
+                    warn!("tray: cannot decode the tray icon: {error:#}");
                     None
                 }
             })
@@ -59,7 +60,7 @@ impl Icon {
         match watched() {
             Ok(hosted) => hosted,
             Err(error) => {
-                log::warn!("tray: cannot ask the session bus for a tray: {error:#}");
+                warn!("tray: cannot ask the session bus for a tray: {error:#}");
                 false
             }
         }
@@ -244,7 +245,7 @@ fn cover(art: Option<&Art>) -> Option<Vec<u8>> {
     match written {
         Ok(()) => Some(png),
         Err(error) => {
-            log::warn!("tray: cannot encode the cover: {error:#}");
+            warn!("tray: cannot encode the cover: {error:#}");
             None
         }
     }

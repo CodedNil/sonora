@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use tracing::warn;
 
 use gpui::{App, Context, Entity, Task};
 use music::{
@@ -31,11 +32,11 @@ pub struct Header {
     pub artist: Option<String>,
     pub artist_refs: Vec<ArtistRef>,
     pub owner: Option<Contributor>,
-    pub release_date: Option<String>,
+    pub release_date: Option<music::ReleaseDate>,
     /// The owner's name when the provider gives no id to link it to.
     pub owner_name: Option<String>,
-    /// Zero when the provider does not report a count.
-    pub track_count: u32,
+    /// Total number of tracks, absent when the provider does not report it.
+    pub track_count: Option<u32>,
     pub cover: Option<String>,
 }
 
@@ -278,14 +279,17 @@ impl Detail {
                         ));
                         this.continuation = continuation;
                         if let Some(playlist) = this.playlist.as_mut()
-                            && playlist.track_count < this.tracks.len() as u32
+                            && (this.continuation.is_none()
+                                || playlist
+                                    .track_count
+                                    .is_some_and(|count| count < this.tracks.len() as u32))
                         {
-                            playlist.track_count = this.tracks.len() as u32;
+                            playlist.track_count = Some(this.tracks.len() as u32);
                             this.header = Some(playlist_header(playlist));
                         }
                         this.load_more(cx);
                     }
-                    Err(error) => log::warn!("detail: cannot load more playlist tracks: {error:#}"),
+                    Err(error) => warn!("detail: cannot load more playlist tracks: {error:#}"),
                 }
                 cx.notify();
             })
@@ -301,7 +305,7 @@ impl Detail {
     /// told about each row the page shows of them, so its count and Undo cover every copy.
     pub fn remove_tracks_from_playlist(&mut self, track_ids: Vec<String>, cx: &mut Context<Self>) {
         let Some(playlist_id) = self.id.clone() else {
-            log::warn!("detail: cannot remove a track without a playlist");
+            warn!("detail: cannot remove a track without a playlist");
             return;
         };
         let named: HashSet<&str> = track_ids.iter().map(String::as_str).collect();
@@ -480,7 +484,7 @@ impl Detail {
             .read(cx)
             .playlist(&playlist.id)
             .and_then(|known| known.cover.clone())
-            .or_else(|| mosaic::cached(&playlist.id, playlist.track_count))
+            .or_else(|| mosaic::cached(&playlist.id, playlist.track_count.unwrap_or(0)))
     }
 
     fn paint_mosaic(&mut self, playlist: &Playlist, tracks: &[Track], cx: &mut Context<Self>) {
@@ -490,7 +494,7 @@ impl Detail {
         }
 
         let id = playlist.id.clone();
-        let stamp = playlist.track_count;
+        let stamp = playlist.track_count.unwrap_or(0);
         let io = self.io.clone();
         let http = cx.http_client();
         self.mosaic = Some(cx.spawn(async move |this, cx| {
@@ -507,7 +511,7 @@ impl Detail {
                     }
                     cx.notify();
                 }
-                Err(error) => log::warn!("detail: cannot build a mosaic: {error:#}"),
+                Err(error) => warn!("detail: cannot build a mosaic: {error:#}"),
             })
             .ok();
         }));
@@ -521,8 +525,10 @@ impl Detail {
     fn adopt(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
         match loaded {
             Loaded::Album(detail) => {
-                self.header = Some(album_header(&detail.album));
-                self.album = Some(detail.album.clone());
+                let mut album = detail.album.clone();
+                album.track_count.get_or_insert(detail.tracks.len() as u32);
+                self.header = Some(album_header(&album));
+                self.album = Some(album);
                 self.tracks = detail
                     .tracks
                     .iter()
@@ -539,6 +545,9 @@ impl Detail {
             }
             Loaded::Playlist(detail) => {
                 let mut playlist = detail.playlist.clone();
+                if playlist.track_count.is_none() && detail.continuation.is_none() {
+                    playlist.track_count = Some(detail.tracks.len() as u32);
+                }
                 if playlist.cover.is_none() {
                     playlist.cover = self.known_mosaic(&playlist, cx);
                 }
@@ -621,7 +630,7 @@ impl Detail {
                 this.filling_request = None;
                 match filled {
                     Ok(catalogue) => this.absorb(&catalogue),
-                    Err(error) => log::warn!("detail: cannot fill the page: {error:#}"),
+                    Err(error) => warn!("detail: cannot fill the page: {error:#}"),
                 }
                 cx.notify();
             })
@@ -652,10 +661,7 @@ fn album_header(album: &Album) -> Header {
         artist: Some(album.artists.clone()),
         artist_refs: album.artist_refs.clone(),
         owner: None,
-        release_date: match album.release_date.is_empty() {
-            true => (album.year > 0).then(|| album.year.to_string()),
-            false => Some(album.release_date.clone()),
-        },
+        release_date: album.release_date,
         owner_name: None,
         track_count: album.track_count,
         cover: album.cover_large.clone(),
@@ -663,18 +669,15 @@ fn album_header(album: &Album) -> Header {
 }
 
 fn playlist_header(playlist: &Playlist) -> Header {
-    let owner = match playlist.owner_id.is_empty() {
-        true => None,
-        false => Some(Contributor {
-            id: playlist.owner_id.clone(),
-            name: playlist.owner.clone(),
-            avatar: None,
-        }),
-    };
-    let owner_name = match owner.is_some() {
-        true => None,
-        false => Some(playlist.owner.clone()),
-    };
+    let owner = playlist.owner_id.as_ref().map(|id| Contributor {
+        id: id.clone(),
+        name: playlist.owner.clone(),
+        avatar: None,
+    });
+    let owner_name = owner
+        .is_none()
+        .then(|| playlist.owner.clone())
+        .filter(|name| !name.is_empty());
 
     Header {
         kind: Collection::Playlist,

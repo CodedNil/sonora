@@ -12,12 +12,12 @@
 //! queue advance costs nothing.
 
 use std::time::{Duration, Instant};
+use tracing::{info, warn};
 
 use anyhow::Result;
 use async_trait::async_trait;
 use rodio::Source as _;
 
-use crate::aac::Aac;
 use crate::apple::client::AppleClient;
 use crate::apple::progressive::{Cenc, Media};
 use crate::apple::stream;
@@ -85,7 +85,7 @@ struct Apple {
 #[async_trait]
 impl Fetch for Apple {
     type Loaded = Loaded;
-    type Source = Trimmed<rodio::Decoder<Reader<Cenc>>>;
+    type Source = Trimmed<crate::decode::Decoder<Reader<Cenc>>>;
 
     fn name(&self) -> &'static str {
         "apple"
@@ -180,15 +180,14 @@ impl Fetch for Apple {
             Some(entry) => media.reader_at(entry),
             None => media.reader(),
         };
-        let decoder = match rodio::Decoder::builder()
-            .with_symphonia_decoder::<Aac>()
+        let decoder = match crate::decode::Decoder::builder()
             .with_data(reader)
             .with_seekable(false)
             .build()
         {
             Ok(decoder) => decoder,
             Err(error) => {
-                log::warn!("playback: cannot decode the apple track {id}: {error}");
+                warn!("playback: cannot decode the apple track {id}: {error}");
                 return None;
             }
         };
@@ -215,7 +214,7 @@ impl Fetch for Apple {
         // What the open cost, and how much of that was the CDM. A slow start shows up here
         // first.
         let (samples, decrypting) = media.spent();
-        log::info!(
+        info!(
             "apple: decoder started in {:.2}s, {samples} of {} samples decrypted in {:.2}s",
             opening.elapsed().as_secs_f32(),
             media.samples(),

@@ -7,6 +7,7 @@ mod calendar;
 pub mod connect;
 pub mod cover;
 pub mod credentials;
+mod decode;
 pub mod deezer;
 pub mod drm;
 pub mod engine;
@@ -23,6 +24,7 @@ mod models;
 pub mod musixmatch;
 pub mod netease;
 pub mod output;
+mod paging;
 pub mod potoken;
 pub mod progress;
 mod redact;
@@ -46,18 +48,21 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use jiff::fmt::temporal::DateTimeParser;
 
 pub use audio::Meter;
+pub use calendar::{ReleaseDate, parse_timestamp};
 pub use equalizer::Equalizer;
+pub use jiff::Timestamp;
 pub use models::{
     Album, AlbumCatalogue, AlbumDetail, Artist, ArtistCatalogue, ArtistProfile, ArtistRef,
-    Contributor, CoverSize, Credit, Genre, GenreDetail, GenreItem, GenreSection, HomeFeed,
-    ImportedPlaylist, Lyrics, LyricsHit, LyricsLane, LyricsLine, LyricsQuery, LyricsWord,
-    PinOutcome, PinTarget, PinTargetKind, Playlist, PlaylistDetail, ReleaseType, RomanizedText,
-    SavedArtist, Track, TrackKey, TrackTags, UserDetail, UserProfile, Voice, WritingSystem,
+    AudioFeatures, Canvas, Contributor, CoverSize, Credit, Genre, GenreDetail, GenreItem,
+    GenreSection, HomeFeed, ImportedPlaylist, Lyrics, LyricsHit, LyricsLane, LyricsLine,
+    LyricsQuery, LyricsWord, PinOutcome, PinTarget, PinTargetKind, Playlist, PlaylistDetail,
+    ReleaseType, RomanizedText, SavedArtist, Track, TrackKey, TrackTags, UserDetail, UserProfile,
+    Voice, WritingSystem,
 };
 pub use output::{Server as SoundServer, missing_bridge};
+pub(crate) use paging::pages;
 pub use redact::redact;
 pub use spectrum::{Analyzer, Level, Listening, Spectrum, Watch};
 
@@ -194,7 +199,21 @@ pub trait MusicApi: Send + Sync {
     async fn delete_track_file(&self, _track_id: &str) -> Result<()> {
         anyhow::bail!("this provider does not support file deletion")
     }
-    async fn track_playcount(&self, track_id: &str) -> Result<Option<u64>>;
+    /// The provider's play count, absent when it does not expose one.
+    async fn track_playcount(&self, _track_id: &str) -> Result<Option<u64>> {
+        Ok(None)
+    }
+
+    /// The song's Canvas, for a provider that has them. `None` when the song has none.
+    async fn canvas(&self, _track_id: &str) -> Result<Option<Canvas>> {
+        Ok(None)
+    }
+
+    /// Everyone credited on the song, writers and producers included, each once with their
+    /// roles joined. Empty when the provider keeps nothing past the track's own `credits`.
+    async fn credits(&self, _track_id: &str) -> Result<Vec<Credit>> {
+        Ok(Vec::new())
+    }
 
     /// Tells the provider's own server whether a track is playing and where it is. It is sent on
     /// every start, pause, seek and stop, and never counts as a listen. A provider that keeps no
@@ -318,7 +337,10 @@ pub trait MusicApi: Send + Sync {
 
     async fn set_artist_saved(&self, artist_id: &str, saved: bool) -> Result<()>;
     async fn album(&self, album_id: &str) -> Result<AlbumDetail>;
-    async fn album_tracks(&self, album_id: &str) -> Result<Vec<Track>>;
+    /// An album's playback order, unless a provider has a cheaper track-only listing.
+    async fn album_tracks(&self, album_id: &str) -> Result<Vec<Track>> {
+        Ok(self.album(album_id).await?.tracks)
+    }
 
     /// The rest of an album page, fetched once `album` has put the tracks up: the releases
     /// the provider lists as related, with more from the same artist first and similar
@@ -341,8 +363,17 @@ pub trait MusicApi: Send + Sync {
         anyhow::bail!("playlist pagination is not supported")
     }
 
-    async fn playlist_tracks(&self, playlist_id: &str) -> Result<Vec<Track>>;
-    async fn playlist_covers(&self, playlist_id: &str, wanted: usize) -> Result<Vec<String>>;
+    /// A playlist's playback order, unless a provider offers a dedicated listing.
+    async fn playlist_tracks(&self, playlist_id: &str) -> Result<Vec<Track>> {
+        Ok(self.playlist(playlist_id).await?.tracks)
+    }
+    /// Distinct covers from a playlist; providers may stop their listing early when enough are found.
+    async fn playlist_covers(&self, playlist_id: &str, wanted: usize) -> Result<Vec<String>> {
+        Ok(distinct_covers(
+            &self.playlist_tracks(playlist_id).await?,
+            wanted,
+        ))
+    }
     /// The station seeded by `track_id`, from its start or from `from`, a continuation an
     /// earlier call answered with. The continuation that comes back fetches the next stretch,
     /// and `None` means the provider has no more. A provider that serves a station in one go
@@ -1098,27 +1129,6 @@ pub trait MusicProvider: Send + Sync {
     }
 }
 
-/// Leniently convert an ISO8601 timestamp to unix epoch seconds. Accepts only
-/// the date portion, date and time portions, or full date and time with offset.
-pub fn iso_8601_to_epoch(value: Option<&str>) -> Option<i64> {
-    let value = value?;
-    let parser = DateTimeParser::new();
-    let timestamp = parser
-        .parse_timestamp(value)
-        .or_else(|_| {
-            parser
-                .parse_datetime(value)
-                .and_then(|datetime| jiff::tz::TimeZone::UTC.to_timestamp(datetime))
-        })
-        .or_else(|_| {
-            parser
-                .parse_date(value)
-                .and_then(|date| jiff::tz::TimeZone::UTC.to_timestamp(date.at(0, 0, 0, 0)))
-        })
-        .ok()?;
-    Some(timestamp.as_second())
-}
-
 /// Keeps playable songs credited to the artist in their supplied order, collapsing repeat
 /// ids and matching titles of similar duration across releases. Remaster labels do not
 /// distinguish songs.
@@ -1146,11 +1156,12 @@ fn artist_songs(tracks: Vec<Track>, artist_id: &str) -> Vec<Track> {
             let lengths = kept.entry(song_title(&track.name)).or_default();
             let repeat = lengths.iter().any(|length| {
                 !length.is_zero()
-                    && !track.duration.is_zero()
-                    && length.abs_diff(track.duration) <= SAME_SONG
+                    && track
+                        .duration
+                        .is_some_and(|duration| length.abs_diff(duration) <= SAME_SONG)
             });
             if !repeat {
-                lengths.push(track.duration);
+                lengths.extend(track.duration);
             }
             !repeat
         })
@@ -1196,23 +1207,48 @@ fn remaster_note(note: &str) -> bool {
         })
 }
 
+/// Reads a string or signed numeric identity, rejecting missing and zero sentinel IDs.
+pub(crate) fn json_id(value: &serde_json::Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| value.as_i64().map(|number| number.to_string()))
+        .filter(|id| !id.is_empty() && id != "0")
+}
+
+/// Keeps valid provider tempos, rounded to the whole BPM used by track filters.
+pub(crate) fn rounded_bpm(bpm: f32) -> Option<u16> {
+    (bpm.is_finite() && bpm >= 0.5 && bpm <= u16::MAX as f32).then(|| bpm.round() as u16)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn iso_8601_to_epoch_parses_correctly() {
+    fn timestamps_parse_correctly() {
         // None and malformed input
-        assert_eq!(iso_8601_to_epoch(None), None);
-        assert_eq!(iso_8601_to_epoch(Some("")), None);
-        assert_eq!(iso_8601_to_epoch(Some("malformed")), None);
+        assert_eq!(parse_timestamp("").map(|stamp| stamp.as_second()), None);
+        assert_eq!(
+            parse_timestamp("malformed").map(|stamp| stamp.as_second()),
+            None
+        );
 
         // Basic epoch format
-        assert_eq!(iso_8601_to_epoch(Some("1970-01-01")), Some(0));
-        assert_eq!(iso_8601_to_epoch(Some("1970-01-01T00:00:00")), Some(0));
-        assert_eq!(iso_8601_to_epoch(Some("1970-01-01T00:00:00Z")), Some(0));
         assert_eq!(
-            iso_8601_to_epoch(Some("1970-01-01T00:00:00+00:00")),
+            parse_timestamp("1970-01-01").map(|stamp| stamp.as_second()),
+            Some(0)
+        );
+        assert_eq!(
+            parse_timestamp("1970-01-01T00:00:00").map(|stamp| stamp.as_second()),
+            Some(0)
+        );
+        assert_eq!(
+            parse_timestamp("1970-01-01T00:00:00Z").map(|stamp| stamp.as_second()),
+            Some(0)
+        );
+        assert_eq!(
+            parse_timestamp("1970-01-01T00:00:00+00:00").map(|stamp| stamp.as_second()),
             Some(0)
         );
 
@@ -1226,25 +1262,28 @@ mod tests {
             .to_timestamp(date.at(13, 45, 7, 0))
             .unwrap()
             .as_second();
-        assert_eq!(iso_8601_to_epoch(Some("2021-03-20")), Some(midnight));
         assert_eq!(
-            iso_8601_to_epoch(Some("2021-03-20T13:45:07")),
+            parse_timestamp("2021-03-20").map(|stamp| stamp.as_second()),
+            Some(midnight)
+        );
+        assert_eq!(
+            parse_timestamp("2021-03-20T13:45:07").map(|stamp| stamp.as_second()),
             Some(afternoon)
         );
         assert_eq!(
-            iso_8601_to_epoch(Some("2021-03-20T13:45:07.123456")),
+            parse_timestamp("2021-03-20T13:45:07.123456").map(|stamp| stamp.as_second()),
             Some(afternoon)
         );
         assert_eq!(
-            iso_8601_to_epoch(Some("2021-03-20T13:45:07Z")),
+            parse_timestamp("2021-03-20T13:45:07Z").map(|stamp| stamp.as_second()),
             Some(afternoon)
         );
         assert_eq!(
-            iso_8601_to_epoch(Some("2021-03-20T13:45:07+00:00")),
+            parse_timestamp("2021-03-20T13:45:07+00:00").map(|stamp| stamp.as_second()),
             Some(afternoon)
         );
         assert_eq!(
-            iso_8601_to_epoch(Some("2021-03-20T10:45:07-03:00")),
+            parse_timestamp("2021-03-20T10:45:07-03:00").map(|stamp| stamp.as_second()),
             Some(afternoon)
         );
     }

@@ -72,6 +72,61 @@ pub(crate) trait VolumeHost: Sized + 'static {
     fn playback(&self) -> &Entity<Playback>;
 }
 
+/// The shared mute action; callers choose its tooltip or accessible name and surface styling.
+pub(crate) fn mute_button<V: VolumeHost>(
+    volume: &RisingVolume,
+    level: f32,
+    cx: &mut Context<V>,
+) -> Button {
+    let restore = volume.muted.unwrap_or(RESTORE);
+    Button::new("volume")
+        .ghost()
+        .small()
+        .icon(volume_icon(level))
+        .on_click(cx.listener(move |this: &mut V, _, _, cx| {
+            let wanted = match level <= 0.001 {
+                true => restore,
+                false => 0.,
+            };
+            this.volume().muted = match wanted {
+                0. => Some(level),
+                _ => None,
+            };
+            this.playback()
+                .update(cx, |playback, cx| playback.set_volume(wanted, cx));
+        }))
+}
+
+/// A volume slider with common accessibility, colors and drag ownership for either orientation.
+pub(crate) fn volume_slider<V: VolumeHost>(
+    slider: &ScrubberState,
+    level: f32,
+    cx: &mut Context<V>,
+) -> Scrubber {
+    let theme = *cx.theme();
+    Scrubber::new(slider, level)
+        .name(t!("equalizer-status-volume"))
+        .value(percent(level))
+        .colors(
+            theme.progress_bar,
+            theme.muted_foreground.opacity(0.3),
+            theme.foreground,
+        )
+        .on_move(cx.listener(|this: &mut V, fraction: &f32, _, cx| {
+            this.volume().held = true;
+            this.volume().muted = None;
+            this.playback()
+                .update(cx, |playback, cx| playback.slide_volume(*fraction, cx));
+            cx.notify();
+        }))
+        .on_release(cx.listener(|this: &mut V, _: &MouseUpEvent, _, cx| {
+            this.volume().held = false;
+            this.playback()
+                .update(cx, |playback, cx| playback.end_volume_slide(cx));
+            cx.notify();
+        }))
+}
+
 /// Turns the volume by one notch for each step of the wheel, and keeps the wheel from the page.
 pub(crate) fn turn_volume<V: VolumeHost>(
     host: &mut V,
@@ -108,8 +163,6 @@ pub(crate) fn rising_volume<V: VolumeHost>(
     let hazy = frosted && ui::blurring(cx);
     let zone = px(ZONE);
     let level = playback.read(cx).shown_volume(cx);
-    let empty = theme.muted_foreground.opacity(0.3);
-    let restore = volume.muted.unwrap_or(RESTORE);
     let open = volume.open();
     let span = theme.metrics.control_small + zone * 2.;
     let reach = Scrubber::bubble_reach(VOLUME_BUBBLE_LIFT, cx);
@@ -130,11 +183,8 @@ pub(crate) fn rising_volume<V: VolumeHost>(
                     cx.notify();
                 }))
                 .child(
-                    Button::new("volume")
-                        .ghost()
+                    mute_button(volume, level, cx)
                         .when(frosted, Button::frosted)
-                        .small()
-                        .icon(volume_icon(level))
                         // No tooltip: it would sit over the slider rising from the same spot,
                         // so the button carries its name for screen readers alone.
                         .name(match level <= 0.001 {
@@ -144,19 +194,7 @@ pub(crate) fn rising_volume<V: VolumeHost>(
                         .tint(match open {
                             true => theme.foreground,
                             false => theme.muted_foreground,
-                        })
-                        .on_click(cx.listener(move |this: &mut V, _, _, cx| {
-                            let wanted = match level <= 0.001 {
-                                true => restore,
-                                false => 0.,
-                            };
-                            this.volume().muted = match wanted {
-                                0. => Some(level),
-                                _ => None,
-                            };
-                            this.playback()
-                                .update(cx, |playback, cx| playback.set_volume(wanted, cx));
-                        })),
+                        }),
                 ),
         )
         .when(open, |this| {
@@ -186,27 +224,10 @@ pub(crate) fn rising_volume<V: VolumeHost>(
                 }))
                 .child(
                     div().h(px(VOLUME_RISE)).flex().child(
-                        Scrubber::new(&volume.slider, level)
+                        volume_slider(&volume.slider, level, cx)
                             .vertical()
-                            .name(t!("equalizer-status-volume"))
-                            .value(percent(level))
-                            .colors(theme.progress_bar, empty, theme.foreground)
                             .lift(VOLUME_BUBBLE_LIFT)
-                            .when_some(bubble, |this, (at, text)| this.bubble(at, text))
-                            .on_move(cx.listener(|this: &mut V, fraction: &f32, _, cx| {
-                                let level = *fraction;
-                                this.volume().held = true;
-                                this.volume().muted = None;
-                                this.playback()
-                                    .update(cx, |playback, cx| playback.slide_volume(level, cx));
-                                cx.notify();
-                            }))
-                            .on_release(cx.listener(|this: &mut V, _: &MouseUpEvent, _, cx| {
-                                this.volume().held = false;
-                                this.playback()
-                                    .update(cx, |playback, cx| playback.end_volume_slide(cx));
-                                cx.notify();
-                            })),
+                            .when_some(bubble, |this, (at, text)| this.bubble(at, text)),
                     ),
                 );
 

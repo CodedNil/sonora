@@ -7,13 +7,13 @@
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::time::Duration;
+use tracing::warn;
 
 use anyhow::{Context as _, Result, anyhow};
 use async_trait::async_trait;
 use rodio::Source as _;
 
 use super::{tags, wire};
-use crate::aac::Aac;
 use crate::engine::{self, Fetch, Loudness};
 use crate::{Encoding, PlaybackConfig, PlaybackEvents, PlaybackFactory, Player};
 
@@ -40,7 +40,7 @@ struct Local;
 #[async_trait]
 impl Fetch for Local {
     type Loaded = Loaded;
-    type Source = rodio::Decoder<BufReader<Audio>>;
+    type Source = crate::decode::Decoder<BufReader<Audio>>;
 
     fn name(&self) -> &'static str {
         "local"
@@ -79,14 +79,14 @@ impl Fetch for Local {
         let mut decoder = match decode(id) {
             Ok(decoder) => decoder,
             Err(error) => {
-                log::warn!("playback: cannot decode the local track {id}: {error:#}");
+                warn!("playback: cannot decode the local track {id}: {error:#}");
                 return None;
             }
         };
         if !at.is_zero()
             && let Err(error) = decoder.try_seek(at)
         {
-            log::warn!("playback: cannot start {id} at {}s: {error}", at.as_secs());
+            warn!("playback: cannot start {id} at {}s: {error}", at.as_secs());
         }
         Some(decoder)
     }
@@ -117,7 +117,7 @@ impl Seek for Audio {
 }
 
 /// Opens a local file and builds its decoder.
-fn decode(id: &str) -> Result<rodio::Decoder<BufReader<Audio>>> {
+fn decode(id: &str) -> Result<crate::decode::Decoder<BufReader<Audio>>> {
     let path =
         wire::path_from_track_id(id).ok_or_else(|| anyhow!("{id} is not a local track id"))?;
     let mut file =
@@ -131,8 +131,7 @@ fn decode(id: &str) -> Result<rodio::Decoder<BufReader<Audio>>> {
     let gapless = !wire::has_lying_xing_frame_count(path, skip);
     let reader = BufReader::new(Audio { file, skip });
 
-    let mut builder = rodio::Decoder::builder()
-        .with_symphonia_decoder::<Aac>()
+    let mut builder = crate::decode::Decoder::builder()
         .with_data(reader)
         .with_seekable(true)
         .with_gapless(gapless);

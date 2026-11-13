@@ -262,12 +262,12 @@ impl Render for PlaylistEditor {
         let asking = plain(&edit);
         let title = match &edit {
             Edit::Create { .. } => t!("playlist-create-title"),
-            Edit::Details(_) => t!("playlist-edit-title"),
-            Edit::Delete(_) => t!("playlist-delete-title"),
+            Edit::Details(_) => t!("menu-edit-playlist"),
+            Edit::Delete(_) => t!("menu-delete-playlist"),
             Edit::Again { .. } => t!("playlist-again-title"),
         };
         let detail = match &edit {
-            Edit::Delete(playlist) => Some(t!("playlist-delete-confirm", name = &playlist.name)),
+            Edit::Delete(playlist) => Some(t!("common-delete-confirm", name = &playlist.name)),
             Edit::Again { playlist, .. } => {
                 Some(t!("playlist-again-confirm", name = &playlist.name))
             }

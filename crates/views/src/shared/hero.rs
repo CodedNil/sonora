@@ -11,7 +11,7 @@ use music::{Album, Track};
 use state::{Origin, Playback};
 use ui::{
     ActiveTheme as _, Artwork, Button, ExplicitBadge, LEADING, MenuItem, Perch, Pin, Pinnable as _,
-    Skeleton, TableState, Tails as _, Text, Tipped as _, spoken, upper,
+    Skeleton, TableState, Tails as _, Text, Tipped as _, runtime, spoken, upper,
 };
 
 use crate::shared::tracks::{self, TrackSource};
@@ -35,13 +35,35 @@ pub(crate) fn copyright_notice(text: &str) -> SharedString {
 }
 
 /// The notices an album page prints under its tracks: the provider's copyright lines, or the
-/// label behind ℗ when the provider names only that. Empty when it names neither.
+/// label behind ℗ when the provider names only that. Matching © and ℗ bodies share a line.
 pub(crate) fn copyright_notices(album: &Album) -> Vec<SharedString> {
     if !album.copyrights.is_empty() {
-        return album
-            .copyrights
-            .iter()
-            .map(|line| copyright_notice(line))
+        let mut notices: Vec<(String, bool, bool)> = Vec::new();
+        for line in &album.copyrights {
+            let text = line.trim();
+            let recording = text.starts_with('℗');
+            let body = text.trim_start_matches(['©', '℗']).trim();
+            if body.is_empty() {
+                continue;
+            }
+            if let Some((_, copyright, phonogram)) =
+                notices.iter_mut().find(|(known, _, _)| known == body)
+            {
+                *copyright |= !recording;
+                *phonogram |= recording;
+            } else {
+                notices.push((body.to_owned(), !recording, recording));
+            }
+        }
+        return notices
+            .into_iter()
+            .map(
+                |(body, copyright, recording)| match (copyright, recording) {
+                    (true, true) => t!("album-copyright-combined", notice = &body),
+                    (false, true) => t!("album-label", label = &body),
+                    _ => copyright_notice(&body),
+                },
+            )
             .collect();
     }
     match album.label.trim() {
@@ -50,29 +72,18 @@ pub(crate) fn copyright_notices(album: &Album) -> Vec<SharedString> {
     }
 }
 
-pub(crate) fn release_date_label(value: &str) -> SharedString {
-    let parts: Vec<_> = value.split('-').collect();
-    if parts.len() != 3 {
-        return SharedString::from(value.to_owned());
-    }
-    let month = match parts[1] {
-        "01" => t!("month-1"),
-        "02" => t!("month-2"),
-        "03" => t!("month-3"),
-        "04" => t!("month-4"),
-        "05" => t!("month-5"),
-        "06" => t!("month-6"),
-        "07" => t!("month-7"),
-        "08" => t!("month-8"),
-        "09" => t!("month-9"),
-        "10" => t!("month-10"),
-        "11" => t!("month-11"),
-        "12" => t!("month-12"),
-        _ => return SharedString::from(value.to_owned()),
+/// Formats a release date without inventing any missing date components.
+pub(crate) fn release_date_label(value: music::ReleaseDate) -> SharedString {
+    let Some(date) = value.full_date() else {
+        return value.to_string().into();
     };
-    let day = parts[2].trim_start_matches('0');
-
-    t!("date-full", month = &month, day = day, year = parts[0])
+    let month = i18n::lookup(&format!("month-{}", date.month()), None);
+    t!(
+        "date-full",
+        month = &month,
+        day = date.day().to_string(),
+        year = date.year().to_string()
+    )
 }
 
 /// The line of facts under a hero title, joined by bullets. Its text items reach screen readers
@@ -101,6 +112,14 @@ impl HeroMetaStrip {
     pub(crate) fn item(mut self, item: impl IntoElement) -> Self {
         self.items.push(MetaItem::Element(item.into_any_element()));
         self
+    }
+
+    /// Adds a runtime when the tracks have a known duration.
+    pub(crate) fn duration(self, duration: Option<std::time::Duration>) -> Self {
+        match duration.filter(|duration| !duration.is_zero()) {
+            Some(duration) => self.text(runtime(duration)),
+            None => self,
+        }
     }
 }
 
@@ -171,7 +190,13 @@ impl Listing {
     }
 
     /// Loads a collection on demand or starts the tracks already held by the page.
-    fn start(&self, playback: &mut Playback, shuffle: bool, cx: &mut Context<Playback>) {
+    fn start(
+        &self,
+        playback: &mut Playback,
+        shuffle: bool,
+        from: Option<Origin>,
+        cx: &mut Context<Playback>,
+    ) {
         let tracks = match self {
             Self::Origin(origin) => {
                 if let Some(origin) = origin.clone() {
@@ -185,7 +210,7 @@ impl Listing {
             Self::Owned(tracks) => tracks.clone(),
             Self::Listed(table) => tracks::ordered(table, cx),
         };
-        let from = self.whence(cx);
+        let from = from.or_else(|| self.whence(cx));
         match shuffle {
             true => playback.shuffle_any(tracks, from, cx),
             false => playback.start_any(tracks, from, cx),
@@ -197,8 +222,11 @@ impl Listing {
 #[derive(IntoElement)]
 pub(crate) struct HeroPlayButton {
     id: ElementId,
+    label: Option<SharedString>,
     listing: Listing,
+    from: Option<Origin>,
     shuffled: bool,
+    compact: bool,
     playback: Entity<Playback>,
 }
 
@@ -210,8 +238,28 @@ impl HeroPlayButton {
     ) -> Self {
         Self {
             id: id.into(),
+            label: None,
             listing: Listing::Owned(tracks),
+            from: None,
             shuffled: false,
+            compact: false,
+            playback,
+        }
+    }
+
+    pub(crate) fn labeled(
+        id: impl Into<ElementId>,
+        label: impl Into<SharedString>,
+        tracks: Vec<Track>,
+        playback: Entity<Playback>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: Some(label.into()),
+            listing: Listing::Owned(tracks),
+            from: None,
+            shuffled: false,
+            compact: false,
             playback,
         }
     }
@@ -219,6 +267,12 @@ impl HeroPlayButton {
     /// Fetches the whole collection on press instead of playing only the page's loaded rows.
     pub(crate) fn load_origin(mut self, origin: Option<Origin>) -> Self {
         self.listing = Listing::Origin(origin);
+        self
+    }
+
+    /// Uses an icon-only transport in a compact persistent header.
+    pub(crate) fn compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
         self
     }
 
@@ -254,8 +308,28 @@ impl HeroPlayButton {
     ) -> Self {
         Self {
             id: id.into(),
+            label: None,
             listing: Listing::Listed(table.clone()),
+            from: None,
             shuffled: false,
+            compact: false,
+            playback,
+        }
+    }
+
+    pub(crate) fn listed_labeled(
+        id: impl Into<ElementId>,
+        label: impl Into<SharedString>,
+        table: &Entity<TableState<TrackSource>>,
+        playback: Entity<Playback>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: Some(label.into()),
+            listing: Listing::Listed(table.clone()),
+            from: None,
+            shuffled: false,
+            compact: false,
             playback,
         }
     }
@@ -279,19 +353,23 @@ impl HeroPlayButton {
     pub(crate) fn shuffle_item(self, cx: &App) -> MenuItem {
         let disabled = !self.listing.can_start(cx);
         let listing = self.listing;
+        let from = self.from;
         let playback = self.playback;
 
         MenuItem::new("hero-shuffle", t!("play-shuffle"))
             .icon("icons/shuffle.svg")
             .when(disabled, MenuItem::disabled)
             .on_click(move |_, _, cx| {
-                playback.update(cx, |playback, cx| listing.start(playback, true, cx));
+                playback.update(cx, |playback, cx| {
+                    listing.start(playback, true, from.clone(), cx)
+                });
             })
     }
 
     fn shuffle_button(self, cx: &App) -> Button {
         let disabled = !self.listing.can_start(cx);
         let listing = self.listing;
+        let from = self.from;
         let playback = self.playback;
 
         Button::new(self.id)
@@ -300,7 +378,9 @@ impl HeroPlayButton {
             .outline()
             .disabled(disabled)
             .on_click(move |_, _, cx| {
-                playback.update(cx, |playback, cx| listing.start(playback, true, cx));
+                playback.update(cx, |playback, cx| {
+                    listing.start(playback, true, from.clone(), cx)
+                });
             })
     }
 }
@@ -312,7 +392,7 @@ impl RenderOnce for HeroPlayButton {
         }
         let playing = {
             let playback = self.playback.read(cx);
-            match self.listing.whence(cx) {
+            match self.from.clone().or_else(|| self.listing.whence(cx)) {
                 Some(origin) => playback.playing_from(&origin, cx),
                 None => playback
                     .track()
@@ -325,23 +405,30 @@ impl RenderOnce for HeroPlayButton {
         let reserve = [play.clone(), pause.clone()];
         let (label, icon) = match playing {
             Some(true) => (pause, "icons/pause.svg"),
-            Some(false) | None => (play, "icons/play.svg"),
+            Some(false) => (t!("play-resume"), "icons/play.svg"),
+            None => (self.label.unwrap_or(play), "icons/play.svg"),
         };
         let disabled = !self.listing.can_start(cx);
         let listing = self.listing;
+        let from = self.from;
         let playback = self.playback;
 
         div().flex().child(
             Button::new(self.id)
-                .label(label)
-                .reserve(reserve)
+                .when(!self.compact, |button| button.label(label).reserve(reserve))
+                .when(self.compact, |button| {
+                    button.tooltip(match playing {
+                        Some(true) => "play-pause",
+                        _ => "play-resume",
+                    })
+                })
                 .icon(icon)
                 .primary()
                 .disabled(disabled)
                 .on_click(move |_, _, cx| {
                     playback.update(cx, |playback, cx| match playing {
                         Some(_) => playback.toggle_play(cx),
-                        None => listing.start(playback, false, cx),
+                        None => listing.start(playback, false, from.clone(), cx),
                     });
                 }),
         )
@@ -358,6 +445,7 @@ pub(crate) struct PageHero {
     fallback: Option<SharedString>,
     accent: bool,
     eyebrow: Option<SharedString>,
+    top_bar: Option<AnyElement>,
     meta: Option<AnyElement>,
     actions: Option<AnyElement>,
     circle: bool,
@@ -365,6 +453,7 @@ pub(crate) struct PageHero {
     drag_start: Option<DragStart>,
     pin: Option<Pin>,
     pending: bool,
+    compact: bool,
 }
 
 impl PageHero {
@@ -376,6 +465,7 @@ impl PageHero {
             fallback: None,
             accent: false,
             eyebrow: None,
+            top_bar: None,
             meta: None,
             actions: None,
             circle: false,
@@ -383,12 +473,19 @@ impl PageHero {
             drag_start: None,
             pin: None,
             pending: false,
+            compact: false,
         }
     }
 
     /// The width a hero `width` wide leaves beside its cover for the title and the actions.
     pub(crate) fn room(width: Pixels, window: &Window, cx: &App) -> Pixels {
         width - cx.theme().metrics.cover - COVER_GAP.to_pixels(window.rem_size())
+    }
+
+    /// Renders the same title, artwork, metadata and actions as one persistent row.
+    pub(crate) fn compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
     }
 
     pub(crate) fn pin(mut self, pin: Option<Pin>) -> Self {
@@ -424,6 +521,20 @@ impl PageHero {
         self
     }
 
+    /// Puts a category label and controls above the content, in place of the eyebrow.
+    pub(crate) fn top_bar(
+        mut self,
+        category: impl Into<SharedString>,
+        tools: impl IntoElement,
+        cx: &App,
+    ) -> Self {
+        self.top_bar = Some(crate::shared::page::row(
+            eyebrow_label(category.into(), cx),
+            tools,
+        ));
+        self
+    }
+
     pub(crate) fn meta(mut self, meta: impl IntoElement) -> Self {
         self.meta = Some(meta.into_any_element());
         self
@@ -456,18 +567,78 @@ impl RenderOnce for PageHero {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = *cx.theme();
 
+        if self.compact {
+            return div()
+                .id(self.id)
+                .when_some(self.pin, |hero, pin| hero.pin(pin))
+                .when_some(self.drag_start, |hero, handler| {
+                    hero.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                        handler(event, window, cx)
+                    })
+                })
+                .flex()
+                .items_center()
+                .gap_3()
+                .w_full()
+                .min_w_0()
+                .overflow_hidden()
+                .h(theme.metrics.control + theme.metrics.pad * 2.)
+                .child(
+                    Artwork::new(self.cover)
+                        .size(theme.metrics.control)
+                        .when_some(self.fallback, Artwork::fallback)
+                        .when(self.accent, Artwork::accent)
+                        .when(self.circle, Artwork::circle),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(theme.text(Text::Large))
+                        .font_weight(FontWeight::BOLD)
+                        .child(self.title),
+                )
+                .children(
+                    self.actions.map(|actions| {
+                        div().flex().flex_1().min_w_0().justify_end().child(actions)
+                    }),
+                );
+        }
+
         let art = theme.metrics.cover;
+        let head = self.top_bar.or_else(|| {
+            self.eyebrow
+                .map(|eyebrow| eyebrow_label(eyebrow, cx).into_any_element())
+        });
         let drag_start = self.drag_start.map(Rc::from);
         let starter = drag_start.clone();
 
+        let hero = div()
+            .id(self.id.clone())
+            .when_some(self.pin.filter(|_| !self.pending), |hero, pin| {
+                hero.pin(pin)
+            })
+            .flex()
+            .w_full()
+            .min_w_0()
+            .flex_none()
+            .items_end()
+            .gap(COVER_GAP)
+            .pb_6();
+        let content = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .h(art)
+            .justify_end()
+            .gap_2()
+            .line_height(relative(LEADING))
+            .children(head);
+
         if self.pending {
-            return div()
-                .id(self.id)
-                .flex()
-                .flex_none()
-                .items_end()
-                .gap(COVER_GAP)
-                .pb_6()
+            return hero
                 .child(
                     Skeleton::new()
                         .flex_none()
@@ -476,16 +647,7 @@ impl RenderOnce for PageHero {
                         .when(self.circle, |skeleton| skeleton.rounded_full()),
                 )
                 .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .h(art)
-                        .justify_end()
-                        .gap_2()
-                        .line_height(relative(LEADING))
-                        .children(self.eyebrow.map(|eyebrow| eyebrow_label(eyebrow, cx)))
+                    content
                         .child(
                             skeleton_line(theme.text(Text::Display)).child(
                                 Skeleton::new()
@@ -505,84 +667,75 @@ impl RenderOnce for PageHero {
                 );
         }
 
-        div()
-            .id(self.id.clone())
-            .when_some(self.pin, |hero, pin| hero.pin(pin))
-            .flex()
-            .flex_none()
-            .items_end()
-            .gap(COVER_GAP)
-            .pb_6()
-            .child(
-                div()
-                    .flex_none()
-                    .when_some(starter, |this, drag_start: Rc<DragStart>| {
-                        this.on_mouse_down(MouseButton::Right, move |event, window, cx| {
-                            drag_start(event, window, cx)
-                        })
+        hero.child(
+            div()
+                .flex_none()
+                .when_some(starter, |this, drag_start: Rc<DragStart>| {
+                    this.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                        drag_start(event, window, cx)
                     })
-                    .child(
-                        Artwork::new(self.cover)
-                            .size(art)
-                            .corner_radius(theme.radius * 1.5)
-                            .when(self.circle, Artwork::circle)
-                            .when_some(self.fallback, Artwork::fallback)
-                            .when(self.accent, Artwork::accent),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .h(art)
-                    .justify_end()
-                    .gap_2()
-                    .line_height(relative(LEADING))
-                    .children(self.eyebrow.map(|eyebrow| eyebrow_label(eyebrow, cx)))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .min_w_0()
-                            .text_size(theme.text(Text::Display))
-                            .font_weight(FontWeight::BOLD)
-                            .child(
+                })
+                .child(
+                    Artwork::new(self.cover)
+                        .size(art)
+                        .corner_radius(theme.radius * 1.5)
+                        .when(self.circle, Artwork::circle)
+                        .when_some(self.fallback, Artwork::fallback)
+                        .when(self.accent, Artwork::accent),
+                ),
+        )
+        .child(
+            content
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .min_w_0()
+                        .text_size(theme.text(Text::Display))
+                        .font_weight(FontWeight::BOLD)
+                        .child(
+                            div()
+                                .id((self.id.clone(), "title"))
+                                .role(Role::Heading)
+                                .aria_level(1)
+                                .aria_label(self.title.clone())
+                                .min_w_0()
+                                .truncate()
+                                .tails()
+                                .when(!self.title.is_empty(), |this| {
+                                    this.tip_label(self.title.clone(), Perch::Below)
+                                })
+                                .when_some(drag_start, |this, drag_start: Rc<DragStart>| {
+                                    this.on_mouse_down(
+                                        MouseButton::Right,
+                                        move |event, window, cx| drag_start(event, window, cx),
+                                    )
+                                })
+                                .child(self.title),
+                        )
+                        .when(self.explicit, |this| {
+                            this.child(
                                 div()
-                                    .id((self.id.clone(), "title"))
-                                    .role(Role::Heading)
-                                    .aria_level(1)
-                                    .aria_label(self.title.clone())
-                                    .min_w_0()
-                                    .truncate()
-                                    .tails()
-                                    .when(!self.title.is_empty(), |this| {
-                                        this.tip_label(self.title.clone(), Perch::Below)
-                                    })
-                                    .when_some(drag_start, |this, drag_start: Rc<DragStart>| {
-                                        this.on_mouse_down(
-                                            MouseButton::Right,
-                                            move |event, window, cx| drag_start(event, window, cx),
-                                        )
-                                    })
-                                    .child(self.title),
+                                    .id((self.id.clone(), "explicit"))
+                                    .role(Role::Image)
+                                    .aria_label(t!("song-explicit"))
+                                    .flex_none()
+                                    .child(ExplicitBadge::new()),
                             )
-                            .when(self.explicit, |this| {
-                                this.child(
-                                    div()
-                                        .id((self.id.clone(), "explicit"))
-                                        .role(Role::Image)
-                                        .aria_label(t!("song-explicit"))
-                                        .flex_none()
-                                        .child(ExplicitBadge::new()),
-                                )
-                            }),
-                    )
-                    .children(self.meta)
-                    .children(self.actions.map(|actions| div().pt_1().child(actions))),
-            )
+                        }),
+                )
+                .children(self.meta)
+                .children(self.actions.map(|actions| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .w_full()
+                        .min_w_0()
+                        .pt_1()
+                        .child(actions)
+                })),
+        )
     }
 }
 
@@ -594,7 +747,7 @@ fn eyebrow_label(label: SharedString, cx: &App) -> Stateful<Div> {
     div()
         .id("hero-eyebrow")
         .role(Role::Label)
-        .aria_value(label.clone())
+        .aria_label(label.clone())
         .text_size(theme.text(Text::Small))
         .text_color(theme.muted_foreground)
         .font_weight(FontWeight::SEMIBOLD)

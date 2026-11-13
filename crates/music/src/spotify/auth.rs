@@ -2,6 +2,7 @@ use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tracing::warn;
 
 use anyhow::{Context as _, Result, anyhow};
 
@@ -71,7 +72,7 @@ impl AuthConfig {
 
 pub fn release(config: &AuthConfig) {
     let Some(address) = socket_address(&config.redirect_uri) else {
-        log::warn!(
+        warn!(
             "auth: cannot read a socket address from {}",
             config.redirect_uri
         );
@@ -294,7 +295,7 @@ fn clear(cache: &Cache, folder: &Path) {
                 None => std::fs::remove_file(item.path()).map_err(anyhow::Error::from),
             };
             if let Err(error) = removed {
-                log::warn!("spotify: cannot remove a kept file: {error:#}");
+                warn!("spotify: cannot remove a kept file: {error:#}");
             }
         }
         std::fs::remove_dir(group.path()).ok();
@@ -315,7 +316,7 @@ fn device_id(dir: &Path) -> String {
 
     let id = SessionConfig::default().device_id;
     if let Err(error) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&file, &id)) {
-        log::warn!("auth: cannot keep the device id: {error}");
+        warn!("auth: cannot keep the device id: {error}");
     }
     id
 }

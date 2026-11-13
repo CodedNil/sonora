@@ -50,7 +50,7 @@ pub(crate) fn volume_icon(level: f32) -> &'static str {
 }
 
 pub(crate) fn percent(fraction: f32) -> SharedString {
-    t!("player-percent", value = (fraction * 100.).round())
+    t!("common-percentage", value = (fraction * 100.).round())
 }
 
 /// The heart that saves or drops `track`. A click toggles the track `playback` holds by then,
@@ -97,9 +97,9 @@ pub(crate) fn transport(playback: &Entity<Playback>, big: bool, cx: &App) -> imp
         .items_center()
         .gap_2()
         .child(shuffle(playback, frosted, cx))
-        .child(previous(playback, frosted, cx))
+        .child(skip(playback, false, frosted, cx))
         .child(toggle(playback, big, frosted, cx))
-        .child(next(playback, frosted, cx))
+        .child(skip(playback, true, frosted, cx))
         .child(repeat(playback, frosted, cx))
 }
 
@@ -142,7 +142,7 @@ fn shuffle(playback: &Entity<Playback>, frosted: bool, cx: &App) -> Button {
         .icon("icons/shuffle.svg")
         .indicator(on)
         .aria_toggled(Toggled::from(on))
-        .tooltip_above("player-shuffle")
+        .tooltip_above("play-shuffle")
         .tint(match on {
             true => theme.primary,
             false => theme.muted_foreground,
@@ -181,39 +181,38 @@ fn repeat(playback: &Entity<Playback>, frosted: bool, cx: &App) -> Button {
         })
 }
 
-fn previous(playback: &Entity<Playback>, frosted: bool, cx: &App) -> Button {
+/// A queue step, with its direction determining the available queue section and belt edge.
+fn skip(playback: &Entity<Playback>, forward: bool, frosted: bool, cx: &App) -> Button {
     let queue = playback.read(cx).shown_queue(cx);
-    let enabled = !queue.editable() || queue.sections.current || queue.sections.past > 0;
+    let available = match forward {
+        true => queue.sections.upcoming > 0,
+        false => queue.sections.current || queue.sections.past > 0,
+    };
+    let enabled = !queue.editable() || available;
+    let (id, icon, edge, tooltip) = match forward {
+        true => ("next", "icons/skip-forward.svg", Side::Right, "player-next"),
+        false => (
+            "previous",
+            "icons/skip-back.svg",
+            Side::Left,
+            "player-previous",
+        ),
+    };
     let playback = playback.clone();
 
-    Button::new("previous")
+    Button::new(id)
         .ghost()
         .when(frosted, Button::frosted)
         .small()
-        .icon("icons/skip-back.svg")
-        .belt(Side::Left)
-        .tooltip_above("player-previous")
+        .icon(icon)
+        .belt(edge)
+        .tooltip_above(tooltip)
         .disabled(!enabled)
         .on_click(move |_, _, cx| {
-            playback.update(cx, |playback, cx| playback.previous(cx));
-        })
-}
-
-fn next(playback: &Entity<Playback>, frosted: bool, cx: &App) -> Button {
-    let queue = playback.read(cx).shown_queue(cx);
-    let enabled = !queue.editable() || queue.sections.upcoming > 0;
-    let playback = playback.clone();
-
-    Button::new("next")
-        .ghost()
-        .when(frosted, Button::frosted)
-        .small()
-        .icon("icons/skip-forward.svg")
-        .belt(Side::Right)
-        .tooltip_above("player-next")
-        .disabled(!enabled)
-        .on_click(move |_, _, cx| {
-            playback.update(cx, |playback, cx| playback.next(cx));
+            playback.update(cx, |playback, cx| match forward {
+                true => playback.next(cx),
+                false => playback.previous(cx),
+            });
         })
 }
 

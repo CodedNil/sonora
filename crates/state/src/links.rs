@@ -3,6 +3,7 @@
 
 use gpui::{App, Context, Entity, EventEmitter, Task};
 use music::link::{self, Linked};
+use tracing::{info, warn};
 
 use crate::settings::{is_own_link, read_theme_link};
 use crate::{AppSettings, Devices, Io, Outcome, Session, SessionState, ThemeOffer, Toasts};
@@ -84,7 +85,7 @@ impl Links {
                     cx.notify();
                 }
                 Err(error) => {
-                    log::warn!("links: cannot read a theme link: {error:#}");
+                    warn!("links: cannot read a theme link: {error:#}");
                     Toasts::show(Outcome::Failed, "toast-theme-link-unreadable", cx);
                 }
             }
@@ -199,11 +200,11 @@ impl Links {
             .update(cx, |settings, cx| settings.install_theme(&offer, cx));
         match installed {
             Ok(id) => {
-                log::info!("links: installed theme {id}");
+                info!("links: installed theme {id}");
                 true
             }
             Err(error) => {
-                log::warn!("links: cannot install theme: {error:#}");
+                warn!("links: cannot install theme: {error:#}");
                 Toasts::about(
                     Outcome::Failed,
                     "toast-theme-install-failed",

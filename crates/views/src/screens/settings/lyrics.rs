@@ -153,22 +153,6 @@ impl SettingsView {
         self.row(i18n::lookup(title, None), actions.into_any_element())
     }
 
-    pub(super) fn lyrics_for_local_files_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).lyrics_for_local_files();
-
-        self.row(
-            t!("settings-lyrics-for-local-files"),
-            Switch::new("lyrics-for-local-files", on)
-                .name(t!("settings-lyrics-for-local-files"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings.update(cx, |settings, cx| {
-                        settings.set_lyrics_for_local_files(!on, cx)
-                    });
-                }))
-                .into_any_element(),
-        )
-    }
-
     /// The row that opens the sources page, saying how many sources are on.
     pub(super) fn lyrics_sources_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let settings = self.settings.read(cx);
@@ -179,7 +163,7 @@ impl SettingsView {
 
         drill(
             "lyrics-sources",
-            t!("settings-lyrics-sources"),
+            t!("settings-page-lyrics-sources"),
             Some(t!("settings-lyrics-providers-selected", count = count)),
             cx,
         )
@@ -188,9 +172,8 @@ impl SettingsView {
     }
 
     /// Every lyrics source in one list. The ones that are on come first, in the order ties
-    /// between them are settled, and each can be dragged anywhere among them. The ones that are
-    /// off follow. Every source carries its own switch.
-    pub(super) fn lyrics_priority(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// between them are settled, and each can be dragged anywhere among them. The ones that are off follow. Every source carries its own switch.
+    pub(super) fn lyrics_priority(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let settings = self.settings.read(cx);
         let order = settings.enabled_lyrics_provider_priority();
         let off = LYRICS_SOURCES
@@ -199,6 +182,21 @@ impl SettingsView {
             .collect::<Vec<_>>();
         let count = order.len();
         let total = count + off.len();
+        let row = cx.theme().metrics.list_row;
+        let from = order
+            .iter()
+            .position(|provider| Some(provider) == self.lyrics_drag.as_ref());
+        self.lyrics_motion.animate(
+            order.iter().enumerate().map(|(index, provider)| {
+                (
+                    provider.clone().into(),
+                    row * ui::reorder_index(index, from, self.lyrics_drop_gap) as f32,
+                    false,
+                )
+            }),
+            window,
+            cx,
+        );
         let mut entries: Vec<AnyElement> = order
             .into_iter()
             .enumerate()
@@ -233,6 +231,8 @@ impl SettingsView {
                 this.settings.update(cx, |settings, cx| {
                     settings.place_lyrics_provider(&dragged.provider, gap, cx)
                 });
+                this.lyrics_drag = None;
+                this.lyrics_drop_gap = None;
                 cx.notify();
             }))
             .into_any_element()
@@ -317,6 +317,11 @@ impl SettingsView {
             label: name.clone(),
             position: Point::default(),
         };
+        let me = cx.weak_entity();
+        let offset = self
+            .lyrics_motion
+            .position(&dragged.provider, theme.metrics.list_row * index as f32)
+            - theme.metrics.list_row * index as f32;
         div()
             .id(id)
             .role(Role::ListItem)
@@ -325,26 +330,38 @@ impl SettingsView {
             .aria_size_of_set(total)
             .relative()
             .h(theme.metrics.list_row)
-            .flex()
-            .items_center()
-            .gap_3()
-            .cursor_grab()
-            .child(grip(cx))
             .child(
                 div()
-                    .flex_none()
-                    .font_features(tabular())
-                    .text_color(theme.muted_foreground)
-                    .child(SharedString::from((index + 1).to_string())),
+                    .id(("lyrics-drag-row", index))
+                    .relative()
+                    .top(offset)
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .cursor_grab()
+                    .child(grip(cx))
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_features(tabular())
+                            .text_color(theme.muted_foreground)
+                            .child(SharedString::from((index + 1).to_string())),
+                    )
+                    .child(div().flex_1().min_w_0().truncate().child(name))
+                    .children(switch)
+                    .on_drag(dragged, move |dragged, position, _, cx| {
+                        me.update(cx, |this, cx| {
+                            this.lyrics_drag = Some(dragged.provider.clone());
+                            cx.notify();
+                        })
+                        .ok();
+                        cx.new(|_| DraggedSource {
+                            position,
+                            ..dragged.clone()
+                        })
+                    }),
             )
-            .child(div().flex_1().min_w_0().truncate().child(name))
-            .children(switch)
-            .on_drag(dragged, |dragged, position, _, cx| {
-                cx.new(|_| DraggedSource {
-                    position,
-                    ..dragged.clone()
-                })
-            })
             .on_drag_move(
                 cx.listener(move |this, event: &DragMoveEvent<DraggedSource>, _, cx| {
                     // The entries touch, so only the one under the cursor answers, and the list
@@ -369,36 +386,6 @@ impl SettingsView {
             )
             .when_some(edge, |entry, edge| entry.child(drop_marker(edge, cx)))
             .into_any_element()
-    }
-
-    pub(super) fn karaoke_lyrics_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).karaoke_lyrics();
-
-        self.row(
-            t!("settings-karaoke-lyrics"),
-            Switch::new("karaoke-lyrics", on)
-                .name(t!("settings-karaoke-lyrics"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_karaoke_lyrics(!on, cx));
-                }))
-                .into_any_element(),
-        )
-    }
-
-    pub(super) fn blur_lyrics_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).blur_lyrics();
-
-        self.row(
-            t!("settings-blur-lyrics"),
-            Switch::new("blur-lyrics", on)
-                .name(t!("settings-blur-lyrics"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_blur_lyrics(!on, cx));
-                }))
-                .into_any_element(),
-        )
     }
 
     pub(super) fn romanized_lyrics_row(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -446,12 +433,12 @@ pub(super) fn romanization_script_copy(
     writing_system: WritingSystem,
 ) -> (&'static str, &'static str) {
     match writing_system {
-        WritingSystem::Japanese => ("romanization-japanese", "settings-romanization-japanese"),
-        WritingSystem::Chinese => ("romanization-chinese", "settings-romanization-chinese"),
-        WritingSystem::Korean => ("romanization-korean", "settings-romanization-korean"),
+        WritingSystem::Japanese => ("romanization-japanese", "language-ja"),
+        WritingSystem::Chinese => ("romanization-chinese", "language-zh"),
+        WritingSystem::Korean => ("romanization-korean", "language-ko"),
         WritingSystem::Cyrillic => ("romanization-cyrillic", "settings-romanization-cyrillic"),
         WritingSystem::Greek => ("romanization-greek", "settings-romanization-greek"),
-        WritingSystem::Arabic => ("romanization-arabic", "settings-romanization-arabic"),
+        WritingSystem::Arabic => ("romanization-arabic", "language-ar"),
         WritingSystem::Other => ("romanization-other", "settings-romanization-other"),
     }
 }
@@ -465,7 +452,7 @@ impl Render for DraggedSource {
 /// The name a lyrics source goes by in the settings, falling back to the provider's own name.
 pub(super) fn source_name(provider: &str) -> SharedString {
     let key = match provider {
-        music::lyrics::LOCAL => "settings-lyrics-provider-local",
+        music::lyrics::LOCAL => "settings-group-local-files",
         "Subsonic" => "settings-lyrics-provider-subsonic",
         "Spotify" => "settings-lyrics-provider-spotify",
         "YouTube Music" => "settings-lyrics-provider-youtube",

@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use tracing::warn;
 
 use anyhow::Result;
 use gpui::{App, AssetSource, SharedString};
@@ -80,7 +81,7 @@ impl AssetSource for Assets {
         if let Some((_, bytes)) = FONTS.iter().find(|(name, _)| *name == path) {
             return Ok(Some(Cow::Borrowed(bytes)));
         }
-        log::warn!("assets: {path} is not registered");
+        warn!("assets: {path} is not registered");
         Ok(None)
     }
 

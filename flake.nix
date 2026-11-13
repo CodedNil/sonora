@@ -75,6 +75,7 @@
                 fontconfig
                 freetype
                 alsa-lib
+                pipewire
                 dbus
                 sqlite
                 webkitgtk_4_1
@@ -101,7 +102,6 @@
             name = "sonora-alsa-plugins";
             paths = [
               "${pkgs.pipewire}/lib/alsa-lib"
-              "${pkgs.alsa-plugins}/lib/alsa-lib"
             ];
           };
 
@@ -155,6 +155,7 @@
                 (lib.optionals stdenv.hostPlatform.isLinux [
                   makeWrapper
                   mold
+                  rustPlatform.bindgenHook
                 ])
                 (lib.optionals stdenv.hostPlatform.isDarwin [
                   (
@@ -186,7 +187,6 @@
                   stdenv.cc.cc.lib
                   (alsa-lib-with-plugins.override {
                     plugins = [
-                      alsa-plugins
                       pipewire
                     ];
                   })
@@ -397,6 +397,7 @@
                 fontconfig
                 freetype
                 alsa-lib
+                pipewire
                 dbus
                 sqlite
                 openssl
@@ -422,7 +423,10 @@
                 rustToolchain
                 sccache
               ])
-              ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.mold ];
+              ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+                pkgs.mold
+                pkgs.rustPlatform.bindgenHook
+              ];
 
             buildInputs = runtimeLibraries;
 
@@ -433,7 +437,6 @@
                 "${pkgs.symlinkJoin {
                   name = "alsa-plugins-combined";
                   paths = [
-                    "${pkgs.alsa-plugins}/lib/alsa-lib"
                     "${pkgs.pipewire}/lib/alsa-lib"
                   ];
                 }}"

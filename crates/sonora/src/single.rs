@@ -1,6 +1,7 @@
 use std::io::{self, BufRead as _, BufReader, ErrorKind, Read, Write};
 use std::thread;
 use std::time::Duration;
+use tracing::{debug, error, warn};
 
 use cli::commands::{Request, Watch};
 use cli::wire::{self, Failure, Reply};
@@ -46,7 +47,7 @@ pub fn claim(
     let name = match name() {
         Ok(name) => name,
         Err(error) => {
-            log::warn!("single: cannot name the instance socket: {error:#}");
+            warn!("single: cannot name the instance socket: {error:#}");
             return Instance::Failed;
         }
     };
@@ -57,17 +58,26 @@ pub fn claim(
         Err(error) => {
             // Windows reports an occupied pipe with an error other than
             // AddrInUse, so any failure may mean another Sonora owns the socket.
-            if hand_over(name.clone(), args) {
+            let handover = hand_over(name.clone(), args);
+            if handover.is_ok() {
                 return Instance::Running;
             }
 
             // Only a filesystem socket can leave a stale AddrInUse behind.
             if error.kind() != ErrorKind::AddrInUse {
-                log::error!("single: cannot own the instance socket: {error:#}");
+                error!("single: cannot own the instance socket: {error:#}");
                 return Instance::Failed;
             }
 
-            log::warn!("single: socket is occupied but unreachable; attempting recovery");
+            let unreachable = handover.expect_err("a successful handover returned above");
+            if !matches!(
+                unreachable.kind(),
+                ErrorKind::ConnectionRefused | ErrorKind::NotFound
+            ) {
+                error!("single: cannot reach the running instance: {unreachable:#}");
+                return Instance::Failed;
+            }
+            debug!("single: recovering an abandoned instance socket: {unreachable}");
 
             match options(name.clone())
                 .try_overwrite(true)
@@ -76,7 +86,7 @@ pub fn claim(
             {
                 Ok(listener) => listener,
                 Err(error) => {
-                    log::error!("single: cannot recover instance socket: {error:#}");
+                    error!("single: cannot recover instance socket: {error:#}");
                     return Instance::Failed;
                 }
             }
@@ -119,7 +129,7 @@ fn serve(
     commands: &UnboundedSender<Asked>,
 ) {
     if let Err(error) = connection.set_recv_timeout(Some(PATIENCE)) {
-        log::warn!("single: cannot bound the read: {error:#}");
+        warn!("single: cannot bound the read: {error:#}");
     }
     let mut reader = BufReader::new(&connection);
     let command = match reader.fill_buf() {
@@ -141,12 +151,12 @@ fn serve(
             }
             Err(wire::Error::Version(_)) => Reply::Failed(Failure::Version(wire::VERSION)),
             Err(error) => {
-                log::warn!("single: cannot read a command: {error}");
+                warn!("single: cannot read a command: {error}");
                 Reply::Failed(Failure::Malformed)
             }
         };
         if let Err(error) = wire::send(&mut &connection, &reply) {
-            log::warn!("single: cannot answer a command: {error}");
+            warn!("single: cannot answer a command: {error}");
         }
         return;
     }
@@ -174,21 +184,15 @@ fn follow(connection: &Stream, watch: Watch, commands: &UnboundedSender<Asked>) 
     }
     while let Some(reply) = replies.blocking_recv() {
         if let Err(error) = wire::send(&mut &*connection, &reply) {
-            log::debug!("single: a watch ended: {error}");
+            debug!("single: a watch ended: {error}");
             return;
         }
     }
 }
 
-fn hand_over(name: Name<'_>, args: &[String]) -> bool {
-    let mut stream = match Stream::connect(name) {
-        Ok(stream) => stream,
-        Err(error) => {
-            log::warn!("single: cannot reach the running instance: {error:#}");
-            return false;
-        }
-    };
-    stream.write_all(args.join("\n").as_bytes()).is_ok()
+fn hand_over(name: Name<'_>, args: &[String]) -> io::Result<()> {
+    let mut stream = Stream::connect(name)?;
+    stream.write_all(args.join("\n").as_bytes())
 }
 
 /// The instance socket as a file in a folder only this user can enter, so another account can
@@ -289,7 +293,7 @@ fn reachable() -> Option<interprocess::os::windows::security_descriptor::Securit
     match described {
         Ok(descriptor) => Some(descriptor),
         Err(error) => {
-            log::warn!("single: cannot describe the socket's access: {error:#}");
+            warn!("single: cannot describe the socket's access: {error:#}");
             None
         }
     }

@@ -1,16 +1,19 @@
 use std::collections::{HashMap, HashSet};
+use tracing::{debug, warn};
 
 use anyhow::{Context as _, Result};
 use librespot_core::{Session, SpotifyUri};
-use librespot_protocol::extended_metadata::{BatchedEntityRequest, EntityRequest, ExtensionQuery};
 use librespot_protocol::extension_kind::ExtensionKind;
 use librespot_protocol::metadata::{Artist as ArtistMessage, Image};
-use protobuf::{EnumOrUnknown, Message as _};
+use protobuf::Message as _;
 
-use crate::spotify::collection2::SavedItem;
+use crate::spotify::collection::SavedItem;
 use crate::spotify::pace::paced;
-use crate::spotify::{albums, collection, collection2, pathfinder, wire};
-use crate::{Album, Artist, ArtistCatalogue, ArtistProfile, ReleaseType, SavedArtist, Track};
+use crate::spotify::{albums, collection, metadata, pathfinder, wire};
+use crate::{
+    Album, AlbumCatalogue, Artist, ArtistCatalogue, ArtistProfile, ReleaseType, SUGGESTIONS,
+    SavedArtist, Track,
+};
 
 const ARTIST_PREFIX: &str = "spotify:artist:";
 const ALBUM_PREFIX: &str = "spotify:album:";
@@ -25,7 +28,7 @@ const MINED_RELEASES: usize = 12;
 pub async fn artist(session: &Session, artist_id: &str) -> Result<Artist> {
     match pathfinder::artist(session, artist_id).await {
         Ok(overview) => return overview_artist(session, overview).await,
-        Err(error) => log::warn!("artists: cannot load Pathfinder artist: {error:#}"),
+        Err(error) => warn!("artists: cannot load Pathfinder artist: {error:#}"),
     }
 
     legacy_artist(session, artist_id).await
@@ -41,7 +44,8 @@ pub async fn catalogue(
     artist_id: &str,
     known: Vec<Track>,
 ) -> Result<ArtistCatalogue> {
-    let albums = discography(session, artist_id).await?;
+    let message = metadata(session, artist_id).await?;
+    let albums = releases(session, &message).await?;
     if albums.is_empty() {
         return Ok(ArtistCatalogue::default());
     }
@@ -63,7 +67,7 @@ pub async fn tracks(session: &Session, artist_id: &str) -> Result<Vec<Track>> {
     let mut releases = match releases {
         Ok(releases) => releases,
         Err(error) => {
-            log::warn!("artists: cannot list the releases to play: {error:#}");
+            warn!("artists: cannot list the releases to play: {error:#}");
             return Ok(crate::artist_songs(ranked, artist_id));
         }
     };
@@ -75,7 +79,7 @@ pub async fn tracks(session: &Session, artist_id: &str) -> Result<Vec<Track>> {
     let tracks = match ranked_tracks(session, &releases).await {
         Ok(rest) => ranked.into_iter().chain(rest).collect(),
         Err(error) => {
-            log::warn!("artists: cannot rank the releases to play: {error:#}");
+            warn!("artists: cannot rank the releases to play: {error:#}");
             ranked
         }
     };
@@ -92,7 +96,7 @@ async fn overview_artist(session: &Session, overview: pathfinder::Overview) -> R
     let track_uris: Vec<_> = overview.tracks.iter().map(|(uri, _)| uri.clone()).collect();
     let mut known_tracks = match track_uris.is_empty() {
         true => HashMap::<String, Track>::new(),
-        false => collection::metadata(session, &track_uris).await?,
+        false => metadata::tracks(session, &track_uris).await?,
     };
     let top_tracks = overview
         .tracks
@@ -126,7 +130,7 @@ async fn legacy_artist(session: &Session, artist_id: &str) -> Result<Artist> {
     let track_uris = top_track_uris(&message, &session.country());
     let known_tracks = match track_uris.is_empty() {
         true => HashMap::<String, Track>::new(),
-        false => collection::metadata(session, &track_uris).await?,
+        false => metadata::tracks(session, &track_uris).await?,
     };
     let top_tracks = track_uris
         .iter()
@@ -150,7 +154,7 @@ async fn deepened(session: &Session, ranked: Vec<Track>, releases: &[Album]) -> 
     match popular(session, &mined, &ranked).await {
         Ok(rest) => ranked.into_iter().chain(rest).take(TOP_TRACKS).collect(),
         Err(error) => {
-            log::warn!("artists: cannot rank the rest of the catalogue: {error:#}");
+            warn!("artists: cannot rank the rest of the catalogue: {error:#}");
             ranked
         }
     }
@@ -177,7 +181,7 @@ async fn ranked_tracks(session: &Session, releases: &[Album]) -> Result<Vec<Trac
     if mined.is_empty() {
         return Ok(Vec::new());
     }
-    log::debug!(
+    debug!(
         "artists: ranking the tracks of {} of {} releases",
         mined.len(),
         releases.len()
@@ -188,7 +192,7 @@ async fn ranked_tracks(session: &Session, releases: &[Album]) -> Result<Vec<Trac
         return Ok(Vec::new());
     }
 
-    let known_tracks = collection::metadata(session, &uris).await?;
+    let known_tracks = metadata::tracks(session, &uris).await?;
     let mut rest: Vec<Track> = uris
         .iter()
         .filter_map(|uri| known_tracks.get(uri))
@@ -200,11 +204,79 @@ async fn ranked_tracks(session: &Session, releases: &[Album]) -> Result<Vec<Trac
     Ok(rest)
 }
 
-/// Every release of an artist, newest first: the albums tab of an album page reads its
-/// more-from-the-artist half off this.
-pub(crate) async fn discography(session: &Session, artist_id: &str) -> Result<Vec<Album>> {
-    let message = metadata(session, artist_id).await?;
-    releases(session, &message).await
+/// More releases and related artists from the current artist overview, falling back to metadata.
+pub(crate) async fn suggestions(
+    session: &Session,
+    artist_id: &str,
+    album_id: &str,
+) -> Result<AlbumCatalogue> {
+    // The current artist page carries Fans also like; legacy metadata often leaves it empty.
+    match pathfinder::artist(session, artist_id).await {
+        Ok(overview) => {
+            let mut also_like = overview.albums;
+            also_like.retain(|album| album.id != album_id);
+            also_like.truncate(SUGGESTIONS);
+            let mut similar = overview.similar;
+            similar.truncate(SUGGESTIONS);
+            return Ok(AlbumCatalogue { also_like, similar });
+        }
+        Err(error) => debug!("artists: cannot load Pathfinder suggestions: {error:#}"),
+    }
+    let artist = metadata(session, artist_id).await?;
+    let (albums, similar) = tokio::join!(releases(session, &artist), related(session, &artist));
+    let mut also_like = albums.unwrap_or_else(|error| {
+        debug!("artists: cannot load more releases: {error:#}");
+        Vec::new()
+    });
+    also_like.retain(|album| album.id != album_id);
+    also_like.truncate(SUGGESTIONS);
+    let similar = similar.unwrap_or_else(|error| {
+        debug!("artists: cannot load related artists: {error:#}");
+        Vec::new()
+    });
+    Ok(AlbumCatalogue { also_like, similar })
+}
+
+/// Expands the related artist IDs in metadata into named cards with portraits.
+async fn related(session: &Session, artist: &ArtistMessage) -> Result<Vec<SavedArtist>> {
+    let mut seen = HashSet::new();
+    let ids: Vec<_> = artist
+        .related
+        .iter()
+        .filter_map(|artist| metadata::base62(artist.gid()))
+        .filter(|id| seen.insert(id.clone()))
+        .take(SUGGESTIONS)
+        .collect();
+    let mut found = cards(session, &ids).await.unwrap_or_else(|error| {
+        debug!("artists: cannot load related artist portraits: {error:#}");
+        HashMap::new()
+    });
+    Ok(ids
+        .into_iter()
+        .filter_map(|id| {
+            found.remove(&id).or_else(|| {
+                let related = artist
+                    .related
+                    .iter()
+                    .find(|artist| metadata::base62(artist.gid()).as_ref() == Some(&id))?;
+                if related.name().is_empty() {
+                    return None;
+                }
+                let profile = profile_from(related);
+                Some(SavedArtist {
+                    id,
+                    name: profile.name,
+                    cover: profile.cover_large,
+                    added_at: None,
+                })
+            })
+        })
+        .collect())
+}
+
+async fn discography(session: &Session, artist_id: &str) -> Result<Vec<Album>> {
+    let artist = metadata(session, artist_id).await?;
+    releases(session, &artist).await
 }
 
 async fn releases(session: &Session, artist: &ArtistMessage) -> Result<Vec<Album>> {
@@ -225,7 +297,7 @@ fn newest_first(releases: impl Iterator<Item = Album>) -> Vec<Album> {
         .filter(|album| seen.insert((album.name.to_lowercase(), album.release_type)))
         .collect();
 
-    releases.sort_by(|left, right| right.release_date.cmp(&left.release_date));
+    releases.sort_by_key(|album| std::cmp::Reverse(album.release_date));
     releases
 }
 
@@ -261,13 +333,13 @@ pub async fn saved_artists(session: &Session) -> Result<Vec<SavedArtist>> {
 }
 
 async fn followed(session: &Session) -> Result<Vec<SavedItem>> {
-    match collection2::saved_items(session, collection2::ARTISTS, ARTIST_PREFIX).await {
+    match collection::saved_items(session, collection::ARTISTS, ARTIST_PREFIX).await {
         Ok(items) if !items.is_empty() => return Ok(items),
-        Ok(_) => log::debug!("artists: the followed set is empty, reading the collection set"),
-        Err(error) => log::warn!("artists: cannot read the followed set: {error:#}"),
+        Ok(_) => debug!("artists: the followed set is empty, reading the collection set"),
+        Err(error) => warn!("artists: cannot read the followed set: {error:#}"),
     }
 
-    collection2::saved_items(session, collection2::COLLECTION, ARTIST_PREFIX).await
+    collection::saved_items(session, collection::COLLECTION, ARTIST_PREFIX).await
 }
 
 pub async fn images(session: &Session, ids: &[String]) -> Result<HashMap<String, String>> {
@@ -283,51 +355,38 @@ async fn cards(session: &Session, ids: &[String]) -> Result<HashMap<String, Save
         return Ok(HashMap::new());
     }
 
-    let request = BatchedEntityRequest {
-        entity_request: ids
-            .iter()
-            .map(|id| EntityRequest {
-                entity_uri: format!("{ARTIST_PREFIX}{id}"),
-                query: vec![ExtensionQuery {
-                    extension_kind: EnumOrUnknown::new(ExtensionKind::ARTIST_V4),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            })
-            .collect(),
-        ..Default::default()
-    };
-
-    let response = paced(|| session.spclient().get_extended_metadata(request.clone()))
+    let uris: Vec<_> = ids
+        .iter()
+        .map(|id| format!("{ARTIST_PREFIX}{id}"))
+        .collect();
+    let response = metadata::extended(session, &uris, ExtensionKind::ARTIST_V4)
         .await
         .context("cannot read artist portraits")?;
 
     let mut found = HashMap::new();
-    for array in response.extended_metadata {
-        for entity in array.extension_data {
-            let Ok(message) = ArtistMessage::parse_from_bytes(&entity.extension_data.value) else {
-                continue;
-            };
-            let Some(id) = entity.entity_uri.strip_prefix(ARTIST_PREFIX) else {
-                continue;
-            };
-            let smallest = portraits(&message)
-                .into_iter()
-                .min_by_key(|image| wire::image_width(image));
+    for entity in response {
+        let Ok(message) = ArtistMessage::parse_from_bytes(&entity.extension_data.value) else {
+            continue;
+        };
+        let Some(id) = entity.entity_uri.strip_prefix(ARTIST_PREFIX) else {
+            continue;
+        };
+        let smallest = portraits(&message)
+            .into_iter()
+            .min_by_key(|image| wire::image_width(image));
 
-            found.insert(
-                id.to_owned(),
-                SavedArtist {
-                    id: id.to_owned(),
-                    name: match message.name() {
-                        "" => UNKNOWN.to_owned(),
-                        name => name.to_owned(),
-                    },
-                    cover: smallest.and_then(|image| wire::image_url(image.file_id())),
-                    added_at: None,
+        found.insert(
+            id.to_owned(),
+            SavedArtist {
+                id: id.to_owned(),
+                name: match message.name() {
+                    "" => UNKNOWN.to_owned(),
+                    name => name.to_owned(),
                 },
-            );
-        }
+                cover: smallest.and_then(|image| wire::image_url(image.file_id())),
+                added_at: None,
+            },
+        );
     }
 
     Ok(found)
@@ -419,7 +478,7 @@ fn top_track_uris(artist: &ArtistMessage, country: &str) -> Vec<String> {
         })
         .into_iter()
         .flat_map(|tracks| tracks.track.iter())
-        .filter_map(|track| collection::base62(track.gid()))
+        .filter_map(|track| metadata::base62(track.gid()))
         .map(|id| format!("{TRACK_PREFIX}{id}"))
         .collect()
 }
@@ -433,7 +492,7 @@ fn release_uris(artist: &ArtistMessage) -> Vec<String> {
         .chain(artist.single_group.iter())
         .chain(artist.compilation_group.iter())
         .flat_map(|group| group.album.iter())
-        .filter_map(|album| collection::base62(album.gid()))
+        .filter_map(|album| metadata::base62(album.gid()))
         .filter(|id| seen.insert(id.clone()))
         .map(|id| format!("{ALBUM_PREFIX}{id}"))
         .collect()
@@ -465,9 +524,8 @@ mod tests {
             cover: None,
             cover_large: None,
             release_type,
-            year: 0,
-            track_count: 0,
-            release_date: date.to_owned(),
+            track_count: None,
+            release_date: crate::ReleaseDate::parse(date),
             label: String::new(),
             copyrights: Vec::new(),
             added_at: None,

@@ -98,6 +98,7 @@ pub struct Button {
     /// A small element drawn after the icon and before the label, as a picker's curve sketch.
     leading: Option<AnyElement>,
     detail: Option<SharedString>,
+    icon_size: Option<Pixels>,
     trailing: Option<SharedString>,
     variant: Variant,
     small: bool,
@@ -146,6 +147,7 @@ impl Button {
             icon: None,
             leading: None,
             detail: None,
+            icon_size: None,
             trailing: None,
             variant: Variant::Ghost,
             small: false,
@@ -226,6 +228,12 @@ impl Button {
     /// that opens a page of its own says what is chosen there.
     pub fn detail(mut self, detail: impl Into<SharedString>) -> Self {
         self.detail = Some(detail.into());
+        self
+    }
+
+    /// Draws the icons at `size` rather than the usual 16 pixels.
+    pub fn icon_size(mut self, size: Pixels) -> Self {
+        self.icon_size = Some(size);
         self
     }
 
@@ -445,6 +453,7 @@ impl RenderOnce for Button {
             icon,
             leading,
             detail,
+            icon_size,
             trailing,
             variant,
             small,
@@ -621,6 +630,9 @@ impl RenderOnce for Button {
         let glow_color = lit.map(|(_, color)| color).or(hover_fill);
         let tracked = interactive && !hoverless && glow_color.is_some();
         let pressed = state_style(active, pressed, frosting);
+        let glyph_size = icon_size.unwrap_or(ICON);
+        let glyph =
+            |path, color, turn, scale, shift| glyph(path, color, turn, scale, shift, glyph_size);
         let overrides = std::mem::take(base.style());
         let natural = label.as_ref().filter(|_| fits).map(|label| {
             let mut text = TextStyleRefinement::default();
@@ -840,7 +852,7 @@ impl RenderOnce for Button {
                             div()
                                 .relative()
                                 .flex_none()
-                                .size(ICON)
+                                .size(glyph_size)
                                 .child(coming)
                                 .child(going.absolute().top_0().left_0()),
                         )
@@ -867,7 +879,7 @@ impl RenderOnce for Button {
                                 div()
                                     .relative()
                                     .flex_none()
-                                    .size(ICON)
+                                    .size(glyph_size)
                                     .child(shown)
                                     .child(gone.absolute().top_0().left_0()),
                             ),
@@ -915,7 +927,7 @@ impl RenderOnce for Button {
                 this.child(
                     svg()
                         .path(icons::path(path))
-                        .size(ICON)
+                        .size(glyph_size)
                         .flex_none()
                         .text_color(foreground),
                 )
@@ -1000,10 +1012,17 @@ impl RenderOnce for Button {
 
 /// The button's icon in `color`, turned by `turn` of a full turn, drawn at `scale` of its size
 /// and moved `shift` sideways from its place.
-fn glyph(path: SharedString, color: Hsla, turn: f32, scale: f32, shift: Pixels) -> Svg {
+fn glyph(
+    path: SharedString,
+    color: Hsla,
+    turn: f32,
+    scale: f32,
+    shift: Pixels,
+    width: Pixels,
+) -> Svg {
     svg()
         .path(icons::path(path))
-        .size(ICON)
+        .size(width)
         .flex_none()
         .text_color(color)
         .with_transformation(

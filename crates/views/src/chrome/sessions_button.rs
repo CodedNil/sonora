@@ -4,7 +4,7 @@ use i18n::t;
 use input::ShowMembers;
 use music::connect::{DeviceKind, Elsewhere};
 use state::{Devices, Listening, Sonora};
-use ui::{ActiveTheme as _, Menu, MenuItem, Picker, Popovers, SubmenuState};
+use ui::{ActiveTheme as _, Button, Menu, MenuItem, Picker, Popovers, SubmenuState, Text};
 
 use crate::chrome::jam;
 use crate::chrome::members::gathered;
@@ -239,7 +239,7 @@ impl Render for SessionsButton {
             .map_or("icons/monitor-speaker.svg", |elsewhere| {
                 icon(elsewhere.device.kind)
             });
-        Picker::icon("sessions", &self.popovers, glyph)
+        let picker = Picker::icon("sessions", &self.popovers, glyph)
             .tooltip_above("player-sessions")
             .tint(match busy {
                 true => theme.foreground,
@@ -247,7 +247,38 @@ impl Render for SessionsButton {
             })
             .when(busy, |picker| picker.status(theme.primary))
             .width(Picker::WIDE)
-            .items(items)
+            .items(items);
+        div()
+            .flex()
+            .items_center()
+            .gap(theme.metrics.pad)
+            .when_some(elsewhere, |this, elsewhere| {
+                let devices = self.devices.clone();
+                this.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .text_size(theme.text(Text::Small))
+                        .child(
+                            ui::spoken("sessions-external-device", elsewhere.device.name)
+                                .max_w(Picker::NARROW)
+                                .truncate(),
+                        )
+                        .child(
+                            Button::new("sessions-play-here")
+                                .ghost()
+                                .small()
+                                .h_auto()
+                                .p_0()
+                                .text_size(theme.text(Text::Tiny))
+                                .tint(theme.muted_foreground)
+                                .label(t!("devices-elsewhere-here"))
+                                .on_click(move |_, _, cx| devices.read(cx).transfer_here()),
+                        ),
+                )
+            })
+            .child(picker)
             .into_any_element()
     }
 }

@@ -1,5 +1,6 @@
 use std::sync::Mutex;
 use std::time::Duration;
+use tracing::info;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -80,7 +81,7 @@ impl LyricsProvider for SubsonicLyrics {
         let sheets = match client.lyrics_by_song(id).await {
             Ok(list) => structured(list.structured_lyrics),
             Err(error) => {
-                log::info!("subsonic: no structured lyrics, asking by name: {error:#}");
+                info!("subsonic: no structured lyrics, asking by name: {error:#}");
                 let legacy = client.lyrics_by_name(&query.artist, &query.title).await?;
                 legacy
                     .value

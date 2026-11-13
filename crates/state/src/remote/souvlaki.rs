@@ -1,5 +1,6 @@
 use std::ffi::c_void;
 use std::time::Duration;
+use tracing::warn;
 
 use anyhow::{Result, anyhow};
 use gpui::App;
@@ -38,7 +39,7 @@ impl Controls {
                 commands.send(command).ok();
             }
         }) {
-            log::warn!("remote: cannot listen for media keys: {error:?}");
+            warn!("remote: cannot listen for media keys: {error:?}");
         }
         Ok(Self { controls })
     }
@@ -49,13 +50,13 @@ impl Controls {
                 title: Some(&track.name),
                 artist: Some(&track.artists),
                 album: Some(&track.album),
-                duration: Some(track.duration),
+                duration: track.duration,
                 cover_url: cover,
             },
             None => MediaMetadata::default(),
         };
         if let Err(error) = self.controls.set_metadata(metadata) {
-            log::warn!("remote: cannot publish the current track: {error:?}");
+            warn!("remote: cannot publish the current track: {error:?}");
         }
     }
 
@@ -67,7 +68,7 @@ impl Controls {
             PlaybackState::Idle | PlaybackState::Failed(_) => MediaPlayback::Stopped,
         };
         if let Err(error) = self.controls.set_playback(playback) {
-            log::warn!("remote: cannot publish playback state: {error:?}");
+            warn!("remote: cannot publish playback state: {error:?}");
         }
     }
 

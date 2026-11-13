@@ -8,10 +8,14 @@ use std::rc::Rc;
 
 use music::{GenreItem, GenreSection};
 use state::Playback;
-use ui::{ActiveTheme as _, Button, Card, Deck, Glide, Mode, Skeleton, Text, heading, snapped};
+use ui::{
+    ActiveTheme as _, Button, Card, Deck, Glide, Mode, ScrollAnchors, Skeleton, Text, heading,
+    snapped,
+};
 
 use crate::shared::album_grid::CardGrid;
 use crate::shared::cards;
+use crate::shared::page;
 
 const PLATE: Pixels = px(260.);
 const LANES: usize = 5;
@@ -30,6 +34,7 @@ pub(crate) struct Shelves {
     host: EntityId,
     playback: Entity<Playback>,
     rails: Vec<(ScrollHandle, Glide)>,
+    anchors: Option<ScrollAnchors>,
 }
 
 impl Shelves {
@@ -39,7 +44,14 @@ impl Shelves {
             host,
             playback,
             rails: Vec::new(),
+            anchors: None,
         }
+    }
+
+    /// Marks each shelf's heading for the page's shared magnetic scroller.
+    pub(crate) fn magnetic(mut self, anchors: ScrollAnchors) -> Self {
+        self.anchors = Some(anchors);
+        self
     }
 
     fn tag(&self, kind: &str, place: usize) -> SharedString {
@@ -122,9 +134,13 @@ impl Shelves {
                 let holder = view.downgrade();
                 let shelves = view.read(cx);
 
-                match mode {
+                let shelf = match mode {
                     Mode::Grid => shelves.rail(place, &sections, width, &holder, window, cx),
                     Mode::List => shelves.lane(place, section, width, window, cx),
+                };
+                match &shelves.anchors {
+                    Some(anchors) => anchors.mark(("shelf", place), shelf).into_any_element(),
+                    None => shelf,
                 }
             });
 
@@ -330,21 +346,10 @@ impl Shelves {
         let glide = glide.clone();
         let me = me.clone();
 
-        Button::new(id)
-            .small()
-            .outline()
-            .icon(match forward {
-                true => "icons/chevron-right.svg",
-                false => "icons/chevron-left.svg",
-            })
-            .tooltip(match forward {
-                true => "common-next",
-                false => "common-previous",
-            })
-            .on_click(move |_, window, cx| {
-                slide(&handle, &glide, forward, window);
-                me.update(cx, |_, cx| cx.notify()).ok();
-            })
+        page::arrow_button(id, !forward).on_click(move |_, window, cx| {
+            slide(&handle, &glide, forward, window);
+            me.update(cx, |_, cx| cx.notify()).ok();
+        })
     }
 
     fn card(&self, id: usize, item: &GenreItem, tile: Option<Pixels>, cx: &App) -> Card {
@@ -365,6 +370,7 @@ pub(crate) fn plate(
 pub(crate) fn grid(
     id: &'static str,
     genres: Rc<Vec<music::Genre>>,
+    anchors: ScrollAnchors,
     width: Pixels,
     window: &Window,
     cx: &App,
@@ -374,6 +380,7 @@ pub(crate) fn grid(
     let rows = genres.len().div_ceil(lanes);
 
     Deck::new(id)
+        .magnetic(anchors)
         .rows((0..rows).map(|_| row))
         .gap(LANE_GAP)
         .draw(move |place, _, cx| {
@@ -660,21 +667,10 @@ fn arrow(
     let glide = glide.clone();
     let notify = notify.clone();
 
-    Button::new(id)
-        .small()
-        .outline()
-        .icon(match forward {
-            true => "icons/chevron-right.svg",
-            false => "icons/chevron-left.svg",
-        })
-        .tooltip(match forward {
-            true => "common-next",
-            false => "common-previous",
-        })
-        .on_click(move |_, window, cx| {
-            slide(&scroll, &glide, forward, window);
-            notify(cx);
-        })
+    page::arrow_button(id, !forward).on_click(move |_, window, cx| {
+        slide(&scroll, &glide, forward, window);
+        notify(cx);
+    })
 }
 
 fn slot(kind: &'static str, place: usize) -> ElementId {

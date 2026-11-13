@@ -5,6 +5,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
+use tracing::{error, warn};
 
 use anyhow::{Context as _, Result};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -116,7 +117,7 @@ impl Window {
             {
                 Ok(found) => read_cookies(&found),
                 Err(error) => {
-                    log::warn!("webview: cannot read sign-in cookies: {error}");
+                    warn!("webview: cannot read sign-in cookies: {error}");
                     *slot.borrow_mut() = Fetch::Idle;
                     return Ok(());
                 }
@@ -124,14 +125,14 @@ impl Window {
             match cookies {
                 Ok(cookies) => *slot.borrow_mut() = Fetch::Done(cookies),
                 Err(error) => {
-                    log::warn!("webview: cannot decode sign-in cookies: {error}");
+                    warn!("webview: cannot decode sign-in cookies: {error}");
                     *slot.borrow_mut() = Fetch::Idle;
                 }
             }
             Ok(())
         }));
         if let Err(error) = unsafe { cookies.GetCookies(w!(""), &handler) } {
-            log::warn!("webview: cannot start sign-in cookie fetch: {error}");
+            warn!("webview: cannot start sign-in cookie fetch: {error}");
             *self.fetch.borrow_mut() = Fetch::Idle;
         }
         None
@@ -149,7 +150,7 @@ impl Window {
         };
         let url = wide(url);
         if let Err(error) = unsafe { view.Navigate(PCWSTR(url.as_ptr())) } {
-            log::warn!("webview: cannot load the sign-in url again: {error}");
+            warn!("webview: cannot load the sign-in url again: {error}");
         }
     }
 
@@ -167,12 +168,12 @@ impl Window {
         let script = wide(script);
         let handler = ExecuteScriptCompletedHandler::create(Box::new(|result, _value| {
             if let Err(error) = result {
-                log::warn!("webview: the page refused a script: {error}");
+                warn!("webview: the page refused a script: {error}");
             }
             Ok(())
         }));
         if let Err(error) = unsafe { view.ExecuteScript(PCWSTR(script.as_ptr()), &handler) } {
-            log::warn!("webview: cannot run a script in the page: {error}");
+            warn!("webview: cannot run a script in the page: {error}");
         }
     }
 
@@ -337,7 +338,7 @@ fn inject(view: &ICoreWebView2, script: &str) -> Result<()> {
     let handler =
         AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(|result, _id| {
             if let Err(error) = result {
-                log::warn!("webview: the page script was refused: {error}");
+                warn!("webview: the page script was refused: {error}");
             }
             Ok(())
         }));
@@ -347,7 +348,7 @@ fn inject(view: &ICoreWebView2, script: &str) -> Result<()> {
 
 /// Closes an unusable host after an asynchronous setup failure.
 fn fail(hwnd: HWND, error: anyhow::Error) {
-    log::error!("webview: cannot prepare the sign-in window: {error:#}");
+    error!("webview: cannot prepare the sign-in window: {error:#}");
     let _ = unsafe { DestroyWindow(hwnd) };
 }
 

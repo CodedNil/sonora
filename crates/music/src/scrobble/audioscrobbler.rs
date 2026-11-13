@@ -1,4 +1,5 @@
 use std::time::Duration;
+use tracing::warn;
 
 use anyhow::{Context as _, Result, bail};
 use async_trait::async_trait;
@@ -193,7 +194,7 @@ async fn token(listener: TcpListener) -> Result<String> {
         let mut line = String::new();
         let read = BufReader::new(&mut stream).read_line(&mut line).await;
         if let Err(error) = read {
-            log::warn!("scrobble: cannot read the callback: {error}");
+            warn!("scrobble: cannot read the callback: {error}");
             continue;
         }
         let found = parameter(&line, "token");

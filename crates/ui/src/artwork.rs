@@ -23,6 +23,7 @@ use std::panic::Location;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
+use tracing::{debug, warn};
 
 const FILE_PREFIX: &str = "file://";
 
@@ -218,7 +219,7 @@ fn decoders() -> mpsc::Sender<Job> {
                 }
             });
         if let Err(error) = started {
-            log::warn!("artwork: cannot start a decoder: {error}");
+            warn!("artwork: cannot start a decoder: {error}");
         }
     }
 
@@ -272,7 +273,7 @@ fn animated_frames<'a>(
                     delay,
                 ));
             }
-            Err(error) => log::debug!("Skipping artwork animation frame: {error}"),
+            Err(error) => debug!("Skipping artwork animation frame: {error}"),
         }
     }
     if frames.is_empty() {
@@ -573,7 +574,7 @@ impl ArtworkCache {
         let small = self.count(SMALL_BYTES..BIG_BYTES);
         let big = self.count(BIG_BYTES..);
 
-        log::debug!(
+        debug!(
             "artwork: {} held / {} KiB, dropped {}, idle {idle}, abandoned {}, waiting {}, sizes {tiny}/{small}/{big}",
             self.items.len(),
             self.bytes / 1024,
@@ -744,7 +745,7 @@ fn blurred(image: &RenderImage) -> Option<Arc<RenderImage>> {
         })
         .collect();
     if frames.len() != image.frame_count() {
-        log::warn!("artwork: cannot soften an image");
+        warn!("artwork: cannot soften an image");
         return None;
     }
 
@@ -1066,10 +1067,10 @@ impl RenderOnce for Artwork {
         let placeholder = {
             let fallback = fallback.clone();
             move || match overlay {
-                true => div().w(size).h(tall).into_any_element(),
-                false => {
-                    blank(size, tall, rounded, muted, glyph, fallback.clone()).into_any_element()
-                }
+                true => div().size_full().into_any_element(),
+                false => blank(size, tall, rounded, muted, glyph, fallback.clone())
+                    .size_full()
+                    .into_any_element(),
             }
         };
 
@@ -1125,16 +1126,16 @@ impl RenderOnce for Artwork {
                                     .absolute()
                                     .top_0()
                                     .left_0()
-                                    .w(size)
-                                    .h(tall)
+                                    .size_full()
                                     .rounded(rounded),
                             )
                         })
                         .child(
                             img(source)
                                 .image_cache(&cache)
-                                .w(size)
-                                .h(tall)
+                                // Decode resolution belongs to the cache; drawing follows the
+                                // wrapper, including a caller's rectangular bounds.
+                                .size_full()
                                 .object_fit(ObjectFit::Cover)
                                 .rounded(rounded)
                                 .with_fallback(placeholder),

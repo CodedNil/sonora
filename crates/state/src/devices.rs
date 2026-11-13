@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
+use tracing::{debug, warn};
 
 use anyhow::Result;
 use futures::{StreamExt as _, stream};
@@ -819,7 +820,7 @@ impl Devices {
                         track.added_by = added_by.as_deref().and_then(|id| this.known(id));
                         this.here(cx, |playback, cx| playback.enqueue(track, cx))
                     }
-                    Err(error) => log::warn!("connect: cannot queue {key}: {error:#}"),
+                    Err(error) => warn!("connect: cannot queue {key}: {error:#}"),
                 }
             },
             cx,
@@ -855,7 +856,7 @@ impl Devices {
                         library.liked_elsewhere(&id, Some(track), cx)
                     }),
                     Err(error) => {
-                        log::warn!("connect: cannot read the liked track {id}: {error:#}")
+                        warn!("connect: cannot read the liked track {id}: {error:#}")
                     }
                 }
             },
@@ -881,7 +882,7 @@ impl Devices {
             .as_deref()
             .is_some_and(|sent| same_queue(sent, &state))
         {
-            log::debug!("connect: dropping a queue edit made on an older report");
+            debug!("connect: dropping a queue edit made on an older report");
             self.sent = None;
             self.publish(cx);
             return;
@@ -976,7 +977,7 @@ impl Devices {
                         }
                     }
                     Err(error) => {
-                        log::warn!("connect: cannot apply playback change: {error:#}");
+                        warn!("connect: cannot apply playback change: {error:#}");
                         this.sent = None;
                         this.publish(cx);
                     }
@@ -1013,7 +1014,7 @@ impl Devices {
         else {
             return;
         };
-        log::debug!(
+        debug!(
             "connect: reporting {} at {:?} because of the {reason}",
             now.track.as_ref().map_or("", |track| &track.id),
             now.position
@@ -1042,7 +1043,7 @@ impl Devices {
             context,
             playing: playback.wants_playing(),
             position: playback.live_position(),
-            duration: track.duration,
+            duration: track.duration.unwrap_or_default(),
             volume: playback.volume(),
             shuffle: Some(queue.shuffle()),
             repeat: Some(playback.repeat()),
@@ -1132,7 +1133,7 @@ async fn person(client: &dyn MusicApi, id: String) -> Option<(String, Arc<Contri
             }),
         )),
         Err(error) => {
-            log::warn!("connect: cannot read who queued a track: {error:#}");
+            warn!("connect: cannot read who queued a track: {error:#}");
             None
         }
     }
@@ -1269,7 +1270,7 @@ async fn resolve_queue(
             Ok(track) if track.id.as_ref() == Some(&id) => {
                 known.insert(id, track);
             }
-            result => log::warn!("connect: cannot resolve queued track {id}: {result:?}"),
+            result => warn!("connect: cannot resolve queued track {id}: {result:?}"),
         }
     }
     ids.iter().map(|id| known.get(id).cloned()).collect()

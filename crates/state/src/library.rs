@@ -3,7 +3,8 @@ use std::future::Future;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+use tracing::{debug, warn};
 
 use gpui::{App, Context, Entity, SharedString, Task};
 use music::{
@@ -562,17 +563,10 @@ fn hold<T>(what: &str, result: anyhow::Result<Vec<T>>, into: &mut Rows<T>) -> bo
             true
         }
         Err(error) => {
-            log::warn!("library: cannot load the starred {what}: {error:#}");
+            warn!("library: cannot load the starred {what}: {error:#}");
             false
         }
     }
-}
-
-fn stamp() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
 }
 
 fn take<T>(
@@ -581,7 +575,7 @@ fn take<T>(
     problems: &mut Vec<Problem>,
 ) -> Vec<T> {
     result.unwrap_or_else(|error| {
-        log::warn!("library: cannot load {}: {error:#}", part.label());
+        warn!("library: cannot load {}: {error:#}", part.label());
         problems.push(Problem {
             part,
             reason: format!("{error:#}"),
@@ -642,7 +636,7 @@ impl Library {
                             Some(previous) => S::hold(this, previous, true),
                             None => S::hold(this, item, false),
                         }
-                        log::warn!("library: cannot update the {}: {error:#}", S::TROUBLE);
+                        warn!("library: cannot update the {}: {error:#}", S::TROUBLE);
                         let key = match saved {
                             true => "toast-library-add-failed",
                             false => "toast-library-remove-failed",
@@ -843,7 +837,7 @@ impl Savable for Track {
     }
 
     fn stamp_added(&mut self) {
-        self.added_at = Some(stamp());
+        self.added_at = Some(music::Timestamp::now());
     }
 
     fn saved_now(library: &Library, id: &str) -> Option<Self> {
@@ -909,7 +903,7 @@ impl Savable for Album {
     }
 
     fn stamp_added(&mut self) {
-        self.added_at = Some(stamp());
+        self.added_at = Some(music::Timestamp::now());
     }
 
     fn saved_now(library: &Library, id: &str) -> Option<Self> {
@@ -955,7 +949,7 @@ impl Savable for SavedArtist {
     }
 
     fn stamp_added(&mut self) {
-        self.added_at = Some(stamp());
+        self.added_at = Some(music::Timestamp::now());
     }
 
     fn saved_now(library: &Library, id: &str) -> Option<Self> {
@@ -1320,7 +1314,7 @@ impl Library {
                     starred_albums,
                     starred_artists,
                 } = remembered;
-                log::debug!(
+                debug!(
                     "library: the {} shelf starts from a snapshot of {} songs, {} playlists, \
                      {} albums and {} artists",
                     shelf.name(),
@@ -1457,17 +1451,15 @@ impl Library {
                         done(true, cx);
                     }
                     Ok((music::PinOutcome::LimitReached, _)) => {
-                        log::debug!(
-                            "library: the provider's pin limit is reached, pinning locally"
-                        );
+                        debug!("library: the provider's pin limit is reached, pinning locally");
                         done(true, cx);
                     }
                     Ok((music::PinOutcome::Outside, _)) => {
-                        log::debug!("library: the item is not in the library, pinning locally");
+                        debug!("library: the item is not in the library, pinning locally");
                         done(true, cx);
                     }
                     Err(error) => {
-                        log::warn!("library: cannot update the library pin: {error:#}");
+                        warn!("library: cannot update the library pin: {error:#}");
                         Toasts::show(Outcome::Failed, "toast-library-pin-failed", cx);
                         done(false, cx);
                     }
@@ -1505,7 +1497,7 @@ impl Library {
                         }
                         Ok(_) => {}
                         Err(error) => {
-                            log::warn!("library: cannot read the provider's pins: {error:#}");
+                            warn!("library: cannot read the provider's pins: {error:#}");
                             crate::noted(&error, cx);
                         }
                     })
@@ -1790,7 +1782,7 @@ impl Library {
                         if let Some(sweep) = sweep {
                             this.answer(sweep, None, cx);
                         }
-                        log::warn!("library: cannot change the library: {error:#}");
+                        warn!("library: cannot change the library: {error:#}");
                         let failed = match present {
                             true => "toast-library-add-failed",
                             false => "toast-library-remove-failed",
@@ -1906,7 +1898,7 @@ impl Library {
                 client.add_tracks_to_playlist(&id, &tracks).await?;
                 let fetched = client.playlist(&id).await.map(|detail| detail.playlist);
                 Ok(fetched.unwrap_or_else(|error| {
-                    log::warn!("library: a new playlist is not readable yet: {error:#}");
+                    warn!("library: a new playlist is not readable yet: {error:#}");
                     Playlist {
                         id,
                         name,
@@ -1946,7 +1938,7 @@ impl Library {
                 };
                 let target = Some(Target::Playlist(SharedString::from(playlist.id.clone())));
                 let key = match skipped {
-                    0 => "toast-playlist-imported",
+                    0 => "common-imported",
                     _ => "toast-playlist-imported-partly",
                 };
                 this.insert_playlist(playlist, cx);
@@ -2012,7 +2004,7 @@ impl Library {
             },
             move |client| async move { client.set_playlist_public(&id, public).await },
             move |this, _, cx| {
-                this.amend_playlist(&changed, |playlist| playlist.public = public, cx);
+                this.amend_playlist(&changed, |playlist| playlist.public = Some(public), cx);
             },
             cx,
         );
@@ -2072,7 +2064,7 @@ impl Library {
                 let reported = match client.playlist(&id).await {
                     Ok(detail) => detail.playlist.cover,
                     Err(error) => {
-                        log::warn!("library: cannot read a playlist after its cover: {error:#}");
+                        warn!("library: cannot read a playlist after its cover: {error:#}");
                         None
                     }
                 };
@@ -2231,7 +2223,7 @@ impl Library {
             .filter(|_| self.saved(track_id) && !self.pending(track_id))
             .cloned();
         if track.is_none() {
-            log::warn!("library: cannot unlike a moved track the favorites do not list");
+            warn!("library: cannot unlike a moved track the favorites do not list");
         }
         track
     }
@@ -2349,7 +2341,11 @@ impl Library {
         let added_count = track_ids.len() as u32;
         self.amend_playlist(
             playlist_id,
-            |playlist| playlist.track_count += added_count,
+            |playlist| {
+                playlist.track_count = playlist
+                    .track_count
+                    .map(|count| count.saturating_add(added_count))
+            },
             cx,
         );
         if let Some(ids) = self.contents.get_mut(playlist_id) {
@@ -2370,7 +2366,11 @@ impl Library {
     ) {
         self.amend_playlist(
             playlist_id,
-            |playlist| playlist.track_count = playlist.track_count.saturating_sub(dropped_count),
+            |playlist| {
+                playlist.track_count = playlist
+                    .track_count
+                    .map(|count| count.saturating_sub(dropped_count))
+            },
             cx,
         );
         if let Some(ids) = self.contents.get_mut(playlist_id) {
@@ -2681,12 +2681,16 @@ impl Library {
         let mut wanted = Vec::new();
         let mut adopted = Vec::new();
         for (index, playlist) in playlists.iter().enumerate() {
-            if playlist.cover.is_some() || (playlist.track_count as usize) < mosaic::TILES {
+            if playlist.cover.is_some()
+                || playlist
+                    .track_count
+                    .is_some_and(|count| (count as usize) < mosaic::TILES)
+            {
                 continue;
             }
-            match mosaic::cached(&playlist.id, playlist.track_count) {
+            match mosaic::cached(&playlist.id, playlist.track_count.unwrap_or(0)) {
                 Some(cover) => adopted.push((index, cover)),
-                None => wanted.push((playlist.id.clone(), playlist.track_count)),
+                None => wanted.push((playlist.id.clone(), playlist.track_count.unwrap_or(0))),
             }
         }
         for (index, cover) in adopted {
@@ -2725,7 +2729,7 @@ impl Library {
                         this.update(cx, |this, cx| this.paint_mosaic(id, stamp, covers, cx))
                             .ok();
                     }
-                    Err(error) => log::warn!("library: cannot read playlist covers: {error:#}"),
+                    Err(error) => warn!("library: cannot read playlist covers: {error:#}"),
                 }
             });
             self.mosaics.insert(key, task);
@@ -2735,14 +2739,17 @@ impl Library {
     fn mosaic_stamp(&self, id: &str) -> Option<u32> {
         let playlist = self.playlist(id)?;
 
-        (playlist.cover.is_none() && playlist.track_count as usize >= mosaic::TILES)
-            .then_some(playlist.track_count)
+        (playlist.cover.is_none()
+            && playlist
+                .track_count
+                .is_none_or(|count| count as usize >= mosaic::TILES))
+        .then_some(playlist.track_count.unwrap_or(0))
     }
 
-    /// Whether the listener may change the playlist `id`: one they own or collaborate on.
+    /// Whether the provider allows the listener to add or remove tracks in playlist `id`.
     pub fn is_editable(&self, id: &str) -> bool {
         self.playlist(id)
-            .is_some_and(|playlist| playlist.owned || playlist.collaborative)
+            .is_some_and(|playlist| playlist.can_edit_tracks)
     }
 
     fn paint_mosaic(
@@ -2773,7 +2780,7 @@ impl Library {
                         this.set_playlist_cover(&id, cover);
                         cx.notify();
                     }
-                    Err(error) => log::warn!("library: cannot build a mosaic: {error:#}"),
+                    Err(error) => warn!("library: cannot build a mosaic: {error:#}"),
                 }
             })
             .ok();
@@ -2792,7 +2799,7 @@ impl Library {
             .state(shelf)
             .playlists()
             .iter()
-            .filter(|playlist| playlist.owned || playlist.collaborative)
+            .filter(|playlist| playlist.can_edit_tracks)
             .map(|playlist| playlist.id.clone())
             .filter(|id| {
                 (shelf.local() || !self.contents.contains_key(id)) && !self.reading.contains_key(id)
@@ -2837,7 +2844,7 @@ impl Library {
                             cx.notify();
                         }
                         Err(error) => {
-                            log::warn!("library: cannot read a playlist: {error:#}")
+                            warn!("library: cannot read a playlist: {error:#}")
                         }
                     }
                 })
@@ -2881,12 +2888,12 @@ impl Library {
             shelf,
         } = mutation_info;
         if self.playlist_task.is_some() {
-            log::warn!("library: cannot {action} while another change is running");
+            warn!("library: cannot {action} while another change is running");
             Toasts::show(Outcome::Failed, "toast-playlist-busy", cx);
             return;
         }
         let Some(client) = self.session.read(cx).client_of(shelf) else {
-            log::warn!("library: cannot {action} while signed out");
+            warn!("library: cannot {action} while signed out");
             Toasts::show(Outcome::Failed, "toast-playlist-signed-out", cx);
             return;
         };
@@ -2916,7 +2923,7 @@ impl Library {
                         }
                     }
                     Err(error) => {
-                        log::warn!("library: cannot {action}: {error:#}");
+                        warn!("library: cannot {action}: {error:#}");
                         let key = match music::cover::unusable(&error) {
                             Some(unusable) => cover_problem(unusable),
                             None => "toast-playlist-failed",
@@ -2994,7 +3001,7 @@ impl Library {
         match track {
             Some(_) if self.saved(id) => return,
             Some(mut track) => {
-                track.added_at = Some(stamp());
+                track.added_at = Some(music::Timestamp::now());
                 self.set_saved(track, true);
             }
             None => {
@@ -3071,7 +3078,7 @@ impl Library {
                         this.land(Shelf::Streaming, Landed::Playlists(Ok(playlists)), cx)
                     }
                     Err(error) => {
-                        log::warn!("library: cannot read the changed playlists: {error:#}");
+                        warn!("library: cannot read the changed playlists: {error:#}");
                         this.held_mut(Shelf::Streaming)
                             .stale
                             .remove(&LibraryPart::Playlists);
@@ -3300,7 +3307,7 @@ impl Library {
         }
         let part = landed.part();
         let arrived = landed.arrived();
-        let counts = |this: &Self| -> HashMap<String, u32> {
+        let counts = |this: &Self| -> HashMap<String, Option<u32>> {
             this.state(shelf)
                 .playlists()
                 .iter()
@@ -3364,7 +3371,7 @@ where
             Ok(()) => done.push(id),
             Err(error) if done.is_empty() => return Err(error),
             Err(error) => {
-                log::warn!("library: cannot finish a playlist change: {error:#}");
+                warn!("library: cannot finish a playlist change: {error:#}");
                 break;
             }
         }

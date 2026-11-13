@@ -3,6 +3,7 @@ mod install;
 
 use std::io::Write as _;
 use std::path::PathBuf;
+use tracing::warn;
 
 use anyhow::{Context as _, Result};
 use gpui::{Context, Entity, SharedString, Subscription, Task};
@@ -190,7 +191,7 @@ impl Updates {
                     cx.update(|cx| cx.quit());
                 }
                 Err(error) => {
-                    log::warn!("updates: cannot install the new version: {error:#}");
+                    warn!("updates: cannot install the new version: {error:#}");
                     this.update(cx, |this, cx| {
                         this.task = None;
                         this.state = UpdateState::Failed;
@@ -226,7 +227,7 @@ impl Updates {
                         cx.notify();
                     }
                     Ok(None) => {}
-                    Err(error) => log::warn!("updates: cannot ask github: {error:#}"),
+                    Err(error) => warn!("updates: cannot ask github: {error:#}"),
                 }
             })
             .ok();

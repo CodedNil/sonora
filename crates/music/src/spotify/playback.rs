@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tracing::{debug, error, warn};
 
 use anyhow::{Context as _, Result, anyhow};
 use async_trait::async_trait;
@@ -63,6 +64,8 @@ const AUDIBLE: Duration = Duration::from_millis(5);
 /// position librespot gives is the decoder's, which runs ahead of the sound by what the output
 /// has queued, so that is taken off.
 pub struct Events {
+    /// Runs deadline timers on the session's runtime even when this stream is polled by GPUI.
+    session: Session,
     player: UnboundedReceiver<PlayerEvent>,
     output: UnboundedReceiver<()>,
     cue: Cue,
@@ -150,7 +153,7 @@ impl PlaybackEvents for Events {
                         PlaybackEvent::Position { .. } if self.cue.cleared() => {
                             self.stale += 1;
                             if self.stale > STALE_POSITIONS {
-                                log::warn!("playback: the engine kept its old position, letting audio through");
+                                warn!("playback: the engine kept its old position, letting audio through");
                                 self.cue.arm();
                                 self.stale = 0;
                             }
@@ -178,7 +181,7 @@ impl PlaybackEvents for Events {
                         return Some(event);
                     }
                 }
-                () = sleep_until(self.release), if self.release.is_some() => {
+                () = sleep_until(&self.session, self.release), if self.release.is_some() => {
                     self.release = None;
                     if let Some(event) = self.held.take() {
                         return Some(self.let_through(event));
@@ -403,11 +406,15 @@ impl Engine {
             analyzer: config.analyzer.clone(),
         };
         let (output_tx, output_rx) = unbounded_channel();
-        let player = Player::new(player_config, session, Box::new(NoOpVolume), move || {
-            OutputSink::boxed(sink_cue, chain, output_tx)
-        });
+        let player = Player::new(
+            player_config,
+            session.clone(),
+            Box::new(NoOpVolume),
+            move || OutputSink::boxed(sink_cue, chain, output_tx),
+        );
 
         let events = Events {
+            session,
             player: forward(player.get_player_event_channel(), cue.clone()),
             output: output_rx,
             cue: cue.clone(),
@@ -434,7 +441,7 @@ impl Engine {
 
     fn load(&self, track_id: &str, at: Duration, seamless: bool) -> Result<()> {
         let uri = track_uri(track_id)?;
-        log::debug!("playback: spotify loads {track_id} at {at:?}, seamless {seamless}");
+        debug!("playback: spotify loads {track_id} at {at:?}, seamless {seamless}");
 
         if !seamless || !self.gapless {
             self.cue.clear();
@@ -471,7 +478,7 @@ impl Engine {
     /// to let it through, while librespot decodes on unheard.
     fn seek(&self, position: Duration) {
         self.cue.clear();
-        log::debug!("playback: spotify seeks to {position:?}");
+        debug!("playback: spotify seeks to {position:?}");
         self.player.seek(position.as_millis() as u32);
     }
 
@@ -581,17 +588,27 @@ fn forward(mut events: UnboundedReceiver<PlayerEvent>, cue: Cue) -> UnboundedRec
             }
         });
     if let Err(error) = spawned {
-        log::error!("playback: cannot spawn the spotify event thread: {error}");
+        error!("playback: cannot spawn the spotify event thread: {error}");
     }
     received
 }
 
-/// Waits until `at`, or for ever without one.
-async fn sleep_until(at: Option<Instant>) {
-    match at {
-        Some(at) => tokio::time::sleep_until(at.into()).await,
-        None => std::future::pending().await,
-    }
+/// Waits on the session's Tokio runtime, cancelling the timer when another event wins the race.
+/// The returned future can be polled outside Tokio, as GPUI does with the playback stream.
+async fn sleep_until(session: &Session, at: Option<Instant>) {
+    let Some(at) = at else {
+        return std::future::pending().await;
+    };
+    let (mut done, answer) = oneshot::channel();
+    session.spawn(async move {
+        tokio::select! {
+            _ = done.closed() => {}
+            () = tokio::time::sleep_until(at.into()) => {
+                done.send(()).ok();
+            }
+        }
+    });
+    answer.await.ok();
 }
 
 pub(crate) fn track_uri(track_id: &str) -> Result<SpotifyUri> {

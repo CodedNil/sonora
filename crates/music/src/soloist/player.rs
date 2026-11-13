@@ -25,6 +25,7 @@
 use std::ffi::OsStr;
 use std::path::Path;
 use std::time::{Duration, Instant};
+use tracing::{debug, error, info, warn};
 
 use anyhow::{Result, ensure};
 use async_trait::async_trait;
@@ -163,11 +164,11 @@ fn begin(setup: Setup, volume: u8) -> (Engine, Events) {
                 .build();
             match runtime {
                 Ok(runtime) => runtime.block_on(brain.run(asked)),
-                Err(error) => log::error!("playback: cannot build the soloist runtime: {error}"),
+                Err(error) => error!("playback: cannot build the soloist runtime: {error}"),
             }
         });
     if let Err(error) = spawned {
-        log::error!("playback: cannot spawn the soloist thread: {error}");
+        error!("playback: cannot spawn the soloist thread: {error}");
     }
     (Engine { commands }, Events(reported))
 }
@@ -504,7 +505,7 @@ impl Brain {
         let Some(next) = self.next.take() else {
             return;
         };
-        log::debug!("soloist: queueing the next track on the daemon");
+        debug!("soloist: queueing the next track on the daemon");
         self.send("add_to_queue", json!({ "uri": next }));
         self.send("get_queue", json!({}));
         self.fed = Some(next);
@@ -571,7 +572,7 @@ impl Brain {
             && now.duration_since(*since) > ADOPT_PATIENCE
         {
             // Sonora had nothing to play after the track before it
-            log::debug!("soloist: nothing asked for the queued track, stopping it");
+            debug!("soloist: nothing asked for the queued track, stopping it");
             self.adopted = None;
             self.send("pause", json!({}));
         }
@@ -579,14 +580,14 @@ impl Brain {
             return;
         };
         if track.sent && !track.accepted && now.duration_since(track.asked) > ACK_PATIENCE {
-            log::debug!("soloist: the daemon acknowledged no start, going by its reports");
+            debug!("soloist: the daemon acknowledged no start, going by its reports");
             track.accepted = true;
             self.send("get_state", json!({}));
             return;
         }
         if let Some(seek) = track.seek.as_mut() {
             if now.duration_since(seek.since) > SEEK_PATIENCE {
-                log::warn!("soloist: the daemon never confirmed a seek");
+                warn!("soloist: the daemon never confirmed a seek");
                 return self.landed();
             }
             if now.duration_since(seek.asked) >= SEEK_RETRY {
@@ -601,7 +602,7 @@ impl Brain {
                 .duration
                 .is_some_and(|duration| track.live() > duration + OVERRUN);
         if overran {
-            log::debug!("soloist: the track ran past its end unsaid");
+            debug!("soloist: the track ran past its end unsaid");
             return self.finish();
         }
         if track.playing && now.duration_since(self.reported) >= self.setup.interval {
@@ -671,8 +672,8 @@ impl Brain {
                     .as_ref()
                     .is_some_and(|track| track.seek.is_some());
                 match seeking && message.starts_with("seek failed") {
-                    true => log::debug!("soloist: the daemon is not ready to seek: {message}"),
-                    false => log::warn!("soloist: the daemon turned a command down: {message}"),
+                    true => debug!("soloist: the daemon is not ready to seek: {message}"),
+                    false => warn!("soloist: the daemon turned a command down: {message}"),
                 }
             }
             Event::Other => {}
@@ -806,7 +807,7 @@ impl Brain {
                 true => self.hand_over(),
                 false => {
                     // past the one track it was given the daemon went on by itself
-                    log::debug!("soloist: the daemon moved on to another track");
+                    debug!("soloist: the daemon moved on to another track");
                     self.finish()
                 }
             };
@@ -890,7 +891,7 @@ impl Brain {
         let (Some(track), Some(next)) = (self.track.take(), self.fed.take()) else {
             return;
         };
-        log::debug!("soloist: the daemon went on to the queued track");
+        debug!("soloist: the daemon went on to the queued track");
         self.adopted = Some((next, Instant::now()));
         self.report(PlaybackEvent::Ended { id: Some(track.id) });
     }
@@ -917,7 +918,7 @@ impl Brain {
         if !track.started {
             return;
         }
-        log::info!("soloist: another device took playback");
+        info!("soloist: another device took playback");
         let was_playing = track.playing;
         track.rewind();
         track.parked = true;
@@ -933,7 +934,7 @@ impl Brain {
     fn line(&mut self, line: &str) {
         if line.contains(REFUSED) {
             self.refusals += 1;
-            log::warn!("soloist: spotify turned the sign-in down");
+            warn!("soloist: spotify turned the sign-in down");
             match self.refusals >= REFUSALS {
                 true => self.refuse(),
                 false => {
@@ -942,7 +943,7 @@ impl Brain {
                 }
             }
         } else if line.contains(UNPAIRED) && paired_account().is_none() {
-            log::warn!("soloist: the daemon has no sign-in left and has to be paired again");
+            warn!("soloist: the daemon has no sign-in left and has to be paired again");
             self.refuse();
         }
     }
@@ -958,7 +959,7 @@ impl Brain {
         match end {
             End::Closed => {}
             End::Expired if !self.refreshed => {
-                log::info!("soloist: the build is too old, fetching the current one");
+                info!("soloist: the build is too old, fetching the current one");
                 self.refreshed = true;
                 if let Some(track) = self.track.as_mut() {
                     track.rewind();
@@ -1163,13 +1164,13 @@ async fn daemon(
             () = dropped(asked) => return End::Closed,
         };
         if let Err(error) = fetched {
-            log::warn!("soloist: cannot fetch the current build: {error:#}");
+            warn!("soloist: cannot fetch the current build: {error:#}");
             return End::Failed;
         }
     }
     let prepared = tokio::task::spawn_blocking(move || prepare(setup)).await;
     let Ok(Some(key)) = prepared else {
-        log::warn!("soloist: no api key is stored");
+        warn!("soloist: no api key is stored");
         return End::Unready;
     };
     let volume = volume.to_string();
@@ -1185,7 +1186,7 @@ async fn daemon(
     let mut child = match launch(&key, &data(), &flags) {
         Ok(child) => child,
         Err(error) => {
-            log::error!("soloist: {error:#}");
+            error!("soloist: {error:#}");
             return End::Unready;
         }
     };
@@ -1199,7 +1200,7 @@ async fn daemon(
             socket = &mut connecting => match socket {
                 Ok(socket) => break socket,
                 Err(error) => {
-                    log::warn!("soloist: {error:#}");
+                    warn!("soloist: {error:#}");
                     stop(&mut child).await;
                     return End::Failed;
                 }
@@ -1225,7 +1226,7 @@ async fn daemon(
                     Ok(event) => {
                         reports.send(Incoming::Event(event)).ok();
                     }
-                    Err(error) => log::debug!("soloist: cannot read a message: {error}"),
+                    Err(error) => debug!("soloist: cannot read a message: {error}"),
                 },
                 Some(Ok(_)) => {}
                 Some(Err(_)) | None => {
@@ -1237,7 +1238,7 @@ async fn daemon(
             command = asked.recv() => match command {
                 Some(command) => {
                     if let Err(error) = socket.send(Message::text(command)).await {
-                        log::warn!("soloist: cannot send a command: {error}");
+                        warn!("soloist: cannot send a command: {error}");
                     }
                 }
                 None => {
@@ -1265,7 +1266,7 @@ fn prepare(setup: Setup) -> Option<String> {
         std::fs::remove_file(data.join(file)).ok();
     }
     if let Err(error) = prefs::write(&data, setup.normalise, setup.gapless, setup.quality) {
-        log::warn!("soloist: cannot write the audio settings: {error:#}");
+        warn!("soloist: cannot write the audio settings: {error:#}");
     }
     Some(key)
 }
@@ -1299,7 +1300,7 @@ fn ended(status: std::io::Result<std::process::ExitStatus>) -> End {
     match status.ok().and_then(|status| status.code()) {
         Some(binary::EXPIRED) => End::Expired,
         code => {
-            log::warn!("soloist: the daemon stopped with code {code:?}");
+            warn!("soloist: the daemon stopped with code {code:?}");
             End::Failed
         }
     }

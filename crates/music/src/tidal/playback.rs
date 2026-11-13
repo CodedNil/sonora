@@ -12,6 +12,7 @@
 
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
+use tracing::{debug, info, warn};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use async_trait::async_trait;
@@ -20,7 +21,6 @@ use reqwest::StatusCode;
 use rodio::Source as _;
 use serde::{Deserialize, Serialize};
 
-use crate::aac::Aac;
 use crate::audio::Trimmed;
 use crate::engine::{self, Fetch, Loudness};
 use crate::stream::{self, Reader, Stream};
@@ -70,7 +70,7 @@ const LEADS: [Duration; 2] = [Duration::from_secs(15), Duration::from_secs(60)];
 const NEARBY: u64 = 2 * 1024 * 1024;
 
 /// A decoder over a Tidal track, with what comes before the asked-for position trimmed off.
-type Opened = Trimmed<rodio::Decoder<Reader<Long>>>;
+type Opened = Trimmed<crate::decode::Decoder<Reader<Long>>>;
 
 /// Where the segments of a segmented track start, in the music and in the stream.
 struct Timeline {
@@ -303,7 +303,7 @@ impl Parts {
             match whole(&self.http, url).await {
                 Ok(part) => return Ok(Some(part)),
                 Err(Failure::Expired(error)) => {
-                    log::debug!("tidal: segment {} was refused: {error:#}", self.next);
+                    debug!("tidal: segment {} was refused: {error:#}", self.next);
                     self.renew().await?;
                 }
                 Err(Failure::Passing(error)) => backoff.wait(error).await?,
@@ -395,7 +395,7 @@ impl Resuming {
                     return Ok(());
                 }
                 Err(Failure::Expired(error)) => {
-                    log::debug!("tidal: the file was refused: {error:#}");
+                    debug!("tidal: the file was refused: {error:#}");
                     self.renew().await?;
                 }
                 Err(Failure::Passing(error)) => backoff.wait(error).await?,
@@ -490,7 +490,7 @@ impl Renewal {
             bail!("tidal keeps refusing the urls of {}", self.id);
         }
         self.left -= 1;
-        log::info!("tidal: asking for fresh urls for {}", self.id);
+        info!("tidal: asking for fresh urls for {}", self.id);
         let manifest = self.client.playback(&self.id, self.quality).await?.manifest;
         if manifest.codec() != self.codec {
             bail!(
@@ -518,7 +518,7 @@ impl Backoff {
         if self.since.elapsed() >= RETRY_WINDOW {
             return Err(error);
         }
-        log::debug!("tidal: asking again in {:?} after {error:#}", self.wait);
+        debug!("tidal: asking again in {:?} after {error:#}", self.wait);
         tokio::time::sleep(self.wait).await;
         self.wait = (self.wait * 2).min(LONGEST_WAIT);
         Ok(())
@@ -565,7 +565,7 @@ impl stream::Body for Long {
 impl Factory {
     pub fn new(client: TidalClient) -> Self {
         let media = media_http().unwrap_or_else(|error| {
-            log::warn!("tidal: {error:#}, streaming through the api client");
+            warn!("tidal: {error:#}, streaming through the api client");
             client.http().clone()
         });
         Self { client, media }
@@ -592,9 +592,7 @@ impl Tidal {
     async fn recall(&self, id: &str) -> Option<Loaded> {
         let kept = self.shelf.as_ref()?.find(id, self.quality.id()).await?;
         let facts = serde_json::from_slice::<Facts>(&kept.facts)
-            .inspect_err(|error| {
-                log::warn!("playback: the kept facts of {id} do not read: {error}")
-            })
+            .inspect_err(|error| warn!("playback: the kept facts of {id} do not read: {error}"))
             .ok()?;
         let timeline = (!facts.offsets.is_empty()).then(|| {
             Arc::new(Mutex::new(Timeline {
@@ -611,9 +609,9 @@ impl Tidal {
         let stream = Stream::pulling(kept.source, total, Long)
             .primed()
             .await
-            .inspect_err(|error| log::warn!("playback: the kept copy of {id} broke: {error:#}"))
+            .inspect_err(|error| warn!("playback: the kept copy of {id} broke: {error:#}"))
             .ok()?;
-        log::debug!("playback: {id} started from the vault");
+        debug!("playback: {id} started from the vault");
         Some(Loaded {
             stream,
             timeline,
@@ -797,12 +795,12 @@ impl Tidal {
             let _entered = reach.runtime.enter();
             Stream::pulling(parts, None, Long)
         };
-        log::info!(
+        info!(
             "tidal: fetching {id} from segment {index} to reach {}s",
             at.as_secs()
         );
         let Some(entry) = stream.awaiting(|_, _, _| lock(&timeline).entry(at)) else {
-            log::warn!(
+            warn!(
                 "playback: the tidal track {id} did not arrive at {}s: {}",
                 at.as_secs(),
                 stream.failed().as_deref().unwrap_or("it took too long")
@@ -842,7 +840,7 @@ impl Tidal {
             return Some((Trimmed::new(decoder, Duration::ZERO, None), Duration::ZERO));
         }
         if let Err(error) = decoder.try_seek(at) {
-            log::warn!(
+            warn!(
                 "playback: cannot start the tidal track {id} at {}s: {error}",
                 at.as_secs()
             );
@@ -882,13 +880,13 @@ impl Tidal {
                     }
                     return Some((Trimmed::new(decoder, Duration::ZERO, None), at));
                 }
-                Err(error) => log::debug!(
+                Err(error) => debug!(
                     "playback: entering the tidal track {id} at byte {from} missed {}s: {error}",
                     at.as_secs()
                 ),
             }
         }
-        log::warn!(
+        warn!(
             "playback: cannot reach {}s in the tidal track {id}",
             at.as_secs()
         );
@@ -937,7 +935,7 @@ impl Tidal {
             };
             Stream::pulling(headed, None, Long)
         };
-        log::info!("tidal: fetching {id} from byte {from} to reach a seek");
+        info!("tidal: fetching {id} from byte {from} to reach a seek");
         let reader = stream.reader();
         Some((
             reader,
@@ -976,7 +974,7 @@ impl Fetch for Tidal {
             return Ok(loaded);
         }
         let playback = self.client.playback(id, self.quality).await?;
-        log::info!(
+        info!(
             "tidal: {id} streams as {} {}",
             playback.quality,
             playback.manifest.codec()
@@ -1062,7 +1060,7 @@ impl Fetch for Tidal {
             Some(timeline) => self.open_segments(id, loaded, timeline, at),
             None => self.open_file(id, loaded, at),
         }?;
-        log::debug!(
+        debug!(
             "playback: {id} decodes at {} Hz, {} channels",
             source.sample_rate(),
             source.channels()
@@ -1108,20 +1106,18 @@ fn flac_head(spool: &stream::Spool) -> Option<Option<usize>> {
 
 /// A decoder that only reads forward and is not told the length, so opening it reads no
 /// further than the first frame or fragment.
-fn forward_decoder(id: &str, reader: Reader<Long>) -> Option<rodio::Decoder<Reader<Long>>> {
+fn forward_decoder(id: &str, reader: Reader<Long>) -> Option<crate::decode::Decoder<Reader<Long>>> {
     decoder(
         id,
-        rodio::Decoder::builder()
-            .with_symphonia_decoder::<Aac>()
+        crate::decode::Decoder::builder()
             .with_data(reader)
             .with_seekable(false),
     )
 }
 
 /// A seekable decoder over the whole of a track that is one file.
-fn file_decoder(id: &str, stream: &Stream<Long>) -> Option<rodio::Decoder<Reader<Long>>> {
-    let builder = rodio::Decoder::builder()
-        .with_symphonia_decoder::<Aac>()
+fn file_decoder(id: &str, stream: &Stream<Long>) -> Option<crate::decode::Decoder<Reader<Long>>> {
+    let builder = crate::decode::Decoder::builder()
         .with_data(stream.reader())
         .with_seekable(true);
     let builder = match stream.total() {
@@ -1172,12 +1168,12 @@ fn media_http() -> Result<reqwest::Client> {
 /// Builds a decoder, or reports a track that will not decode.
 fn decoder(
     id: &str,
-    builder: rodio::decoder::DecoderBuilder<Reader<Long>>,
-) -> Option<rodio::Decoder<Reader<Long>>> {
+    builder: crate::decode::Builder<Reader<Long>>,
+) -> Option<crate::decode::Decoder<Reader<Long>>> {
     match builder.build() {
         Ok(decoder) => Some(decoder),
         Err(error) => {
-            log::warn!("playback: cannot decode the tidal track {id}: {error}");
+            warn!("playback: cannot decode the tidal track {id}: {error}");
             None
         }
     }

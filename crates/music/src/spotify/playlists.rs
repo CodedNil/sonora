@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use tracing::debug;
 
 use anyhow::{Context as _, Result, anyhow};
 use base64::Engine as _;
@@ -21,7 +22,7 @@ use tokio::task::JoinSet;
 
 use crate::cover::{self, CoverLimits};
 use crate::spotify::pace::{self, paced};
-use crate::spotify::{collection, profiles, wire};
+use crate::spotify::{metadata, profiles, wire};
 use crate::{Contributor, GenreItem, GenreSection, Playlist, PlaylistDetail, Track, escape};
 
 const TRACK_PREFIX: &str = "spotify:track:";
@@ -338,21 +339,12 @@ pub async fn covers(session: &Session, playlist_id: &str, wanted: usize) -> Resu
         .take(wanted * COVER_SLACK)
         .map(str::to_owned)
         .collect();
-    if uris.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let known = collection::metadata(session, &uris).await?;
-    let tracks: Vec<Track> = uris
-        .iter()
-        .filter_map(|uri| known.get(uri).cloned())
-        .collect();
-
+    let tracks = metadata::ordered(session, &uris).await?;
     Ok(crate::distinct_covers(&tracks, wanted))
 }
 
 async fn tracks_from(session: &Session, content: &SelectedListContent) -> Result<Vec<Track>> {
-    let added: Vec<(String, Option<i64>, Option<String>)> = content
+    let added: Vec<(String, Option<crate::Timestamp>, Option<String>)> = content
         .contents
         .items
         .iter()
@@ -360,7 +352,7 @@ async fn tracks_from(session: &Session, content: &SelectedListContent) -> Result
         .map(|item| {
             (
                 item.uri().to_owned(),
-                wire::seconds(item.attributes.timestamp()),
+                wire::timestamp(item.attributes.timestamp()),
                 contributor(item),
             )
         })
@@ -370,7 +362,7 @@ async fn tracks_from(session: &Session, content: &SelectedListContent) -> Result
     }
 
     let uris: Vec<String> = added.iter().map(|(uri, _, _)| uri.clone()).collect();
-    let known = collection::metadata(session, &uris).await?;
+    let known = metadata::tracks(session, &uris).await?;
     Ok(added
         .iter()
         .filter_map(|(uri, added_at, added_by)| {
@@ -387,10 +379,10 @@ fn contributor(item: &Item) -> Option<String> {
     (!added_by.is_empty()).then_some(added_by)
 }
 
-pub async fn modified(session: &Session, ids: Vec<String>) -> HashMap<String, i64> {
+pub async fn modified(session: &Session, ids: Vec<String>) -> HashMap<String, crate::Timestamp> {
     let wanted = ids.len().min(MODIFIED_LIMIT);
     if wanted < ids.len() {
-        log::debug!(
+        debug!(
             "playlists: reading the modification date of {wanted} of {} playlists",
             ids.len()
         );
@@ -414,7 +406,7 @@ pub async fn modified(session: &Session, ids: Vec<String>) -> HashMap<String, i6
     stamps
 }
 
-async fn stamp(session: &Session, playlist_id: &str) -> Option<i64> {
+async fn stamp(session: &Session, playlist_id: &str) -> Option<crate::Timestamp> {
     let endpoint = format!(
         "/playlist/v2/playlist/{}?from=0&length=0",
         escape::component(playlist_id)
@@ -424,12 +416,12 @@ async fn stamp(session: &Session, playlist_id: &str) -> Option<i64> {
         .request(&Method::GET, &endpoint, None, None)
         .await
         .inspect_err(|error| {
-            log::debug!("playlists: cannot read the metadata of {playlist_id}: {error}")
+            debug!("playlists: cannot read the metadata of {playlist_id}: {error}")
         })
         .ok()?;
 
     let content = SelectedListContent::parse_from_bytes(&body).ok()?;
-    wire::seconds(content.timestamp())
+    wire::timestamp(content.timestamp())
 }
 
 async fn snapshot(session: &Session, playlist_id: &str) -> Result<SelectedListContent> {

@@ -16,12 +16,13 @@ use symphonia::core::errors::{Error, Result};
 use symphonia::core::formats::Packet;
 use symphonia::core::support_codec;
 use symphonia::default::codecs::AacDecoder as Plain;
+use tracing::debug;
 
 /// The frames one HE-AAC packet decodes to, twice the 1024 of its core.
 const FRAMES: u64 = 2048;
 
 /// An AAC decoder that sends HE-AAC to `rusty_aac` and everything else to symphonia. Register
-/// it on a rodio builder with `with_symphonia_decoder`, which puts it ahead of symphonia's own.
+/// it in the shared Symphonia codec registry ahead of Symphonia's own.
 pub struct Aac(Inner);
 
 enum Inner {
@@ -113,7 +114,7 @@ impl Sbr {
             2 => Channels::FRONT_LEFT | Channels::FRONT_RIGHT,
             _ => return None,
         };
-        log::debug!(
+        debug!(
             "aac: decoding he-aac{} at {} Hz from a {} Hz core",
             match sbr.ps_present {
                 true => " v2",
@@ -145,7 +146,7 @@ impl Sbr {
             Ok(frame) => frame,
             Err(rusty_aac::Error::Again) => return Ok(self.buffer.as_audio_buffer_ref()),
             Err(error) => {
-                log::debug!("aac: cannot decode a packet: {error}");
+                debug!("aac: cannot decode a packet: {error}");
                 return Err(Error::DecodeError("aac: cannot decode the packet"));
             }
         };

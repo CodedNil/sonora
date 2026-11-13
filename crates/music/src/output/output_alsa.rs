@@ -99,8 +99,8 @@ pub(super) fn named(pcm: &str) -> String {
 }
 
 /// The sound server this session runs when ALSA has no plugin routing to it. Sonora then opens
-/// the card the server already holds and plays nothing, which `pipewire-alsa` or
-/// `pulseaudio-alsa` fixes. Only ALSA's configuration is read, no device is opened, and nothing
+/// the card the server already holds and plays nothing, which `pipewire-alsa` fixes. Only ALSA's
+/// configuration is read, no device is opened, and nothing
 /// is missing when Sonora plays through another host.
 pub fn missing_bridge() -> Option<Server> {
     if !is_alsa(&super::host()) {
@@ -110,19 +110,17 @@ pub fn missing_bridge() -> Option<Server> {
     let hints = alsa::device_name::HintIter::new_str(None, "pcm").ok()?;
     let bridged = hints
         .filter_map(|hint| hint.name)
-        .any(|name| name == "pipewire" || name == "pulse");
+        .any(|name| name == "pipewire");
     (!bridged).then_some(server)
 }
 
-/// The sound server whose socket this session has, PipeWire first since it also answers on the
-/// PulseAudio socket.
+/// The sound server whose socket this session has.
 fn server() -> Option<Server> {
     let runtime = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
     if runtime.join("pipewire-0").exists() {
         return Some(Server::PipeWire);
     }
-    let pulse = std::env::var_os("PULSE_SERVER").is_some() || runtime.join("pulse/native").exists();
-    pulse.then_some(Server::PulseAudio)
+    None
 }
 
 /// Splits the device's name, "card, device", into its card and its label. A name without both

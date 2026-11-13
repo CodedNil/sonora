@@ -33,7 +33,7 @@ librespot-playback.workspace = true
 librespot-protocol.workspace = true
 lofty.workspace = true
 kakasi.workspace = true
-log.workspace = true
+tracing.workspace = true
 md-5.workspace = true
 oauth2.workspace = true
 open.workspace = true
@@ -48,7 +48,6 @@ rodio = { workspace = true, features = [
     "symphonia-aiff",
     "symphonia-alac",
     "symphonia-isomp4",
-    "symphonia-libopus",
     "symphonia-mkv",
     "flac",
     "mp3",
@@ -64,7 +63,10 @@ serde_json.workspace = true
 serde-saphyr.workspace = true
 storage.workspace = true
 symphonia.workspace = true
+symphonia-adapter-libopus.workspace = true
 tempfile.workspace = true
+tar.workspace = true
+zip.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 widevine.workspace = true
@@ -75,11 +77,9 @@ libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 alsa.workspace = true
-# TODO: move to cpal's native `pipewire` backend, and drop the trip through pipewire-pulse, once a
-# cpal release sets `node.rate` (upstream commit ec35008, unreleased in 0.18) and CI builds on a
-# distro with libpipewire 0.3.53 or newer.
-cpal = { workspace = true, features = ["pulseaudio"] }
-pulseaudio.workspace = true
+# PipeWire handles desktop routing; ALSA remains available for direct hardware access.
+cpal = { workspace = true, features = ["pipewire", "realtime"] }
+pipewire.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-audio.workspace = true
@@ -92,7 +92,7 @@ cpal = { workspace = true, features = ["realtime"] }
 windows.workspace = true
 
 [dev-dependencies]
-env_logger.workspace = true
+
 rustls.workspace = true
 
 [lints]

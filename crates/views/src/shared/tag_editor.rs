@@ -18,7 +18,7 @@ impl Sheet {
 
     fn key(self) -> &'static str {
         match self {
-            Sheet::Song => "tags-sheet-song",
+            Sheet::Song => "kind-song",
             Sheet::Album => "tags-sheet-album",
             Sheet::Details => "tags-sheet-details",
         }
@@ -97,15 +97,15 @@ impl Field {
 
     fn key(self) -> &'static str {
         match self {
-            Field::Title => "tags-title",
+            Field::Title => "column-title",
             Field::TrackNumber => "tags-track",
             Field::TrackTotal => "tags-track-total",
             Field::DiscNumber => "tags-disc",
             Field::DiscTotal => "tags-disc-total",
             Field::Album => "tags-album",
             Field::AlbumArtist => "tags-album-artist",
-            Field::Year => "tags-year",
-            Field::Genre => "tags-genre",
+            Field::Year => "column-year",
+            Field::Genre => "column-genre",
             Field::Composer => "tags-composer",
             Field::Publisher => "tags-publisher",
             Field::Isrc => "tags-isrc",
@@ -280,7 +280,7 @@ impl TagEditor {
 
     fn bar(&self, cx: &Context<Self>) -> TabBar {
         TabBar::new("tag-editor-sheets")
-            .name(t!("tags-edit-title"))
+            .name(t!("menu-edit-tags"))
             .items(Sheet::ALL.map(|sheet| {
                 Button::new(sheet.key())
                     .label(i18n::lookup(sheet.key(), None))
@@ -336,7 +336,7 @@ impl TagEditor {
                         div()
                             .text_size(theme.text(Text::Small))
                             .text_color(theme.muted_foreground)
-                            .child(t!("tags-artists")),
+                            .child(t!("nav-artists")),
                     )
                     .child(
                         Button::new("tag-artist-add")
@@ -412,7 +412,7 @@ impl Render for TagEditor {
                 this.apply(cx);
             }))
             .child(
-                Modal::new("tag-editor", t!("tags-edit-title"))
+                Modal::new("tag-editor", t!("menu-edit-tags"))
                     .w(theme.metrics.cover * 3.2)
                     .h(theme.metrics.cover * 3.6)
                     .detail(SharedString::from(track.name))

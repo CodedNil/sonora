@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use tracing::warn;
 
 use anyhow::{Context as _, Result};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
@@ -26,7 +27,7 @@ struct Icons {
 impl Icons {
     fn refresh(&mut self, hwnd: HWND, dpi: u32) {
         if let Err(error) = self.replace(hwnd, dpi) {
-            log::warn!("icon: cannot set the window icons: {error:#}");
+            warn!("icon: cannot set the window icons: {error:#}");
         }
     }
 
@@ -89,7 +90,7 @@ pub fn install(handle: *mut c_void) {
     unsafe {
         if !SetWindowSubclass(hwnd, Some(subclass), SUBCLASS, data as usize).as_bool() {
             drop(Box::from_raw(data));
-            log::warn!("icon: cannot listen for display scale changes");
+            warn!("icon: cannot listen for display scale changes");
             return;
         }
         (*data).refresh(hwnd, GetDpiForWindow(hwnd));

@@ -1,8 +1,10 @@
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock};
+use tracing::warn;
 
 use anyhow::Result;
-use gpui::{AssetSource, SharedString};
+use gpui::{AssetSource, DevicePixels, RenderImage, SharedString, SvgRenderer, SvgSize, size};
 
 pub const BASE: &str = "lucide";
 pub const SAMPLES: &[&str] = &["house", "heart-filled", "play-filled", "shuffle", "search"];
@@ -83,7 +85,7 @@ pub fn shown(pack: &Pack, icon: impl AsRef<str>) -> SharedString {
     match chased(pack, name) {
         Some(icon) => SharedString::new_static(icon.path),
         None => {
-            log::warn!("icons: {name} is in no pack");
+            warn!("icons: {name} is in no pack");
             SharedString::from(icon.to_owned())
         }
     }
@@ -93,6 +95,20 @@ pub fn asset(path: &str) -> Option<&'static [u8]> {
     let (id, file) = path.strip_prefix("icons/")?.split_once('/')?;
     let folder = PACKS.iter().find(|pack| pack.id == id)?;
     folder.icon(stem(file)).map(|icon| icon.bytes)
+}
+
+/// Rasterizes a pack glyph through GPUI's SVG pipeline. Pixels are straight-alpha BGRA,
+/// like every GPUI image; native consumers must premultiply them if their API requires it.
+pub fn rasterize(name: &str, color: &str, pixels: u32) -> Option<Arc<RenderImage>> {
+    static RENDERER: LazyLock<SvgRenderer> = LazyLock::new(|| SvgRenderer::new(Arc::new(())));
+    let source = std::str::from_utf8(asset(&path(name))?)
+        .ok()?
+        .replace("currentColor", color);
+    let svg = RENDERER.parse_svg(source.as_bytes()).ok()?;
+    let pixels = DevicePixels(i32::try_from(pixels).ok()?.max(1));
+    RENDERER
+        .render_parsed(&svg, SvgSize::ExactSize(size(pixels, pixels)))
+        .ok()
 }
 
 pub struct Assets;

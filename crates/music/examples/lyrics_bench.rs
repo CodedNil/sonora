@@ -128,7 +128,7 @@ async fn measure(track: &Track, providers: &[Arc<dyn LyricsProvider>]) -> Row {
         title: track.name.clone(),
         artist: track.artists.clone(),
         album: (!track.album.is_empty()).then(|| track.album.clone()),
-        duration: track.duration,
+        duration: track.duration.unwrap_or_default(),
         track: Some(TrackKey {
             provider: "spotify",
             id: id.clone(),

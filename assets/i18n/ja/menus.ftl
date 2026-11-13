@@ -1,0 +1,67 @@
+# Menus, playlists and confirmation
+confirm-delete-track-files = ファイルはディスクから完全に削除されます。この操作は取り消せません。
+confirm-delete-track-files-title = 曲ファイルを削除しますか？
+confirm-remove-albums = { $count }枚のアルバムをライブラリから削除しますか？
+confirm-remove-artists = { $count ->
+   *[other] { $count }人のアーティストをお気に入りから削除しますか？
+}
+confirm-remove-downloads = ダウンロードした曲は、どのサービスのものもすべてこのコンピューターから削除されます。もう一度ダウンロードするまではストリーミングで再生されます。
+confirm-remove-downloads-title = すべてのダウンロードを削除しますか？
+confirm-remove-history-songs = { $count }曲を再生履歴から削除しますか？
+confirm-remove-library-title = ライブラリから削除
+confirm-remove-playlist-songs = { $count }曲をプレイリストから削除しますか？
+confirm-remove-playlists = { $count }件のプレイリストをライブラリから削除しますか？
+confirm-remove-songs = { $count }曲をライブラリから削除しますか？
+confirm-uninstall-widevine = Google からダウンロードしたコピーを削除します。再度ダウンロードするまで Apple Music の曲は再生できません。
+confirm-uninstall-widevine-title = Widevine モジュールをアンインストールしますか？
+menu-add-playlist-to-library = ライブラリに追加
+menu-add-to-library = お気に入りに追加
+menu-add-to-queue = 再生キューに追加
+menu-add-tracks-to-queue = { $count }曲を再生キューに追加
+menu-copy-link = リンクをコピー
+menu-copy-link-local = ローカルのアーティストとプレイリストにはリンクがありません
+menu-copy-link-none = 共有できるリンクがありません
+menu-delete-playlist = プレイリストを削除
+menu-delete-track-file = 曲ファイルを削除
+menu-delete-track-files = { $count }個の曲ファイルを削除
+menu-download = ダウンロード
+menu-downloading = ダウンロード中。クリックで停止
+menu-edit-playlist = プレイリストを編集
+menu-edit-tags = タグを編集
+menu-export-playlist = プレイリストをエクスポート…
+menu-go-to-album = アルバムを表示
+menu-go-to-artist = アーティストを表示
+menu-import-playlist = プレイリストをインポート…
+menu-make-playlist-private = 非公開にする
+menu-make-playlist-public = 公開する
+menu-new-playlist = 新しいプレイリスト
+menu-no-playlists = プレイリストがありません
+menu-play-artist = アーティストを再生
+menu-play-last = 最後に再生
+menu-play-next = 次に再生
+menu-play-tracks-last = { $count ->
+   *[other] { $count }曲を最後に再生
+}
+menu-play-tracks-next = { $count }曲を次に再生
+menu-remove-download = ダウンロードを削除
+menu-remove-from-history = 履歴から削除
+menu-remove-from-library = お気に入りから削除
+menu-remove-from-playlist = プレイリストから削除
+menu-remove-from-queue = 再生キューから削除
+menu-remove-playlist-from-library = ライブラリから削除
+menu-remove-tracks-from-history = { $count }曲を履歴から削除
+menu-remove-tracks-from-playlist = { $count }曲をプレイリストから削除
+menu-search-playlists = プレイリストを検索
+menu-select-all = すべて選択
+menu-song-radio = 曲のラジオを開く
+menu-view-details = 詳細を表示
+playlist-again-add = 再度追加
+playlist-again-confirm = この曲は既に「{ $name }」にあります。もう一度追加しますか？
+playlist-again-title = もう一度追加しますか？
+playlist-cover-choose = 画像を選択
+playlist-cover-not-a-picture = このファイルは JPEG、PNG、WebP の画像ではありません
+playlist-cover-remove = カバーを削除
+playlist-cover-too-large = この画像は 40 MB を超えています
+playlist-cover-unopenable = このファイルを開けません
+playlist-create-title = プレイリストを作成
+playlist-name-placeholder = プレイリスト名

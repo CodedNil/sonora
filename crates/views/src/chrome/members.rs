@@ -211,7 +211,7 @@ impl Render for Members {
                         Button::new(("member-remove", index))
                             .small()
                             .name(t!("devices-jam-remove-member", name = jam::name(member)))
-                            .label(t!("devices-jam-remove"))
+                            .label(t!("common-remove"))
                             .on_click(move |_, _, cx| match session {
                                 true => listening.read(cx).kick(&id),
                                 false => devices.read(cx).kick(&id),

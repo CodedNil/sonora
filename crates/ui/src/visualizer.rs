@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use std::f32::consts::FRAC_PI_2;
+use tracing::warn;
 
 use gpui::{
     App, Background, Bounds, Div, Hsla, IntoElement, PathBuilder, Pixels, Point, RenderOnce,
@@ -72,7 +73,7 @@ impl VisualizerStyle {
     /// The localized name. Resolved at render, never stored.
     pub fn label(self) -> SharedString {
         match self {
-            Self::None => t!("settings-visualizer-style-none"),
+            Self::None => t!("common-off"),
             Self::Bars => t!("settings-visualizer-style-bars"),
             Self::Wave => t!("settings-visualizer-style-wave"),
             Self::Both => t!("settings-visualizer-style-both"),
@@ -409,7 +410,7 @@ fn stroke(
     }
     match builder.build() {
         Ok(path) => window.paint_path(path, color),
-        Err(error) => log::warn!("visualizer: cannot build the wave: {error}"),
+        Err(error) => warn!("visualizer: cannot build the wave: {error}"),
     }
 }
 
@@ -451,7 +452,7 @@ fn fill(
                 linear_color_stop(color.opacity(FILL * FILL_BASE * weight), 1.),
             ),
         ),
-        Err(error) => log::warn!("visualizer: cannot build the wave body: {error}"),
+        Err(error) => warn!("visualizer: cannot build the wave body: {error}"),
     }
 }
 
@@ -553,7 +554,7 @@ fn polygon(points: &[Point<Pixels>], color: impl Into<Background>, window: &mut 
     builder.add_polygon(points, true);
     match builder.build() {
         Ok(path) => window.paint_path(path, color),
-        Err(error) => log::warn!("visualizer: cannot build a bar: {error}"),
+        Err(error) => warn!("visualizer: cannot build a bar: {error}"),
     }
 }
 

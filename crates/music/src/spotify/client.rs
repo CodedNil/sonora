@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use tracing::warn;
 
 use crate::connect::Connect;
 use crate::{MediaKind, MusicApi, escape};
@@ -10,12 +11,13 @@ use librespot_protocol::playlist4_external::SelectedListContent as RootList;
 use protobuf::Message as _;
 
 use crate::spotify::{
-    albums, artists, collection, collection2, pathfinder, playlists, profiles, radio, search, wire,
+    albums, artists, canvas, collection, credits, metadata, pathfinder, playlists, profiles, radio,
+    search, wire,
 };
 use crate::{
     Album, AlbumCatalogue, AlbumDetail, Artist, ArtistCatalogue, ArtistProfile, CoverSize, Genre,
-    GenreDetail, GenreItem, GenreSection, HomeFeed, Playlist, PlaylistDetail, SUGGESTIONS,
-    SavedArtist, Track, UserDetail, UserProfile,
+    GenreDetail, GenreItem, GenreSection, HomeFeed, Pages, Playlist, PlaylistDetail, SavedArtist,
+    Track, UserDetail, UserProfile,
 };
 
 const MADE_FOR_YOU: &str = "0JQ5DAt0tbjZptfcdMSKl3";
@@ -95,16 +97,28 @@ impl MusicApi for LibrespotClient {
         collection::saved_tracks(&self.session).await
     }
 
+    async fn saved_tracks_paged(&self) -> Result<Pages<Track>> {
+        collection::saved_tracks_paged(&self.session).await
+    }
+
     async fn set_track_saved(&self, track_id: &str, saved: bool) -> Result<()> {
-        collection2::set_track_saved(&self.session, track_id, saved).await
+        collection::set_saved(&self.session, "track", track_id, saved).await
     }
 
     async fn track(&self, track_id: &str) -> Result<Track> {
-        collection::track(&self.session, track_id).await
+        metadata::track(&self.session, track_id).await
     }
 
     async fn track_playcount(&self, track_id: &str) -> Result<Option<u64>> {
         pathfinder::track(&self.session, track_id).await
+    }
+
+    async fn canvas(&self, track_id: &str) -> Result<Option<crate::Canvas>> {
+        canvas::canvas(&self.session, track_id).await
+    }
+
+    async fn credits(&self, track_id: &str) -> Result<Vec<crate::Credit>> {
+        credits::credits(&self.session, track_id).await
     }
 
     async fn saved_albums(&self) -> Result<Vec<Album>> {
@@ -112,7 +126,7 @@ impl MusicApi for LibrespotClient {
     }
 
     async fn set_album_saved(&self, album_id: &str, saved: bool) -> Result<()> {
-        collection2::set_album_saved(&self.session, album_id, saved).await
+        collection::set_saved(&self.session, "album", album_id, saved).await
     }
 
     async fn saved_artists(&self) -> Result<Vec<SavedArtist>> {
@@ -120,7 +134,7 @@ impl MusicApi for LibrespotClient {
     }
 
     async fn set_artist_saved(&self, artist_id: &str, saved: bool) -> Result<()> {
-        collection2::set_artist_saved(&self.session, artist_id, saved).await
+        collection::set_saved(&self.session, "artist", artist_id, saved).await
     }
 
     async fn album(&self, album_id: &str) -> Result<AlbumDetail> {
@@ -131,9 +145,6 @@ impl MusicApi for LibrespotClient {
         albums::album_tracks(&self.session, album_id).await
     }
 
-    /// The artist's own releases without the album the page is already showing. Similar
-    /// artists stay out: the internal queries are persisted by hash, so nothing here can
-    /// ask for a relationship the official client never registered.
     async fn album_catalogue(
         &self,
         album_id: &str,
@@ -142,21 +153,14 @@ impl MusicApi for LibrespotClient {
         let Some(artist_id) = artist_id else {
             return Ok(AlbumCatalogue::default());
         };
-        let mut also_like = artists::discography(&self.session, artist_id)
+        artists::suggestions(&self.session, artist_id, album_id)
             .await
-            .with_context(|| format!("cannot load more from artist {artist_id}"))?;
-        also_like.retain(|album| album.id != album_id);
-        also_like.truncate(SUGGESTIONS);
-        Ok(AlbumCatalogue {
-            also_like,
-            similar: Vec::new(),
-        })
+            .with_context(|| format!("cannot load more from artist {artist_id}"))
     }
 
     async fn playlist(&self, playlist_id: &str) -> Result<PlaylistDetail> {
         let mut detail = playlists::playlist(&self.session, playlist_id).await?;
-        let owner = detail.playlist.owner_id.clone();
-        if !owner.is_empty() {
+        if let Some(owner) = detail.playlist.owner_id.clone() {
             let names =
                 profiles::display_names(&self.session, HashSet::from([owner.clone()])).await;
             if let Some(name) = names.get(&owner) {
@@ -207,7 +211,7 @@ impl MusicApi for LibrespotClient {
             pathfinder::genre(&self.session, MADE_FOR_YOU),
         );
         let mut feed = home.unwrap_or_else(|error| {
-            log::warn!("home: cannot load the Spotify feed: {error:#}");
+            warn!("home: cannot load the Spotify feed: {error:#}");
             HomeFeed::default()
         });
         match made {
@@ -215,7 +219,7 @@ impl MusicApi for LibrespotClient {
             Err(error) if feed.listen_again.is_empty() && feed.sections.is_empty() => {
                 return Err(error);
             }
-            Err(error) => log::warn!("home: cannot load Made For You: {error:#}"),
+            Err(error) => warn!("home: cannot load Made For You: {error:#}"),
         }
         playlists::name_blanks(&self.session, &mut feed.sections).await;
 
@@ -284,7 +288,7 @@ impl MusicApi for LibrespotClient {
                 RootList::parse_from_bytes(&body).context("cannot decode the rootlist protobuf")?;
             let count = rootlist.contents.items.len();
             playlists.extend(
-                wire::playlists_from(&rootlist)
+                wire::playlists_from(&rootlist, &self.session.username())
                     .into_iter()
                     .filter(|playlist| seen.insert(playlist.id.clone())),
             );
@@ -296,8 +300,7 @@ impl MusicApi for LibrespotClient {
 
         let owners = playlists
             .iter()
-            .map(|playlist| playlist.owner_id.clone())
-            .filter(|owner| !owner.is_empty())
+            .filter_map(|playlist| playlist.owner_id.clone())
             .collect();
         let ids = playlists
             .iter()
@@ -309,8 +312,7 @@ impl MusicApi for LibrespotClient {
         );
 
         for playlist in &mut playlists {
-            playlist.owned = playlist.owner_id == self.session.username();
-            if let Some(name) = names.get(&playlist.owner_id) {
+            if let Some(name) = playlist.owner_id.as_ref().and_then(|id| names.get(id)) {
                 playlist.owner = name.clone();
             }
             playlist.modified_at = stamps.get(&playlist.id).copied();

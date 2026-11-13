@@ -20,6 +20,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::ops::Range;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
+use tracing::warn;
 
 use anyhow::{Result, bail};
 use bytes::Bytes;
@@ -140,7 +141,7 @@ impl Spool {
                 store: Store::File(file),
             },
             Err(error) => {
-                log::warn!("playback: cannot spool to disk, buffering in memory: {error}");
+                warn!("playback: cannot spool to disk, buffering in memory: {error}");
                 Self::held(total, ceiling)
             }
         }
@@ -232,7 +233,7 @@ impl Spool {
                     return Ok(());
                 }
                 Err(error) => {
-                    log::warn!("playback: cannot spool to disk, buffering in memory: {error}");
+                    warn!("playback: cannot spool to disk, buffering in memory: {error}");
                     let mut held = vec![0; self.len];
                     read_exact_at(file, &mut held, 0)?;
                     self.store = Store::Memory(held);
@@ -538,7 +539,7 @@ async fn pump<S: Source, B: Body>(
                 return;
             }
             Err(error) => {
-                log::warn!("playback: the stream broke: {error:#}");
+                warn!("playback: the stream broke: {error:#}");
                 if let Some(shared) = weak.upgrade() {
                     shared.finish(Some(format!("{error:#}")));
                 }
@@ -569,7 +570,7 @@ async fn pump<S: Source, B: Body>(
             body.feed(&chunk, &mut staged);
             if let Err(error) = spool.append(&staged) {
                 drop(state);
-                log::warn!("playback: cannot keep the track: {error}");
+                warn!("playback: cannot keep the track: {error}");
                 shared.finish(Some(format!("cannot keep the track: {error}")));
                 progress.send_modify(|_| {});
                 return;

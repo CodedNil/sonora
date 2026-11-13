@@ -3,6 +3,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::{ReleaseDate, Timestamp};
+
 /// A size of the same cover that a provider can name without fetching anything.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CoverSize {
@@ -58,6 +60,31 @@ pub struct ArtistRef {
     pub id: Option<String>,
 }
 
+/// The short looping clip a song shows behind its artwork, or the still an artist set instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Canvas {
+    pub url: String,
+    /// Whether `url` is a clip to loop rather than a still image.
+    pub video: bool,
+}
+
+impl ArtistRef {
+    /// Joins individual credits without changing their provider-supplied order or wording.
+    pub(crate) fn names(artists: &[Self]) -> String {
+        artists
+            .iter()
+            .map(|artist| artist.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Builds navigable credits and their display text from the same ordered list.
+    pub(crate) fn credits(artists: impl IntoIterator<Item = Self>) -> (String, Vec<Self>) {
+        let artists: Vec<_> = artists.into_iter().collect();
+        (Self::names(&artists), artists)
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Credit {
@@ -66,48 +93,134 @@ pub struct Credit {
     pub id: Option<String>,
 }
 
+/// Measured musical attributes on a 0–1 scale, separate from a provider's descriptive mood tags.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AudioFeatures {
+    /// How suitable the recording is for dancing.
+    pub danceability: Option<f32>,
+    /// Perceived intensity and activity.
+    pub energy: Option<f32>,
+    /// Musical positivity, from somber to cheerful.
+    pub valence: Option<f32>,
+    /// Confidence that the recording is acoustic.
+    pub acousticness: Option<f32>,
+    /// Confidence that the recording contains no vocals.
+    pub instrumentalness: Option<f32>,
+}
+
+impl AudioFeatures {
+    /// Classifies measured audio features using provider-neutral mood names.
+    pub fn moods(&self) -> impl Iterator<Item = &'static str> {
+        let at_least =
+            |value: Option<f32>, threshold| value.is_some_and(|value| value >= threshold);
+        let energy = self.energy;
+        let low_valence = self.valence.is_some_and(|value| value <= 0.3);
+        [
+            ("energetic", at_least(energy, 0.7)),
+            ("danceable", at_least(self.danceability, 0.7)),
+            ("positive", at_least(self.valence, 0.6)),
+            ("negative", low_valence && at_least(energy, 0.5)),
+            (
+                "sad",
+                low_valence && energy.is_some_and(|value| value < 0.5),
+            ),
+            ("calming", energy.is_some_and(|value| value <= 0.35)),
+            ("instrumental", at_least(self.instrumentalness, 0.5)),
+            ("acoustic", at_least(self.acousticness, 0.6)),
+        ]
+        .into_iter()
+        .filter(|(_, matches)| *matches)
+        .map(|(mood, _)| mood)
+    }
+}
+
 /// A song or episode as a provider lists it. The default is an unplayable track with no id, so a
 /// caller that builds one from `..Default::default()` sets `playable` itself.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Track {
+    /// Provider track ID, absent when a listing supplies no playable identity.
     pub id: Option<String>,
+    /// Track title as supplied by the provider or file tags.
     pub name: String,
+    /// Whether the provider considers this track available for playback.
     pub playable: bool,
+    /// Formatted artist credit, preserving provider wording and separators.
     pub artists: String,
+    /// Individual artist credits with optional IDs for navigation.
     pub artist_refs: Vec<ArtistRef>,
+    /// Album display name, empty when unavailable.
     pub album: String,
+    /// Provider album ID for navigation, when available.
     pub album_id: Option<String>,
+    /// Artwork URL or local image path, when available.
     pub cover: Option<String>,
-    pub duration: Duration,
-    pub added_at: Option<i64>,
+    /// Reported running time, absent until the provider or decoder can determine it.
+    pub duration: Option<Duration>,
+    /// Time of saving, adding, playing or modifying, depending on the list.
+    pub added_at: Option<Timestamp>,
+    /// Person who added this playlist entry, when supplied.
     pub added_by: Option<Arc<Contributor>>,
+    /// Release date at the precision supplied, absent when unknown.
+    pub release_date: Option<ReleaseDate>,
+    /// Provider play count, which may be global or listener-specific.
     pub playcount: Option<u64>,
-    pub popularity: u32,
+    /// Provider popularity score from 0 to 100, absent when unavailable.
+    pub popularity: Option<u8>,
+    /// Whether the provider or file tags mark the content as explicit.
     pub explicit: bool,
+    /// Position within the disc or album, starting at one; zero when unknown.
     pub track_number: u32,
+    /// One-based disc number; providers use zero for unknown or default to one.
     pub disc_number: u32,
+    /// Musical genres supplied by the provider or file tags.
+    pub genres: Vec<String>,
+    /// Descriptive words such as activities or styles, distinct from genres.
     pub tags: Vec<String>,
+    /// Descriptive mood tags supplied by the provider or local file.
+    pub moods: Vec<String>,
+    /// Measured audio attributes, when the source supplies them.
+    pub audio_features: Option<AudioFeatures>,
+    /// Tempo in whole beats per minute, absent when unknown.
+    pub bpm: Option<u16>,
+    /// Languages of the performance, normalized to codes where recognized.
     pub languages: Vec<String>,
+    /// Named contributors and their credited roles, when supplied.
     pub credits: Vec<Credit>,
 }
 
+impl Track {
+    /// The known release year, including dates supplied at finer precision.
+    pub fn year(&self) -> Option<u16> {
+        self.release_date.map(ReleaseDate::year)
+    }
+}
+
+/// A playlist summary; its tracks are loaded separately through the provider.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Playlist {
+    /// Provider playlist ID used for lookup and playlist actions.
     pub id: String,
+    /// Playlist title as supplied by the provider.
     pub name: String,
+    /// Display name of the owner or curator, empty when unavailable.
     pub owner: String,
-    pub owner_id: String,
+    /// Provider owner ID for navigation, absent when unavailable.
+    pub owner_id: Option<String>,
+    /// Whether this is the listener's own playlist; track-editing access is separate.
     pub owned: bool,
-    pub collaborative: bool,
+    /// Whether the listener may add or remove tracks, independently of ownership.
+    pub can_edit_tracks: bool,
+    /// Whether this is a Spotify Blend with per-song contributor attribution.
     pub blend: bool,
-    pub public: bool,
+    /// Public visibility reported by the provider, absent when unknown.
+    pub public: Option<bool>,
+    /// Artwork URL or local image path, when available.
     pub cover: Option<String>,
-    /// How many tracks the playlist holds. Zero also stands for a count the provider does not
-    /// report, as for a Tidal mix, so a screen leaves it out rather than showing it.
-    pub track_count: u32,
-    pub modified_at: Option<i64>,
+    /// Reported number of tracks, absent when unknown.
+    pub track_count: Option<u32>,
+    /// Provider change time, when available.
+    pub modified_at: Option<Timestamp>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -157,25 +270,41 @@ impl ReleaseType {
     }
 }
 
+/// A release summary; its tracks are loaded separately through the provider.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct Album {
+    /// Provider album ID used for lookup and navigation.
     pub id: String,
+    /// Release title as supplied by the provider or file tags.
     pub name: String,
+    /// Formatted artist credit, preserving provider wording and separators.
     pub artists: String,
+    /// Individual artist credits with optional IDs for navigation.
     pub artist_refs: Vec<ArtistRef>,
+    /// Artwork URL or local image path for cards and lists.
     pub cover: Option<String>,
+    /// Larger artwork URL or local image path for the release header.
     pub cover_large: Option<String>,
+    /// Kind of release, such as an album, single or EP.
     pub release_type: ReleaseType,
-    pub year: i32,
-    pub track_count: u32,
-    pub release_date: String,
+    /// Release date at the precision supplied, absent when unknown.
+    pub release_date: Option<ReleaseDate>,
+    /// Reported number of tracks, absent when unknown.
+    pub track_count: Option<u32>,
+    /// Record label display text, empty when unavailable.
     pub label: String,
+    /// Provider copyright and phonographic copyright notices.
     pub copyrights: Vec<String>,
-    pub added_at: Option<i64>,
+    /// Library addition or local file modification time.
+    pub added_at: Option<Timestamp>,
 }
 
 impl Album {
+    /// The known release year, including dates supplied at finer precision.
+    pub fn year(&self) -> Option<u16> {
+        self.release_date.map(ReleaseDate::year)
+    }
+
     /// Credits the album to `artist` when it names no one. A provider calls this on releases
     /// read from an artist's own listing, which often leaves the artist out of each entry.
     pub fn credit(mut self, artist: &ArtistRef) -> Self {
@@ -187,7 +316,7 @@ impl Album {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct AlbumDetail {
     pub album: Album,
     pub tracks: Vec<Track>,
@@ -219,7 +348,7 @@ pub struct Genre {
 
 /// One card of a browse shelf. A provider's home and genre pages mix whatever the shelf holds,
 /// so a track or an artist sits beside albums and playlists in the same row.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum GenreItem {
     Playlist(Playlist),
     Album(Album),
@@ -228,13 +357,13 @@ pub enum GenreItem {
     Artist(SavedArtist),
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct GenreSection {
     pub title: String,
     pub items: Vec<GenreItem>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct HomeFeed {
     /// What the user has been playing lately, in every shape the provider lists it: songs and
     /// videos, but also the albums, playlists and artists they came from.
@@ -243,7 +372,7 @@ pub struct HomeFeed {
     pub sections: Vec<GenreSection>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct GenreDetail {
     pub name: String,
     pub sections: Vec<GenreSection>,
@@ -253,17 +382,15 @@ impl GenreDetail {
     /// The picture a tile for this genre wears: the first album cover on the page, else the
     /// first playlist cover.
     pub fn cover(&self) -> Option<String> {
-        let items = || self.sections.iter().flat_map(|section| &section.items);
-        let album = items().find_map(|item| match item {
-            GenreItem::Album(album) => album.cover.clone(),
-            _ => None,
-        });
-        album.or_else(|| {
-            items().find_map(|item| match item {
-                GenreItem::Playlist(playlist) => playlist.cover.clone(),
-                _ => None,
-            })
-        })
+        let mut playlist = None;
+        for item in self.sections.iter().flat_map(|section| &section.items) {
+            match item {
+                GenreItem::Album(album) if album.cover.is_some() => return album.cover.clone(),
+                GenreItem::Playlist(list) if playlist.is_none() => playlist = list.cover.clone(),
+                _ => {}
+            }
+        }
+        playlist
     }
 }
 
@@ -299,7 +426,7 @@ pub struct TrackTags {
     pub lyrics: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlaylistDetail {
     pub playlist: Playlist,
     pub tracks: Vec<Track>,
@@ -319,10 +446,10 @@ pub struct SavedArtist {
     pub id: String,
     pub name: String,
     pub cover: Option<String>,
-    pub added_at: Option<i64>,
+    pub added_at: Option<Timestamp>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Artist {
     pub name: String,
     pub cover_large: Option<String>,
@@ -337,7 +464,7 @@ pub struct Artist {
 
 /// What an artist page fills in once its overview is already on screen. Every list
 /// replaces what `MusicApi::artist` answered with, and an empty one leaves that part alone.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ArtistCatalogue {
     pub albums: Vec<Album>,
     pub top_tracks: Vec<Track>,

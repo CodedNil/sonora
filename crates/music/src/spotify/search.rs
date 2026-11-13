@@ -2,7 +2,7 @@ use anyhow::{Context as _, Result};
 use librespot_core::Session;
 
 use crate::Track;
-use crate::spotify::collection;
+use crate::spotify::metadata;
 use crate::spotify::pace::paced;
 
 const TRACK_PREFIX: &str = "spotify:track:";
@@ -25,15 +25,7 @@ pub async fn search(session: &Session, query: &str) -> Result<Vec<Track>> {
         .filter_map(|track| track.uri.clone())
         .filter(|uri| uri.starts_with(TRACK_PREFIX))
         .collect();
-    if uris.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let known = collection::metadata(session, &uris).await?;
-    Ok(uris
-        .iter()
-        .filter_map(|uri| known.get(uri).cloned())
-        .collect())
+    metadata::ordered(session, &uris).await
 }
 
 fn escaped(query: &str) -> String {

@@ -1,5 +1,6 @@
 use anyhow::{Context as _, Result};
 use tokio::sync::mpsc::UnboundedSender;
+use tracing::warn;
 use tray_icon::menu::{
     CheckMenuItem, Icon as MenuIcon, IconMenuItem, Menu, MenuEvent, MenuId, MenuItem,
     PredefinedMenuItem,
@@ -42,7 +43,7 @@ impl Icon {
         let logo = match logo() {
             Ok(logo) => logo,
             Err(error) => {
-                log::warn!("tray: cannot build the tray icon: {error:#}");
+                warn!("tray: cannot build the tray icon: {error:#}");
                 return None;
             }
         };
@@ -69,7 +70,7 @@ impl Icon {
             &show,
             &quit,
         ]) {
-            log::warn!("tray: cannot build the tray menu: {error:#}");
+            warn!("tray: cannot build the tray menu: {error:#}");
             return None;
         }
 
@@ -155,7 +156,7 @@ impl Icon {
         if let Some(icon) = &self.icon
             && let Err(error) = icon.set_tooltip(Some(&shown.caption))
         {
-            log::warn!("tray: cannot set the tooltip: {error:#}");
+            warn!("tray: cannot set the tooltip: {error:#}");
         }
         self.caption.set_text(&shown.caption);
         self.caption.set_icon(cover(shown.artwork.as_deref()));
@@ -234,7 +235,7 @@ fn cover(art: Option<&Art>) -> Option<MenuIcon> {
     match MenuIcon::from_rgba(art.data.clone(), art.width, art.height) {
         Ok(icon) => Some(icon),
         Err(error) => {
-            log::warn!("tray: cannot build the cover icon: {error:#}");
+            warn!("tray: cannot build the cover icon: {error:#}");
             None
         }
     }
@@ -250,14 +251,14 @@ fn keep_cover(icon: &TrayIcon) {
 
     const VISIBLE: isize = 1;
     let Some(mtm) = MainThreadMarker::new() else {
-        return log::warn!("tray: the tray menu was built off the main thread");
+        return warn!("tray: the tray menu was built off the main thread");
     };
     let Some(caption) = icon
         .ns_status_item()
         .and_then(|item| item.menu(mtm))
         .and_then(|menu| menu.itemAtIndex(0))
     else {
-        return log::warn!("tray: the caption row is missing from the tray menu");
+        return warn!("tray: the caption row is missing from the tray menu");
     };
     if !caption.respondsToSelector(sel!(setPreferredImageVisibility:)) {
         return;

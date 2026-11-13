@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::warn;
 
 use gpui::{Context, Entity, Task};
 use music::{Playlist, UserDetail};
@@ -137,9 +138,9 @@ impl Profile {
             if playlist.cover.is_some() {
                 continue;
             }
-            match mosaic::cached(&playlist.id, playlist.track_count) {
+            match mosaic::cached(&playlist.id, playlist.track_count.unwrap_or(0)) {
                 Some(cover) => playlist.cover = Some(cover),
-                None => wanted.push((playlist.id.clone(), playlist.track_count)),
+                None => wanted.push((playlist.id.clone(), playlist.track_count.unwrap_or(0))),
             }
         }
 
@@ -171,7 +172,7 @@ impl Profile {
                         this.update(cx, |this, cx| this.paint_mosaic(id, stamp, covers, cx))
                             .ok();
                     }
-                    Err(error) => log::warn!("profile: cannot read playlist covers: {error:#}"),
+                    Err(error) => warn!("profile: cannot read playlist covers: {error:#}"),
                 }
             });
             self.mosaics.insert(key, task);
@@ -206,7 +207,7 @@ impl Profile {
                         this.set_playlist_cover(&id, cover);
                         cx.notify();
                     }
-                    Err(error) => log::warn!("profile: cannot build a mosaic: {error:#}"),
+                    Err(error) => warn!("profile: cannot build a mosaic: {error:#}"),
                 }
             })
             .ok();

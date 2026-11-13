@@ -2,13 +2,13 @@ use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{AnyElement, App, Context, Pixels, Window, div, px, svg};
 use i18n::t;
-use state::{FullscreenControlsAutohide, SideTab};
+use state::{AppSettings, FullscreenControlsAutohide, SideTab};
 use ui::{
     ActiveTheme as _, Levels, MenuItem, OptionCard, Picker, Switch, Text, Visualizer,
     VisualizerStyle,
 };
 
-use super::rows::{Announced as _, grid, segmented};
+use super::rows::{Announced as _, grid};
 use super::{Group, Row, SettingsView, Slot};
 
 /// How large the cross on the Off card draws.
@@ -20,7 +20,7 @@ const EDGE: Pixels = px(1.);
 /// The views of the fullscreen player the visualizer can be drawn in, with the id each one's
 /// menu item goes by and the key of its name. `None` is the cover alone.
 const SCREENS: [(Option<SideTab>, &str, &str); 3] = [
-    (None, "visualizer-screen-cover", "fullscreen-artwork"),
+    (None, "visualizer-screen-cover", "common-artwork"),
     (
         Some(SideTab::Lyrics),
         "visualizer-screen-lyrics",
@@ -56,23 +56,6 @@ impl SettingsView {
             Group::new("settings-group-controls", "icons/sliders-horizontal.svg")
                 .rows([Slot::FullscreenControlsAutohide, Slot::OsFullscreen]),
         ]
-    }
-
-    /// The fullscreen background sampled from the cover. It carries the cover's hues itself,
-    /// so fullscreen tints from the artwork with the adaptive theme off as well.
-    pub(super) fn ambient_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).ambient();
-
-        self.row(
-            t!("settings-ambient"),
-            Switch::new("ambient", on)
-                .name(t!("settings-ambient"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_ambient(!on, cx));
-                }))
-                .into_any_element(),
-        )
     }
 
     pub(super) fn ambient_motion_row(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -218,42 +201,17 @@ impl SettingsView {
     }
 
     pub(super) fn fullscreen_controls_autohide_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let chosen = self.settings.read(cx).fullscreen_controls_autohide();
-
-        let picker = segmented(
+        self.segmented_setting(
             "fullscreen-controls-autohide",
+            "settings-fullscreen-controls-autohide",
             FullscreenControlsAutohide::ALL.map(|fca| (fca, i18n::lookup(fca.key(), None))),
-            chosen,
-            cx.listener(|this, fca: &FullscreenControlsAutohide, _, cx| {
-                let fca = *fca;
-                this.settings.update(cx, |settings, cx| {
-                    settings.set_fullscreen_controls_autohide(fca, cx)
-                });
-                cx.notify();
-            }),
-        );
-
-        self.row(
-            t!("settings-fullscreen-controls-autohide"),
-            picker
-                .name(t!("settings-fullscreen-controls-autohide"))
-                .into_any_element(),
+            (
+                AppSettings::fullscreen_controls_autohide,
+                AppSettings::set_fullscreen_controls_autohide,
+            ),
+            cx,
         )
-    }
-
-    pub(super) fn os_fullscreen_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).os_fullscreen();
-
-        self.row(
-            t!("settings-os-fullscreen"),
-            Switch::new("os-fullscreen", on)
-                .name(t!("settings-os-fullscreen"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_os_fullscreen(!on, cx));
-                }))
-                .into_any_element(),
-        )
+        .into_any_element()
     }
 }
 

@@ -5,10 +5,11 @@ mod sort;
 use i18n::t;
 use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::rc::Rc;
-use ui::{ActiveTheme as _, Filter, FilterChange, FlagAxis, RangeAxis, Unit};
+use ui::{ActiveTheme as _, Choice, Filter, FilterChange, FilterKind};
 
-use crate::shared::menus::{ItemMenu, TrackColumns};
+use crate::shared::menus::ItemMenu;
 use gpui::accesskit::Role;
 use gpui::prelude::FluentBuilder as _;
 use gpui::prelude::StatefulInteractiveElement as _;
@@ -18,12 +19,15 @@ use gpui::{
 };
 use music::Track;
 use router::Destination;
-use state::{Detail, History, Library, Network, Origin, Playback, Progress, Shelf, Sonora};
+use state::{
+    Detail, History, Library, Network, Origin, Playback, Progress, Shelf, Sonora, TrackCounts,
+};
 use ui::{
     ArrowRing, Button, Cell, ColumnSpec, Menu, Pending, Pin, ROW_GROUP, Scrollbar, TableSource,
     TableState,
 };
 
+use crate::chrome::tools;
 use crate::shared::cells;
 use crate::shared::confirm::{Confirm, Kind};
 use crate::shared::pins::{Pinned as _, origin_tag};
@@ -34,7 +38,14 @@ pub(crate) use columns::{
 pub(crate) use sieve::TrackSieve;
 pub(crate) use sort::initial;
 
+use sieve::{FACETS, RANGES};
 use sort::hits;
+
+/// The keys of the filters that offer a list of options to pick from, each needing a submenu of
+/// its own.
+pub(crate) fn choice_filters() -> impl Iterator<Item = &'static str> {
+    FACETS.iter().map(|(key, _)| *key)
+}
 
 /// How strongly an unsaved track's heart shows on its row.
 const SETTLED: f32 = 0.5;
@@ -175,12 +186,76 @@ pub(crate) struct TrackSource {
     menu: ItemMenu,
     table: Option<WeakEntity<TableState<TrackSource>>>,
     sieve: TrackSieve,
-    spread: RefCell<Option<Spread>>,
+    counts: Entity<TrackCounts>,
+    spread: RefCell<Option<[Vec<f32>; RANGES.len()]>>,
 }
 
-struct Spread {
-    stamp: usize,
-    extent: Option<(f32, f32)>,
+/// Returns the sorted, unique values a track field can meaningfully filter.
+fn distinct_values(tracks: &[Track], value: impl Fn(&Track) -> Option<f32>) -> Vec<f32> {
+    let mut values: Vec<_> = tracks.iter().filter_map(value).collect();
+    values.sort_by(f32::total_cmp);
+    values.dedup();
+    values
+}
+
+/// The distinct words `words` picks from the facts, as options with the commonest first, `picked`
+/// ones on. A picked word no track carries is still offered, last, so it can be cleared.
+fn choices(
+    tracks: &[Track],
+    words: sieve::Words,
+    picked: Option<&[String]>,
+    key: &str,
+) -> Vec<Choice> {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for word in tracks.iter().flat_map(|track| words.read(track)) {
+        *counts.entry(word).or_default() += 1;
+    }
+    for id in picked.into_iter().flatten() {
+        counts.entry(id).or_default();
+    }
+    let mut ranked: Vec<_> = counts.into_iter().collect();
+    ranked.sort_by(|(a, x), (b, y)| y.cmp(x).then(a.cmp(b)));
+    ranked
+        .into_iter()
+        .map(|(id, _)| Choice {
+            id: id.to_owned().into(),
+            // Known mood names are localized; provider-specific words retain their own labels.
+            label: match key {
+                "filter-genre" => title_case(id).into(),
+                "filter-mood" => t!(
+                    "mood-name",
+                    mood = id,
+                    fallback = capitalised(id).to_string()
+                ),
+                _ => capitalised(id),
+            },
+            on: picked.is_some_and(|picked| picked.iter().any(|word| word == id)),
+        })
+        .collect()
+}
+
+/// Capitalizes each word in a provider genre while keeping punctuation and spacing.
+fn title_case(text: &str) -> String {
+    let mut start = true;
+    let mut result = String::new();
+    for ch in text.chars() {
+        if start && ch.is_alphabetic() {
+            result.extend(ch.to_uppercase());
+        } else {
+            result.push(ch);
+        }
+        start = !ch.is_alphanumeric();
+    }
+    result
+}
+
+/// A descriptive word with its first letter in capitals, as a provider words it in lowercase.
+fn capitalised(word: &str) -> SharedString {
+    let mut letters = word.chars();
+    match letters.next() {
+        Some(first) => format!("{}{}", first.to_uppercase(), letters.as_str()).into(),
+        None => SharedString::default(),
+    }
 }
 
 /// What the number at the head of a row counts.
@@ -201,6 +276,13 @@ fn disc(track: &Track) -> u32 {
 }
 
 impl TrackSource {
+    /// Uses the row's own count first, then the shared lazily loaded provider count.
+    fn playcount(&self, track: &Track, cx: &App) -> Option<u64> {
+        track
+            .playcount
+            .or_else(|| self.counts.read(cx).get(track.id.as_deref()?))
+    }
+
     pub(crate) fn new(
         columns: &'static [ColumnSpec<TrackField>],
         provider: impl Tracks,
@@ -222,6 +304,7 @@ impl TrackSource {
             menu: ItemMenu::new(playlist_scrollbar, cx),
             table: None,
             sieve: TrackSieve::default(),
+            counts: Sonora::global(cx).track_counts.clone(),
             spread: RefCell::new(None),
         }
     }
@@ -232,29 +315,19 @@ impl TrackSource {
         changed
     }
 
-    /// The shortest and longest track in the whole list, `None` only when the list is empty.
-    /// The span deliberately ignores the sieve and the search, so narrowing the table can never
-    /// shrink the slider that did the narrowing and leave the user with no way back.
-    pub(crate) fn extent(&self, cx: &App) -> Option<(f32, f32)> {
-        let tracks = self.provider.tracks(cx);
-        let stamp = tracks.len();
-        if let Some(spread) = self.spread.borrow().as_ref()
-            && spread.stamp == stamp
-        {
-            return spread.extent;
-        }
-
-        let mut low = f32::MAX;
-        let mut high = f32::MIN;
-        for track in tracks {
-            let seconds = track.duration.as_secs_f32();
-            low = low.min(seconds);
-            high = high.max(seconds);
-        }
-        let extent = (low <= high).then_some((low, high));
-        *self.spread.borrow_mut() = Some(Spread { stamp, extent });
-
-        extent
+    /// Builds numeric axes from the whole list, so narrowing never shrinks its own slider.
+    fn numeric_axes(&self, cx: &App) -> Vec<Filter> {
+        let mut spread = self.spread.borrow_mut();
+        let values = spread.get_or_insert_with(|| {
+            RANGES.map(|(_, number, _)| distinct_values(self.provider.tracks(cx), number))
+        });
+        RANGES
+            .iter()
+            .zip(values)
+            .filter_map(|((key, _, unit), values)| {
+                tools::range(key, values, self.sieve.filters.range(key), *unit)
+            })
+            .collect()
     }
 
     // resolved when play starts
@@ -539,8 +612,25 @@ impl TrackSource {
 impl TableSource for TrackSource {
     type Field = TrackField;
 
+    fn invalidate(&mut self) {
+        *self.spread.get_mut() = None;
+    }
+
     fn columns(&self) -> &'static [ColumnSpec<TrackField>] {
         self.columns
+    }
+
+    fn observe(&self, cx: &mut Context<TableState<Self>>) {
+        cx.observe(&self.counts, |this, _, cx| this.rebuild(cx))
+            .detach();
+    }
+
+    fn prepare(&self, sorted: Option<TrackField>, cx: &mut App) {
+        if sorted == Some(TrackField::Plays) {
+            let tracks = self.provider.tracks(cx).to_vec();
+            self.counts
+                .update(cx, |counts, cx| counts.request(&tracks, cx));
+        }
     }
 
     fn rows(&self, cx: &App) -> usize {
@@ -554,9 +644,12 @@ impl TableSource for TrackSource {
         }
 
         match field {
+            TrackField::Popularity => tracks.iter().any(|track| track.popularity.is_some()),
+            TrackField::Year => tracks.iter().any(|track| track.year().is_some()),
+            TrackField::Tags => tracks.iter().any(|track| !track.tags.is_empty()),
             TrackField::Artists => tracks.iter().any(|track| !track.artists.is_empty()),
             TrackField::Album => tracks.iter().any(|track| !track.album.is_empty()),
-            TrackField::Genre => tracks.iter().any(|track| !track.tags.is_empty()),
+            TrackField::Genre => tracks.iter().any(|track| !track.genres.is_empty()),
             TrackField::AddedAt | TrackField::PlayedAt => {
                 tracks.iter().any(|track| track.added_at.is_some())
             }
@@ -571,10 +664,10 @@ impl TableSource for TrackSource {
             if !self.sieve.keeps(track) {
                 return false;
             }
-            if self.sieve.favorites && !self.starred(track, cx) {
+            if self.sieve.filters.on("filter-favorites") && !self.starred(track, cx) {
                 return false;
             }
-            if (self.sieve.downloaded || self.downloads_only(cx))
+            if (self.sieve.filters.on("filter-downloaded") || self.downloads_only(cx))
                 && !track
                     .id
                     .as_deref()
@@ -587,80 +680,34 @@ impl TableSource for TrackSource {
     }
 
     fn filter_axes(&self, cx: &App) -> Vec<Filter> {
-        let duration = self.extent(cx).map(|bounds| {
-            Filter::Range(
-                RangeAxis {
-                    key: "filter-duration",
-                    label: t!("filter-duration"),
-                    bounds,
-                    value: self.sieve.duration.unwrap_or(bounds),
-                    unit: Unit::Clock,
-                    values: None,
-                }
-                .clamped(),
-            )
-        });
-
-        let mut axes: Vec<Filter> = duration.into_iter().collect();
-        axes.extend([
-            Filter::Flag(FlagAxis {
-                key: "filter-hide-explicit",
-                label: t!("filter-hide-explicit"),
-                on: self.sieve.hide_explicit,
-            }),
-            Filter::Flag(FlagAxis {
-                key: "filter-playable",
-                label: t!("filter-playable"),
-                on: self.sieve.playable,
-            }),
-        ]);
-        if self.catalog(cx) {
-            axes.push(Filter::Flag(FlagAxis {
-                key: "filter-favorites",
-                label: t!("filter-favorites"),
-                on: self.sieve.favorites,
-            }));
+        if self.provider.tracks(cx).len() <= 1 {
+            return Vec::new();
         }
-        // Offline mode already keeps a shelf to its downloads, so the filter would do nothing.
-        let offered = self.sieve.downloaded || !Sonora::global(cx).downloads.read(cx).is_empty();
-        if offered && !self.downloads_only(cx) {
-            axes.push(Filter::Flag(FlagAxis {
-                key: "filter-downloaded",
-                label: t!("filter-downloaded"),
-                on: self.sieve.downloaded,
-            }));
-        }
+        let mut axes = self.numeric_axes(cx);
+        axes.extend(FACETS.iter().filter_map(|(key, words)| {
+            let options = choices(
+                self.provider.tracks(cx),
+                *words,
+                self.sieve.filters.picks(key),
+                key,
+            );
+            (!options.is_empty()).then_some(Filter {
+                key,
+                kind: FilterKind::Choice(options),
+            })
+        }));
+        // Offline mode already keeps a shelf to its downloads, so that filter would do nothing.
+        let offered = self.sieve.filters.on("filter-downloaded")
+            || !Sonora::global(cx).downloads.read(cx).is_empty();
+        axes.extend(
+            self.sieve
+                .flags(self.catalog(cx), offered && !self.downloads_only(cx)),
+        );
         axes
     }
 
     fn filter(&mut self, change: FilterChange, _cx: &App) -> bool {
-        match change {
-            FilterChange::Range("filter-duration", value) => {
-                self.sieve.duration = Some(value);
-                true
-            }
-            FilterChange::Flag("filter-hide-explicit", value) => {
-                self.sieve.hide_explicit = value;
-                true
-            }
-            FilterChange::Flag("filter-playable", value) => {
-                self.sieve.playable = value;
-                true
-            }
-            FilterChange::Flag("filter-favorites", value) => {
-                self.sieve.favorites = value;
-                true
-            }
-            FilterChange::Flag("filter-downloaded", value) => {
-                self.sieve.downloaded = value;
-                true
-            }
-            FilterChange::Reset => {
-                self.sieve = Default::default();
-                true
-            }
-            _ => false,
-        }
+        self.sieve.filters.apply(change)
     }
 
     fn filtered(&self, _cx: &App) -> bool {
@@ -732,15 +779,41 @@ impl TableSource for TrackSource {
         };
 
         match cell.field {
+            TrackField::Year => cells::dim(
+                &cell,
+                track
+                    .year()
+                    .map(|year| SharedString::from(year.to_string()))
+                    .unwrap_or_default(),
+                detail,
+            ),
+            TrackField::Popularity => cells::dim(
+                &cell,
+                track
+                    .popularity
+                    .map(|value| SharedString::from(value.to_string()))
+                    .unwrap_or_default(),
+                detail,
+            ),
+            TrackField::Tags => cells::dim(&cell, track.tags.join(", "), detail),
             TrackField::Cover => cells::artwork(&cell, track.cover.clone()),
             TrackField::Title => self.title_cell(&cell, track, title, cx),
             TrackField::Artists => self.artist_cell(&cell, track, detail),
             TrackField::Album => self.album_cell(&cell, track, detail),
-            TrackField::Genre => cells::dim(&cell, track.tags.join(", "), detail),
+            TrackField::Genre => cells::dim(
+                &cell,
+                track
+                    .genres
+                    .iter()
+                    .map(|genre| title_case(genre))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                detail,
+            ),
             TrackField::AddedAt => cells::credited(
                 &cell,
                 track.added_by.as_deref(),
-                cells::stamp(track.added_at),
+                cells::added_stamp(track.added_at),
                 detail,
             ),
             TrackField::AddedBy => match track.added_by.as_deref() {
@@ -750,12 +823,20 @@ impl TableSource for TrackSource {
             TrackField::PlayedAt => {
                 cells::dim(&cell, cells::relative_stamp(track.added_at), detail)
             }
-            TrackField::Plays => cells::dim(
-                &cell,
-                track.playcount.map(cells::count).unwrap_or_default(),
-                detail,
-            ),
-            TrackField::Duration => cells::length(&cell, track.duration, detail),
+            TrackField::Plays => {
+                let count = self.playcount(track, cx);
+                if count.is_none() {
+                    let track = track.clone();
+                    self.counts.update(cx, |counts, cx| {
+                        counts.request(std::slice::from_ref(&track), cx)
+                    });
+                }
+                cells::dim(&cell, count.map(cells::count).unwrap_or_default(), detail)
+            }
+            TrackField::Duration => track
+                .duration
+                .map(|duration| cells::length(&cell, duration, detail))
+                .unwrap_or_else(|| cells::blank(&cell)),
             TrackField::Index => cells::blank(&cell),
         }
     }
@@ -764,34 +845,17 @@ impl TableSource for TrackSource {
         true
     }
 
-    fn context_menu(&self, rows: &[usize], visible: &[TrackField], cx: &App) -> Option<Menu> {
+    fn context_menu(&self, rows: &[usize], _visible: &[TrackField], cx: &App) -> Option<Menu> {
         let tracks: Vec<Track> = rows.iter().filter_map(|&row| self.at(row, cx)).collect();
         if tracks.is_empty() {
             return None;
         }
-        let columns = match Sonora::global(cx).settings.read(cx).adaptive_menu() {
-            true => TrackColumns {
-                album: visible.contains(&TrackField::Album),
-                artists: visible.contains(&TrackField::Artists),
-            },
-            false => TrackColumns::default(),
-        };
         if let Some(history) = &self.history {
-            return Some(
-                self.menu
-                    .for_history_tracks(&tracks, history.clone(), columns, cx),
-            );
+            return Some(self.menu.for_history_tracks(&tracks, history.clone(), cx));
         }
-        Some(match (&self.album, &self.playlist) {
-            (Some(detail), _) => {
-                let id = detail.read(cx).id()?;
-                self.menu.for_album_tracks(&tracks, id, columns, cx)
-            }
-            (_, Some(detail)) => {
-                self.menu
-                    .for_playlist_tracks(&tracks, detail.clone(), columns, cx)
-            }
-            (None, None) => self.menu.for_table_tracks(&tracks, columns, cx),
+        Some(match &self.playlist {
+            Some(detail) => self.menu.for_playlist_tracks(&tracks, detail.clone(), cx),
+            None => self.menu.for_table_tracks(&tracks, cx),
         })
     }
 
@@ -800,7 +864,14 @@ impl TableSource for TrackSource {
     }
 
     fn compare(&self, field: TrackField, a: usize, b: usize, cx: &App) -> Ordering {
-        sort::compare(self.provider.tracks(cx), field, a, b)
+        let tracks = self.provider.tracks(cx);
+        if field == TrackField::Plays {
+            return tracks
+                .get(a)
+                .and_then(|track| self.playcount(track, cx))
+                .cmp(&tracks.get(b).and_then(|track| self.playcount(track, cx)));
+        }
+        sort::compare(tracks, field, a, b)
     }
 
     fn group(&self, field: TrackField, row: usize, cx: &App) -> Option<SharedString> {
@@ -860,7 +931,7 @@ mod fixture {
         Track {
             id: Some("id".to_owned()),
             playable,
-            duration: Duration::from_secs(seconds),
+            duration: Some(Duration::from_secs(seconds)),
             explicit,
             ..Default::default()
         }

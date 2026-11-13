@@ -8,6 +8,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tracing::{debug, info, warn};
 
 use anyhow::{Context as _, Result, bail};
 use async_trait::async_trait;
@@ -295,7 +296,7 @@ impl TidalClient {
             return Ok(current.access_token);
         }
         if let Some(newer) = auth::newer(self.generation(), &current) {
-            log::debug!("tidal: taking the session another one renewed");
+            debug!("tidal: taking the session another one renewed");
             current = Credentials {
                 country_code: current.country_code,
                 ..newer
@@ -313,7 +314,7 @@ impl TidalClient {
         if self.generation() != UNSTORED
             && let Err(error) = auth::keep(self.generation(), &renewed)
         {
-            log::warn!("tidal: cannot keep the renewed session: {error:#}");
+            warn!("tidal: cannot keep the renewed session: {error:#}");
         }
         let token = renewed.access_token.clone();
         *self.inner.credentials.write().await = renewed;
@@ -387,7 +388,7 @@ impl TidalClient {
                     .and_then(|after| after.to_str().ok()?.parse().ok())
                     .map_or(Duration::from_secs(2), Duration::from_secs)
                     .min(BACKOFF_CEILING);
-                log::debug!("tidal: slowed down for {}ms", wait.as_millis());
+                debug!("tidal: slowed down for {}ms", wait.as_millis());
                 tokio::time::sleep(wait).await;
                 slowed = true;
                 continue;
@@ -523,9 +524,7 @@ impl TidalClient {
                 Err(error)
                     if attempt < EDIT_ATTEMPTS && error.downcast_ref::<Stale>().is_some() =>
                 {
-                    log::debug!(
-                        "tidal: the playlist looked stale to a write, asking again: {error:#}"
-                    );
+                    debug!("tidal: the playlist looked stale to a write, asking again: {error:#}");
                     tokio::time::sleep(EDIT_SETTLE * attempt).await;
                     attempt += 1;
                 }
@@ -699,21 +698,14 @@ impl TidalClient {
         size: usize,
         read: fn(&Value) -> Vec<T>,
     ) -> Pages<T> {
-        let (sink, pages) = tokio::sync::mpsc::channel(FAN);
         let client = self.clone();
-        tokio::spawn(async move {
+        crate::pages(FAN, move |sink| async move {
             let limit = size.to_string();
             for page in 0..PAGES {
                 let offset = (page * size).to_string();
                 let mut asked: Vec<(&str, &str)> = query.clone();
                 asked.extend([("limit", limit.as_str()), ("offset", offset.as_str())]);
-                let answer = match client.get(&path, &asked).await {
-                    Ok(answer) => answer,
-                    Err(error) => {
-                        sink.send(Err(error)).await.ok();
-                        return;
-                    }
-                };
+                let answer = client.get(&path, &asked).await?;
                 let last = exhausted(&answer, page, size);
                 let sent = sink
                     .send(Ok(Page {
@@ -722,11 +714,11 @@ impl TidalClient {
                     }))
                     .await;
                 if sent.is_err() || last {
-                    return;
+                    break;
                 }
             }
-        });
-        pages
+            Ok(())
+        })
     }
 
     async fn favorites_path(&self, kind: &str) -> String {
@@ -755,6 +747,14 @@ impl TidalClient {
             }
         }
         .with_context(|| format!("cannot change the tidal favorite {id}"))
+    }
+
+    /// Saves a regular playlist or its mix counterpart through the API that owns that kind.
+    async fn playlist_membership(&self, id: &str, saved: bool) -> Result<()> {
+        match id.strip_prefix(wire::MIX) {
+            Some(mix) => self.save_mix(mix, saved).await,
+            None => self.favorite("playlists", "uuids", id, saved).await,
+        }
     }
 
     /// The first `limit` of an artist's releases of one kind, for a rail that only shows a few.
@@ -870,7 +870,7 @@ impl TidalClient {
         self.profile()
             .await
             .map(|profile| profile.display_name)
-            .inspect_err(|error| log::debug!("tidal: no name for the listener: {error:#}"))
+            .inspect_err(|error| debug!("tidal: no name for the listener: {error:#}"))
             .unwrap_or_default()
     }
 
@@ -912,16 +912,10 @@ impl TidalClient {
                 id: format!("{}{mix_id}", wire::MIX),
                 name: wire::text(&page, "title").unwrap_or_default().to_owned(),
                 owner: "TIDAL".to_owned(),
-                owner_id: String::new(),
-                owned: false,
-                collaborative: false,
-                blend: false,
-                public: true,
-                cover: None,
-                track_count: 0,
-                modified_at: None,
+                public: Some(true),
+                ..Default::default()
             });
-        playlist.track_count = u32::try_from(tracks.len()).unwrap_or(u32::MAX);
+        playlist.track_count = Some(u32::try_from(tracks.len()).unwrap_or(u32::MAX));
         if playlist.cover.is_none() {
             playlist.cover = tracks.iter().find_map(|track| track.cover.clone());
         }
@@ -1015,7 +1009,7 @@ impl TidalClient {
                 return Err(error);
             }
             Err(error) => {
-                log::info!(
+                info!(
                     "tidal: {track_id} cannot play at {asked}, asking for {FALLBACK_QUALITY}: {error:#}"
                 );
                 answer = info(FALLBACK_QUALITY).await?;
@@ -1092,7 +1086,7 @@ impl MusicApi for TidalClient {
             .get_v2(&format!("/profiles/{user}"), &[])
             .await
             .inspect_err(|error| {
-                log::debug!("tidal: no public profile, reading the account instead: {error:#}");
+                debug!("tidal: no public profile, reading the account instead: {error:#}");
             })
             .unwrap_or_default();
         let named = wire::text(&public, "name")
@@ -1127,14 +1121,14 @@ impl MusicApi for TidalClient {
             self.biography(artist_id),
         );
         let detail = detail.context("cannot load the artist")?;
+        let profile = wire::artist_profile(&detail, biography);
         Ok(Artist {
-            name: wire::text(&detail, "name").unwrap_or_default().to_owned(),
-            cover_large: wire::image(wire::text(&detail, "picture"), wire::PORTRAIT_LARGE),
-            banner: None,
-            biography,
-            monthly_listeners: None,
+            name: profile.name,
+            cover_large: profile.cover_large,
+            biography: profile.biography,
             top_tracks: top.map(|page| wire::track_list(&page)).unwrap_or_default(),
             albums: wire::distinct(albums.unwrap_or_default()),
+            ..Default::default()
         })
     }
 
@@ -1169,11 +1163,7 @@ impl MusicApi for TidalClient {
         let (detail, biography) =
             tokio::join!(self.get(&detail_path, &[]), self.biography(artist_id));
         let detail = detail.context("cannot load the artist")?;
-        Ok(ArtistProfile {
-            name: wire::text(&detail, "name").unwrap_or_default().to_owned(),
-            cover_large: wire::image(wire::text(&detail, "picture"), wire::PORTRAIT_LARGE),
-            biography,
-        })
+        Ok(wire::artist_profile(&detail, biography))
     }
 
     /// Answers from the portrait cache first and looks the rest up a few at a time. An artist
@@ -1236,10 +1226,6 @@ impl MusicApi for TidalClient {
         wire::track(&answer).with_context(|| format!("cannot read the tidal track {track_id}"))
     }
 
-    async fn track_playcount(&self, _track_id: &str) -> Result<Option<u64>> {
-        Ok(None)
-    }
-
     /// The listener's own playlists and the ones they follow, in one listing.
     async fn playlists(&self) -> Result<Vec<Playlist>> {
         let user_id = self.user_id().await;
@@ -1263,7 +1249,7 @@ impl MusicApi for TidalClient {
         }
         match mixes {
             Ok(mixes) => playlists.extend(mixes),
-            Err(error) => log::warn!("tidal: cannot load the saved mixes: {error:#}"),
+            Err(error) => warn!("tidal: cannot load the saved mixes: {error:#}"),
         }
         Ok(playlists)
     }
@@ -1317,20 +1303,11 @@ impl MusicApi for TidalClient {
     }
 
     async fn remove_playlist_from_library(&self, playlist_id: &str) -> Result<()> {
-        match playlist_id.strip_prefix(wire::MIX) {
-            Some(mix_id) => self.save_mix(mix_id, false).await,
-            None => {
-                self.favorite("playlists", "uuids", playlist_id, false)
-                    .await
-            }
-        }
+        self.playlist_membership(playlist_id, false).await
     }
 
     async fn add_playlist_to_library(&self, playlist_id: &str) -> Result<()> {
-        match playlist_id.strip_prefix(wire::MIX) {
-            Some(mix_id) => self.save_mix(mix_id, true).await,
-            None => self.favorite("playlists", "uuids", playlist_id, true).await,
-        }
+        self.playlist_membership(playlist_id, true).await
     }
 
     async fn set_playlist_public(&self, playlist_id: &str, public: bool) -> Result<()> {
@@ -1458,10 +1435,6 @@ impl MusicApi for TidalClient {
         })
     }
 
-    async fn album_tracks(&self, album_id: &str) -> Result<Vec<Track>> {
-        Ok(self.album(album_id).await?.tracks)
-    }
-
     /// More from the album's artist first, topped up with a release or two from each of the
     /// artists Tidal lists as similar.
     async fn album_catalogue(
@@ -1551,10 +1524,6 @@ impl MusicApi for TidalClient {
         })
     }
 
-    async fn playlist_tracks(&self, playlist_id: &str) -> Result<Vec<Track>> {
-        Ok(self.playlist(playlist_id).await?.tracks)
-    }
-
     /// Read from the first page of tracks alone, which holds enough distinct covers for a
     /// mosaic, so a long playlist is not downloaded whole to draw four squares.
     async fn playlist_covers(&self, playlist_id: &str, wanted: usize) -> Result<Vec<String>> {
@@ -1590,7 +1559,7 @@ impl MusicApi for TidalClient {
         let tracks = match radio {
             Ok(tracks) if !tracks.is_empty() => tracks,
             Ok(_) | Err(_) => self.track_mix(track_id).await.unwrap_or_else(|error| {
-                log::warn!("tidal: no track radio for {track_id}: {error:#}");
+                warn!("tidal: no track radio for {track_id}: {error:#}");
                 Vec::new()
             }),
         };
@@ -1697,7 +1666,7 @@ impl MusicApi for TidalClient {
             .filter_map(|(title, items)| {
                 // A genre lists only some kinds, and a missing shelf is no reason to fail the page.
                 let items = items
-                    .inspect_err(|error| log::debug!("tidal: genre {genre_id}: {error:#}"))
+                    .inspect_err(|error| debug!("tidal: genre {genre_id}: {error:#}"))
                     .ok()?;
                 (!items.is_empty()).then(|| GenreSection {
                     title: title.to_owned(),

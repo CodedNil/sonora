@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use tracing::warn;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -223,7 +224,7 @@ fn hit(calls: &Calls) -> Option<LyricsHit> {
 fn richsync(calls: &Calls) -> Option<Vec<LyricsLine>> {
     let body = calls.richsync.as_ref()?.answered()?.richsync.as_ref()?;
     let sung: Vec<Rich> = serde_json::from_str(&body.richsync_body)
-        .inspect_err(|error| log::warn!("lyrics: cannot read a musixmatch richsync: {error}"))
+        .inspect_err(|error| warn!("lyrics: cannot read a musixmatch richsync: {error}"))
         .ok()?;
     let lines: Vec<LyricsLine> = sung.into_iter().map(verse).collect();
     (!lines.is_empty()).then_some(lines)
@@ -280,7 +281,7 @@ fn subtitles(calls: &Calls) -> Option<Vec<LyricsLine>> {
         Ok(cues) => cued(&cues),
         Err(error) => match lrc::parse(text) {
             lines if lines.is_empty() => {
-                log::warn!("lyrics: cannot read a musixmatch subtitle: {error}");
+                warn!("lyrics: cannot read a musixmatch subtitle: {error}");
                 Vec::new()
             }
             lines => lines,
@@ -362,7 +363,7 @@ fn remember(token: &str) {
     if let Ok(text) = serde_json::to_string(&held)
         && let Err(error) = std::fs::write(&path, text)
     {
-        log::warn!("lyrics: cannot keep the musixmatch token: {error}");
+        warn!("lyrics: cannot keep the musixmatch token: {error}");
     }
 }
 

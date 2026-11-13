@@ -13,18 +13,20 @@
 
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_ulong, c_void};
-use std::ptr;
 use std::sync::{Arc, Condvar, Mutex, Once, OnceLock};
 use std::time::Duration;
+use std::{mem::ManuallyDrop, ptr};
+use tracing::{debug, warn};
 
 use anyhow::{Context as _, Result, bail};
+use libloading::os::unix::{Library, RTLD_LAZY, RTLD_LOCAL};
 
 use crate::native::{Fetch, HEIGHT, MIN_HEIGHT, MIN_WIDTH, Reading, WIDTH, host};
 use crate::{Cookie, Target};
 
 /// The sonames to try, newest first. 4.1 and 4.0 differ only in the libsoup they carry, and every
 /// symbol used here is spelled the same in both.
-const LIBRARIES: [&str; 2] = ["libwebkit2gtk-4.1.so.0\0", "libwebkit2gtk-4.0.so.37\0"];
+const LIBRARIES: [&str; 2] = ["libwebkit2gtk-4.1.so.0", "libwebkit2gtk-4.0.so.37"];
 
 /// How often the GTK thread reads the poll side's requests while a window is up.
 const TICK: c_uint = 50;
@@ -92,9 +94,9 @@ macro_rules! symbols {
         impl Api {
             /// Resolves the whole table or nothing: a library missing one of these is too old to
             /// drive, and half a table would fail later and further from the cause.
-            unsafe fn load(handle: Ptr) -> Option<Self> {
+            unsafe fn load(library: &Library) -> Option<Self> {
                 Some(Self {
-                    $($name: unsafe { symbol(handle, concat!(stringify!($name), "\0"))? },)*
+                    $($name: *unsafe { library.get(concat!(stringify!($name), "\0").as_bytes()).ok()? },)*
                 })
             }
         }
@@ -228,7 +230,7 @@ pub(crate) fn supported() -> bool {
         match probed {
             Ok(status) => status.success(),
             Err(error) => {
-                log::warn!("webview: cannot look for webkit2gtk in a child: {error}");
+                warn!("webview: cannot look for webkit2gtk in a child: {error}");
                 api().is_some()
             }
         }
@@ -360,7 +362,7 @@ impl Host {
 
     /// Gives up on GTK for the life of the process, and on everything queued for it.
     fn fail(&self, why: String) {
-        log::warn!("webview: {why}");
+        warn!("webview: {why}");
         let mut queue = self.queue.lock().unwrap();
         queue.start = Start::Failed(why);
         for session in std::mem::take(&mut queue.waiting) {
@@ -522,16 +524,16 @@ fn api() -> Option<&'static Api> {
 
 fn load() -> Option<Api> {
     for soname in LIBRARIES {
-        let handle =
-            unsafe { libc::dlopen(soname.as_ptr().cast(), libc::RTLD_LAZY | libc::RTLD_LOCAL) };
-        if handle.is_null() {
+        let Ok(library) = (unsafe { Library::open(Some(soname), RTLD_LAZY | RTLD_LOCAL) }) else {
             continue;
-        }
-        match unsafe { Api::load(handle) } {
+        };
+        // GLib types can outlive every window, so even an incomplete table stays loaded.
+        let library = ManuallyDrop::new(library);
+        match unsafe { Api::load(&library) } {
             Some(api) => return Some(api),
-            None => log::warn!(
+            None => warn!(
                 "webview: {} is missing symbols the sign-in window needs",
-                soname.trim_end_matches('\0')
+                soname
             ),
         }
     }
@@ -542,12 +544,12 @@ fn load() -> Option<Api> {
 /// The script is copied into the content manager, so the one built here is released straight away.
 fn inject(api: &'static Api, view: Ptr, source: &str) {
     let Ok(source) = CString::new(source) else {
-        log::warn!("webview: the page script is not text");
+        warn!("webview: the page script is not text");
         return;
     };
     let manager = unsafe { (api.webkit_web_view_get_user_content_manager)(view) };
     if manager.is_null() {
-        log::warn!("webview: the view has no content manager, the page script will not run");
+        warn!("webview: the view has no content manager, the page script will not run");
         return;
     }
     let script = unsafe {
@@ -560,19 +562,11 @@ fn inject(api: &'static Api, view: Ptr, source: &str) {
         )
     };
     if script.is_null() {
-        log::warn!("webview: cannot build the page script");
+        warn!("webview: cannot build the page script");
         return;
     }
     unsafe { (api.webkit_user_content_manager_add_script)(manager, script) };
     unsafe { (api.webkit_user_script_unref)(script) };
-}
-
-/// Resolves one symbol. `dlsym` searches the handle's dependencies too, which is how gtk, glib and
-/// soup are reached without naming a soname for any of them.
-unsafe fn symbol<T>(handle: Ptr, name: &str) -> Option<T> {
-    assert!(size_of::<T>() == size_of::<Ptr>());
-    let found = unsafe { libc::dlsym(handle, name.as_ptr().cast()) };
-    (!found.is_null()).then(|| unsafe { std::mem::transmute_copy(&found) })
 }
 
 /// The GTK thread, started on the first window and kept for the life of the process.
@@ -608,7 +602,7 @@ fn run(api: &'static Api, host: &'static Host) {
     // memory is slower and only ever paints a sign-in page. A value the user exported wins.
     // SAFETY: nothing else in the process reads this variable, and no other thread is in GTK yet.
     if nvidia() && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-        log::debug!("webview: nvidia driver loaded, disabling the dmabuf renderer");
+        debug!("webview: nvidia driver loaded, disabling the dmabuf renderer");
         unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
     }
     // gtk_init would otherwise move the whole process onto the user's locale.
@@ -626,7 +620,7 @@ fn run(api: &'static Api, host: &'static Host) {
                 .into_owned(),
         }
     };
-    log::debug!("webview: gdk opened {backend}");
+    debug!("webview: gdk opened {backend}");
     // On X11 WebKit tries to share a GL context with the main process and paints nothing; the
     // compositing env var has no public setting equivalent. Wayland needs the compositor on.
     // SAFETY: nothing else in the process reads this variable.
@@ -669,7 +663,7 @@ fn adopt(api: &'static Api, host: &'static Host) {
             match Live::open(api, session.clone()) {
                 Ok(window) => live.push(window),
                 Err(error) => {
-                    log::warn!("webview: cannot open the sign-in window: {error:#}");
+                    warn!("webview: cannot open the sign-in window: {error:#}");
                     session.state.lock().unwrap().closed = true;
                 }
             }
@@ -695,7 +689,7 @@ unsafe extern "C" fn collected(source: Ptr, result: Ptr, data: Ptr) {
     if !fault.is_null() {
         let why = unsafe { text((*fault).message) }.unwrap_or_default();
         unsafe { (api.g_error_free)(fault) };
-        log::warn!("webview: cannot read the sign-in cookies: {why}");
+        warn!("webview: cannot read the sign-in cookies: {why}");
         session.state.lock().unwrap().fetch = Fetch::Idle;
         return;
     }

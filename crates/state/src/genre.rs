@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::{debug, warn};
 
 use gpui::{Context, Entity, Task};
 use music::{Genre, GenreDetail, GenreSection, MusicApi};
@@ -203,7 +204,7 @@ impl Genres {
                                 this.adopt(id, cover.clone(), cx);
                                 known.insert(id.clone(), cover);
                             }
-                            Err(error) => log::debug!("genres: no picture for {id}: {error:#}"),
+                            Err(error) => debug!("genres: no picture for {id}: {error:#}"),
                         }
                     }
                 });
@@ -402,7 +403,7 @@ fn remembered(cache: &storage::Cache, slug: &str) -> Covers {
         }
         Ok(_) => Covers::new(),
         Err(error) => {
-            log::warn!("genres: {error:#}");
+            warn!("genres: {error:#}");
             Covers::new()
         }
     }
@@ -414,7 +415,7 @@ fn remember(cache: &storage::Cache, slug: &str, covers: &Covers) {
     let saved = now();
     let value = serde_json::json!({ "saved": saved, "covers": covers }).to_string();
     if let Err(error) = cache.write(&covers_key(slug), &value, saved as i64) {
-        log::warn!("genres: {error:#}");
+        warn!("genres: {error:#}");
     }
 }
 

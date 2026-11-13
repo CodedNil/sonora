@@ -112,7 +112,7 @@ impl Render for SessionJoin {
                         Button::new("confirm-session-join")
                             .primary()
                             .disabled(!ready)
-                            .label(t!("devices-session-join-confirm"))
+                            .label(t!("common-join"))
                             .on_click(cx.listener(|this, _, window, cx| this.join(window, cx))),
                     )
                     .on_dismiss(cx.listener(|this, _, window, cx| this.close(window, cx))),
@@ -235,7 +235,7 @@ impl Render for SessionCode {
 /// Copies a session's code and says so.
 pub(crate) fn copy_code(code: &str, cx: &mut App) {
     cx.write_to_clipboard(ClipboardItem::new_string(code.to_owned()));
-    Toasts::show(Outcome::Done, "toast-session-code-copied", cx);
+    Toasts::show(Outcome::Done, "toast-code-copied", cx);
 }
 
 /// A code with a space between its groups, the way it is read out.

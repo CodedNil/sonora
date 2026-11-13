@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use tracing::warn;
 
 use gpui::{Context, Entity, EventEmitter, Task};
 use music::{Album, Artist, ArtistCatalogue, Track};
@@ -260,7 +261,7 @@ impl ArtistDetail {
                 this.filling_request = None;
                 match filled {
                     Ok(catalogue) => this.absorb(&catalogue),
-                    Err(error) => log::warn!("artist: cannot fill the page: {error:#}"),
+                    Err(error) => warn!("artist: cannot fill the page: {error:#}"),
                 }
                 cx.notify();
             })

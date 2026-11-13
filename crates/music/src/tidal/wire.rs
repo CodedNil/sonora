@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::{Album, ArtistRef, Genre, Playlist, ReleaseType, SavedArtist, Track, calendar};
+/// An id, spelled as a number or as a string.
+pub(crate) use crate::json_id as id;
+use crate::{Album, ArtistProfile, ArtistRef, Genre, Playlist, ReleaseType, SavedArtist, Track};
 
 /// The cover size used in lists, and the one used on a page header.
 pub const COVER: u32 = 320;
@@ -46,15 +48,6 @@ struct Twin {
     main_artist: String,
     release_date: String,
     tracks: u64,
-}
-
-/// An id, spelled as a number or as a string.
-pub fn id(value: &Value) -> Option<String> {
-    value
-        .as_str()
-        .map(str::to_owned)
-        .or_else(|| value.as_i64().map(|number| number.to_string()))
-        .filter(|id| !id.is_empty() && id != "0")
 }
 
 /// The string under `key`, if there is a non-empty one.
@@ -151,20 +144,17 @@ pub fn track(wrapper: &Value) -> Option<Track> {
         album: text(album, "title").unwrap_or_default().to_owned(),
         album_id: album.get("id").and_then(self::id),
         cover: image(text(album, "cover"), COVER),
-        duration: Duration::from_secs(number(value, "duration").unwrap_or(0)),
+        duration: number(value, "duration").map(Duration::from_secs),
         added_at: added(wrapper),
-        added_by: None,
-        playcount: None,
-        popularity: count(value, "popularity").unwrap_or(0),
+        release_date: text(album, "releaseDate").and_then(crate::ReleaseDate::parse),
+        popularity: count::<u32>(value, "popularity").map(|value| value.min(100) as u8),
         explicit: value
             .get("explicit")
             .and_then(Value::as_bool)
             .unwrap_or(false),
         track_number: count(value, "trackNumber").unwrap_or(0),
         disc_number: count(value, "volumeNumber").unwrap_or(1),
-        tags: Vec::new(),
-        languages: Vec::new(),
-        credits: Vec::new(),
+        ..Default::default()
     })
 }
 
@@ -194,12 +184,8 @@ pub fn album(wrapper: &Value) -> Option<Album> {
             Some("COMPILATION") => ReleaseType::Compilation,
             _ => ReleaseType::Album,
         },
-        year: release_date
-            .get(..4)
-            .and_then(|year| year.parse().ok())
-            .unwrap_or(0),
-        track_count: count(value, "numberOfTracks").unwrap_or(0),
-        release_date: release_date.get(..10).unwrap_or(release_date).to_owned(),
+        track_count: count(value, "numberOfTracks"),
+        release_date: crate::ReleaseDate::parse(release_date),
         label: String::new(),
         copyrights: text(value, "copyright")
             .map(|copyright| vec![copyright.to_owned()])
@@ -309,6 +295,15 @@ pub fn artist_list(page: &Value) -> Vec<SavedArtist> {
     items(page).iter().filter_map(artist).collect()
 }
 
+/// The profile shared by an artist page and the smaller song-details profile.
+pub fn artist_profile(value: &Value, biography: Option<String>) -> ArtistProfile {
+    ArtistProfile {
+        name: text(value, "name").unwrap_or_default().to_owned(),
+        cover_large: image(text(value, "picture"), PORTRAIT_LARGE),
+        biography,
+    }
+}
+
 /// A genre out of `/genres`. Its id is the path Tidal lists the genre's music under.
 pub fn genre(value: &Value) -> Option<Genre> {
     Some(Genre {
@@ -337,23 +332,21 @@ pub fn playlist(wrapper: &Value, user_id: &str) -> Option<Playlist> {
         .or_else(|| editorial.then_some("TIDAL"))
         .unwrap_or_default()
         .to_owned();
+    let owned = !user_id.is_empty() && owner_id == user_id;
     let modified_at = text(value, "lastUpdated")
         .or_else(|| text(value, "created"))
-        .and_then(calendar::seconds);
+        .and_then(crate::parse_timestamp);
     Some(Playlist {
         name: text(value, "title").unwrap_or_default().to_owned(),
-        owned: !user_id.is_empty() && owner_id == user_id,
+        owned,
         owner,
-        owner_id,
-        collaborative: false,
+        owner_id: (!owner_id.is_empty()).then_some(owner_id),
+        can_edit_tracks: owned,
         blend: false,
-        public: value
-            .get("publicPlaylist")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
+        public: value.get("publicPlaylist").and_then(Value::as_bool),
         cover: image(text(value, "squareImage"), SQUARE)
             .or_else(|| image(text(value, "image"), SQUARE)),
-        track_count: count(value, "numberOfTracks").unwrap_or(0),
+        track_count: count(value, "numberOfTracks"),
         modified_at,
         id,
     })
@@ -373,11 +366,7 @@ pub fn credit(playlist: &mut Playlist, listener: &str) {
 pub fn mix(value: &Value) -> Option<Playlist> {
     let id = value.get("id").and_then(id)?;
     let title = text(value, "title")
-        .or_else(|| {
-            value
-                .get("titleTextInfo")
-                .and_then(|info| text(info, "text"))
-        })?
+        .or_else(|| text(value.get("titleTextInfo")?, "text"))?
         .to_owned();
     let cover = value
         .get("images")
@@ -395,15 +384,10 @@ pub fn mix(value: &Value) -> Option<Playlist> {
         name: title,
         // Tidal makes every mix. Its subtitles say so in a sentence, or describe the mix.
         owner: "TIDAL".to_owned(),
-        owner_id: String::new(),
-        owned: false,
-        collaborative: false,
-        blend: false,
-        public: true,
+        public: Some(true),
         cover,
         // A mix's listing carries no count, and only its page says how many tracks it holds.
-        track_count: 0,
-        modified_at: None,
+        ..Default::default()
     })
 }
 
@@ -429,11 +413,11 @@ pub fn plain_bio(text: &str) -> String {
 }
 
 /// When a wrapped item was added, as seconds since the epoch.
-fn added(wrapper: &Value) -> Option<i64> {
+fn added(wrapper: &Value) -> Option<crate::Timestamp> {
     text(wrapper, "created")
         .or_else(|| text(wrapper, "dateAdded"))
         .or_else(|| text(unwrap(wrapper), "dateAdded"))
-        .and_then(calendar::seconds)
+        .and_then(crate::parse_timestamp)
 }
 
 /// The artists of a track or an album, as one line to show and as links.
@@ -446,21 +430,12 @@ fn artists_of(value: &Value) -> (String, Vec<ArtistRef>) {
             .map(std::slice::from_ref)
             .unwrap_or_default(),
     };
-    let refs: Vec<ArtistRef> = list
-        .iter()
-        .filter_map(|artist| {
-            Some(ArtistRef {
-                name: text(artist, "name")?.to_owned(),
-                id: artist.get("id").and_then(id),
-            })
+    ArtistRef::credits(list.iter().filter_map(|artist| {
+        Some(ArtistRef {
+            name: text(artist, "name")?.to_owned(),
+            id: artist.get("id").and_then(id),
         })
-        .collect();
-    let names = refs
-        .iter()
-        .map(|artist| artist.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    (names, refs)
+    }))
 }
 
 /// Text lowercased with its runs of whitespace made single spaces, for comparing names.

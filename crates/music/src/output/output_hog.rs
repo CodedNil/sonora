@@ -71,6 +71,7 @@ mod macos {
     use std::ffi::c_void;
     use std::mem::size_of;
     use std::ptr::{NonNull, null};
+    use tracing::{info, warn};
 
     use anyhow::{Context as _, Result, bail};
     use objc2_core_audio::{
@@ -135,7 +136,7 @@ mod macos {
             let original: f64 = get(object, kAudioDevicePropertyNominalSampleRate)
                 .context("cannot read the sample rate")?;
             let rates = available(object).unwrap_or_else(|error| {
-                log::warn!("output: cannot read the rates of {id}: {error:#}");
+                warn!("output: cannot read the rates of {id}: {error:#}");
                 Vec::new()
             });
             let took = owner != pid;
@@ -147,7 +148,7 @@ mod macos {
                     bail!("the device did not give exclusive access");
                 }
             }
-            log::info!("output: exclusive access to {id}");
+            info!("output: exclusive access to {id}");
             Ok(Some(Self {
                 object,
                 id: id.to_owned(),
@@ -220,16 +221,16 @@ mod macos {
                     self.original,
                 )
             {
-                log::warn!("output: cannot restore the rate of {}: {error:#}", self.id);
+                warn!("output: cannot restore the rate of {}: {error:#}", self.id);
             }
             if !self.took {
                 return;
             }
             if let Err(error) = set(self.object, kAudioDevicePropertyHogMode, FREE) {
-                log::warn!("output: cannot release {}: {error:#}", self.id);
+                warn!("output: cannot release {}: {error:#}", self.id);
                 return;
             }
-            log::info!("output: released exclusive access to {}", self.id);
+            info!("output: released exclusive access to {}", self.id);
         }
     }
 

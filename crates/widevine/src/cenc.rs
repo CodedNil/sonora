@@ -16,6 +16,7 @@
 //! it, and a box size of zero meaning "to the end of the file".
 
 use smallvec::SmallVec;
+use tracing::{debug, warn};
 
 /// The Widevine sample entry this relabels, and the AAC one it relabels it to.
 const ENCA: &[u8; 4] = b"enca";
@@ -324,7 +325,7 @@ pub fn read_fragment(window: &[u8], origin: usize, tracks: &[Encrypted]) -> Step
     if &mdat.kind != b"mdat" {
         // A moof whose media is not the box behind it is not a shape Apple's assets use, and
         // skipping its samples is better than guessing where they live.
-        log::warn!("cenc: a moof at {origin} is not followed by its mdat");
+        warn!("cenc: a moof at {origin} is not followed by its mdat");
         return Step::Other {
             next: origin + moof.end,
         };
@@ -396,7 +397,7 @@ fn read_traf(
         .and_then(|start| usize::try_from(start).ok())
         .filter(|start| *start >= mdat.body && *start <= mdat.end)
     else {
-        log::warn!("cenc: a trun points its samples outside the mdat behind it");
+        warn!("cenc: a trun points its samples outside the mdat behind it");
         return Vec::new();
     };
 
@@ -404,7 +405,7 @@ fn read_traf(
         .map(|senc| read_senc(data, &senc, encrypted.iv_size, run.sizes.len()))
         .unwrap_or_default();
     if ivs.is_empty() && encrypted.iv_size != 0 {
-        log::warn!("cenc: a fragment carries no per-sample ivs");
+        warn!("cenc: a fragment carries no per-sample ivs");
         return Vec::new();
     }
 
@@ -418,7 +419,7 @@ fn read_traf(
         }
         let end = at.saturating_add(len);
         if end > mdat.end {
-            log::warn!("cenc: a fragment's samples run past its mdat");
+            warn!("cenc: a fragment's samples run past its mdat");
             break;
         }
         if len > 0 {
@@ -479,7 +480,7 @@ fn read_trun(data: &[u8], trun: &Bx, tfhd: &Tfhd) -> Option<Trun> {
     let flags = be32(data, trun.body)? & FLAGS;
     let count = be32(data, trun.body + 4)? as usize;
     if count > SAMPLE_LIMIT {
-        log::warn!("cenc: a trun declares {count} samples, which is not a real fragment");
+        warn!("cenc: a trun declares {count} samples, which is not a real fragment");
         return None;
     }
     let mut at = trun.body + 8;
@@ -534,7 +535,7 @@ fn read_senc(data: &[u8], senc: &Bx, declared: u8, samples: usize) -> Senc {
         return Senc::default();
     };
     if count > SAMPLE_LIMIT.min(samples.max(1) * 2) {
-        log::warn!("cenc: a senc declares {count} ivs for a run of {samples} samples");
+        warn!("cenc: a senc declares {count} ivs for a run of {samples} samples");
         return Senc::default();
     }
     let Some(raw) = data.get(senc.body + 8..senc.end) else {
@@ -545,12 +546,12 @@ fn read_senc(data: &[u8], senc: &Bx, declared: u8, samples: usize) -> Senc {
     for size in [declared, 16, 8, 0] {
         if let Some(read) = fit_senc(raw, size, count, subsampled) {
             if size != declared {
-                log::debug!("cenc: senc read with an inferred iv size of {size}");
+                debug!("cenc: senc read with an inferred iv size of {size}");
             }
             return read;
         }
     }
-    log::warn!("cenc: cannot read a senc box with any iv size");
+    warn!("cenc: cannot read a senc box with any iv size");
     Senc::default()
 }
 

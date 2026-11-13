@@ -7,6 +7,7 @@ use std::num::NonZero;
 use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
+use tracing::{error, info};
 
 use anyhow::Result;
 use ardftsrc::RealtimeResampler;
@@ -426,7 +427,7 @@ impl Paced {
         // the resampler has copied what it needs, so the buffer goes round for the next packet
         self.spares.keep(packet.samples);
         if let Err(error) = written {
-            log::error!("sink: cannot resample a packet: {error}");
+            error!("sink: cannot resample a packet: {error}");
             resampler.reset();
             self.note_held();
             return Ok(0);
@@ -454,7 +455,7 @@ impl Paced {
             return 0;
         }
         if let Err(error) = resampler.finalize() {
-            log::error!("sink: cannot flush the resampler: {error}");
+            error!("sink: cannot flush the resampler: {error}");
             resampler.reset();
             self.note_held();
             return 0;
@@ -568,7 +569,7 @@ pub fn watch_for_output(notify: UnboundedSender<()>) {
             if !output::output_openable() {
                 continue;
             }
-            log::info!("sink: an output device is available again, reopening");
+            info!("sink: an output device is available again, reopening");
             notify.send(()).ok();
             return;
         }

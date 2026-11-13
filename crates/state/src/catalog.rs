@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
+use tracing::warn;
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -373,7 +374,7 @@ impl CatalogSource {
                     (None, Some(track_id)) => match self.backend.track_playcount(track_id).await {
                         Ok(playcount) => playcount,
                         Err(error) => {
-                            log::warn!("song: cannot read track play count: {error:#}");
+                            warn!("song: cannot read track play count: {error:#}");
                             None
                         }
                     },
@@ -459,6 +460,7 @@ mod tests {
                 }],
                 album: "Album".to_owned(),
                 album_id: Some("album".to_owned()),
+
                 track_number: 1,
                 disc_number: 1,
                 ..Default::default()

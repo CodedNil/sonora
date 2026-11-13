@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::{debug, info, warn};
 
 use anyhow::Error;
 use gpui::{Context, Entity, EventEmitter, Task};
@@ -468,7 +469,7 @@ impl Session {
         self.active = Some(index);
         // In offline mode the account is not reached at all. Going online tries it again.
         if self.settings.read(cx).offline_mode() && self.providers[index].stored() {
-            log::info!("session: offline mode is on, carrying on offline");
+            info!("session: offline mode is on, carrying on offline");
             return self.carry_on_offline(offline_mode(), cx);
         }
         self.state = SessionState::Restoring;
@@ -533,7 +534,7 @@ impl Session {
 
         match error {
             Some(error) => {
-                log::warn!(
+                warn!(
                     "session: cannot restore {}, falling back: {error:#}",
                     provider.name()
                 );
@@ -547,17 +548,17 @@ impl Session {
                 );
             }
             None if provider.stored() => {
-                log::warn!(
+                warn!(
                     "session: {} refused its stored sign-in, falling back",
                     provider.name()
                 );
                 let toast = Toast::new(Outcome::Failed, "toast-session-invalidated")
                     .name(provider.name())
-                    .open("toast-sign-in", Target::ProviderSettings)
+                    .open("common-sign-in", Target::ProviderSettings)
                     .lasting();
                 Toasts::post(toast, cx);
             }
-            None => log::debug!(
+            None => debug!(
                 "session: {} has nothing stored, falling back",
                 provider.name()
             ),
@@ -702,14 +703,14 @@ impl Session {
             landing: sign_in.landing.to_string(),
             domain: sign_in.domain.to_string(),
             proof: sign_in.proof.iter().map(ToString::to_string).collect(),
-            title: t!("login-window-title", provider = provider.name()).to_string(),
+            title: t!("login-choose-title", provider = provider.name()).to_string(),
             agent: sign_in.agent.map(str::to_owned),
             script: None,
         };
         match webview::Page::open(target) {
             Ok(login) => self.window = Some(login),
             Err(error) => {
-                log::warn!("session: cannot open the sign-in window: {error:#}");
+                warn!("session: cannot open the sign-in window: {error:#}");
                 // Dropping the provider's task closes its prompt channel, which ends the prompt
                 // task on its own; this runs inside that task, so it must not drop it here.
                 self.task = None;
@@ -788,7 +789,7 @@ impl Session {
         if !live || !self.stored_active() {
             return;
         }
-        log::info!("session: offline mode is on, letting go of the account");
+        info!("session: offline mode is on, letting go of the account");
         self.task = None;
         self.watch = None;
         self.reconnect = None;
@@ -918,7 +919,7 @@ impl Session {
         let wait = BACKOFF[self.attempt.min(BACKOFF.len() - 1)];
         self.attempt += 1;
         self.reconnecting = true;
-        log::warn!(
+        warn!(
             "session: the {} session went stale, reconnecting in {}s",
             self.providers[active].name(),
             wait.as_secs()
@@ -932,8 +933,8 @@ impl Session {
                 this.reconnecting = false;
                 match restored {
                     Ok(Some(session)) => this.reconnected(session, cx),
-                    Ok(None) => log::warn!("session: nothing stored to reconnect with"),
-                    Err(error) => log::warn!("session: cannot reconnect: {error:#}"),
+                    Ok(None) => warn!("session: nothing stored to reconnect with"),
+                    Err(error) => warn!("session: cannot reconnect: {error:#}"),
                 }
             })
             .ok();
@@ -949,7 +950,7 @@ impl Session {
         self.shape = session.shape;
         self.authenticated = session.authenticated;
         self.capabilities = session.capabilities;
-        log::debug!("session: reconnected");
+        debug!("session: reconnected");
         cx.notify();
         cx.emit(SessionEvent::Reconnected);
     }
@@ -984,7 +985,7 @@ impl Session {
             return;
         }
         if restoring && failure.offline() && self.stored_active() {
-            log::warn!("session: the account could not be reached, carrying on offline");
+            warn!("session: the account could not be reached, carrying on offline");
             return self.carry_on_offline(failure, cx);
         }
         self.client = None;
@@ -1013,7 +1014,7 @@ impl Session {
         let mut folders = self.local_folders.clone();
         for path in paths {
             if folders.iter().any(|existing| overlaps(existing, &path)) {
-                log::warn!(
+                warn!(
                     "session: {} overlaps an already-added local folder",
                     path.display()
                 );
@@ -1150,7 +1151,7 @@ impl Session {
                         }
                     }
                     Err(error) => {
-                        log::warn!("session: cannot update local music folders: {error:#}");
+                        warn!("session: cannot update local music folders: {error:#}");
                         if asked {
                             Toasts::with_detail(
                                 Outcome::Failed,

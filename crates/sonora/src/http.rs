@@ -6,6 +6,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
+use tracing::{debug, warn};
 
 use anyhow::{Result, anyhow};
 use gpui::http_client::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, COOKIE, RANGE};
@@ -38,7 +39,7 @@ impl Client {
             .and_then(|root| match DiskCache::new(root, CACHE_BYTES, CACHE_AGE) {
                 Ok(cache) => Some(Arc::new(Mutex::new(cache))),
                 Err(error) => {
-                    log::warn!("artwork: cannot initialize the disk cache: {error}");
+                    warn!("artwork: cannot initialize the disk cache: {error}");
                     None
                 }
             });
@@ -90,7 +91,7 @@ impl HttpClient for Client {
                         })
                         .await
                         .unwrap_or_else(|error| {
-                            log::warn!("artwork: cannot read the disk cache: {error}");
+                            warn!("artwork: cannot read the disk cache: {error}");
                             None
                         })
                     }
@@ -154,7 +155,7 @@ fn with_cache<T>(
     match cache.lock() {
         Ok(mut cache) => Some(operation(&mut cache)),
         Err(_) => {
-            log::warn!("artwork: disk cache lock is poisoned");
+            warn!("artwork: disk cache lock is poisoned");
             None
         }
     }
@@ -229,7 +230,7 @@ impl DiskCache {
             .and_then(|()| fs::rename(&temporary, &path));
         if let Err(error) = written {
             fs::remove_file(&temporary).ok();
-            log::debug!("artwork: cannot write a disk cache entry: {error}");
+            debug!("artwork: cannot write a disk cache entry: {error}");
             return;
         }
 

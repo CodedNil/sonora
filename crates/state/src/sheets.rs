@@ -4,6 +4,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::{info, warn};
 
 use music::{Lyrics as Sheet, LyricsHit};
 use serde::{Deserialize, Serialize};
@@ -75,10 +76,10 @@ impl Sheets {
         let value = self
             .cache
             .lyrics(key, VERSION)
-            .inspect_err(|error| log::warn!("lyrics: cannot read the cached sheet: {error:#}"))
+            .inspect_err(|error| warn!("lyrics: cannot read the cached sheet: {error:#}"))
             .ok()??;
         let kept: Kept = serde_json::from_str(&value)
-            .inspect_err(|error| log::warn!("lyrics: cannot read the cached sheet: {error}"))
+            .inspect_err(|error| warn!("lyrics: cannot read the cached sheet: {error}"))
             .ok()?;
         let answered = kept
             .answered
@@ -111,7 +112,7 @@ impl Sheets {
             return;
         }
         if let Err(error) = self.keep(unsaved.into_iter().map(|entry| (entry.key, entry.kept))) {
-            log::warn!("lyrics: cannot save the cached sheets: {error:#}");
+            warn!("lyrics: cannot save the cached sheets: {error:#}");
         }
     }
 
@@ -123,16 +124,16 @@ impl Sheets {
         }
         let path = legacy_path();
         match fs::remove_file(&path) {
-            Ok(()) => log::info!("lyrics: removed the old cached sheets"),
+            Ok(()) => info!("lyrics: removed the old cached sheets"),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => log::warn!("lyrics: cannot remove {}: {error}", path.display()),
+            Err(error) => warn!("lyrics: cannot remove {}: {error}", path.display()),
         }
     }
 
     fn keep(&self, entries: impl IntoIterator<Item = (String, Kept)>) -> anyhow::Result<()> {
         let rows = entries.into_iter().filter_map(|(key, kept)| {
             let value = serde_json::to_string(&kept)
-                .inspect_err(|error| log::warn!("lyrics: cannot serialize a sheet: {error}"))
+                .inspect_err(|error| warn!("lyrics: cannot serialize a sheet: {error}"))
                 .ok()?;
             Some((key, i64::try_from(kept.stored).unwrap_or(i64::MAX), value))
         });

@@ -9,6 +9,7 @@ use gpui::{
 };
 use i18n::t;
 use state::ThemeFamily;
+use tracing::warn;
 use ui::{
     ActiveTheme as _, Button, Look, Menu, MenuItem, Modal, OptionCard, Picker, Rail, Theme,
     ThemeKind,
@@ -107,7 +108,7 @@ impl SettingsView {
                     let path =
                         settings.update(cx, |settings, _| settings.ensure_themes_directory());
                     if let Err(error) = open::that_detached(&path) {
-                        log::warn!("settings: cannot open {}: {error}", path.display());
+                        warn!("settings: cannot open {}: {error}", path.display());
                     }
                 })
                 .into_any_element(),

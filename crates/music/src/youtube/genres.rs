@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use tracing::warn;
 
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -59,7 +60,7 @@ pub(crate) fn home(api: Arc<YtMusic>, account: String) -> Feed {
         let mut whole = HomeFeed::default();
         match playlists {
             Ok(playlists) => whole.sections.extend(stand_in(playlists, &account)),
-            Err(error) => log::warn!("youtube: cannot list the library playlists: {error:#}"),
+            Err(error) => warn!("youtube: cannot list the library playlists: {error:#}"),
         }
         gather(&answer, &mut whole);
         let mut opening = !opened(&whole);
@@ -76,7 +77,7 @@ pub(crate) fn home(api: Arc<YtMusic>, account: String) -> Feed {
             {
                 Ok(next) => next,
                 Err(error) => {
-                    log::warn!("youtube: cannot load home page {page}: {error:#}");
+                    warn!("youtube: cannot load home page {page}: {error:#}");
                     break;
                 }
             };
@@ -298,7 +299,8 @@ fn continuation(answer: &Value) -> Option<&str> {
 fn item(node: &Value, index: usize) -> Option<GenreItem> {
     if let Some(source) = parse::two_row_playlist(node) {
         let thumb = thumb(&source.thumbnails);
-        let mut playlist = wire::playlist(source, false, true);
+        let mut playlist = wire::playlist(source, false);
+        playlist.public = playlist.public.or(Some(true));
         playlist.cover = thumb;
         if let Some(owner) = playlist_owner(node) {
             playlist.owner = owner;

@@ -104,7 +104,7 @@ impl SettingsView {
             }
         };
         let rate = current
-            .map(|rate| t!("settings-sample-rate-value", khz = f64::from(rate) / 1_000.))
+            .map(|rate| t!("common-khz", khz = f64::from(rate) / 1_000.))
             .unwrap_or_else(|| t!("settings-output-idle"));
         let rate = ui::spoken("sample-rate-value", rate);
         let stepper = current
@@ -225,7 +225,7 @@ impl SettingsView {
         let note = self.local_only(cx);
         let sound = sound_picker(SOUND, &self.popovers, &self.equalizer, &self.settings, cx)
             .width(Picker::REGULAR)
-            .name(t!("equalizer-sound"));
+            .name(t!("settings-page-sound"));
 
         div()
             .id("open-equalizer")

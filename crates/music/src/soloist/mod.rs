@@ -26,6 +26,7 @@ mod wire;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
+use tracing::warn;
 
 use anyhow::{Context as _, Result};
 
@@ -176,7 +177,7 @@ pub(crate) fn denied() {
     let marker = denial();
     let written = std::fs::create_dir_all(home()).and_then(|()| std::fs::write(&marker, []));
     if let Err(error) = written {
-        log::warn!("soloist: cannot remember the denied key: {error}");
+        warn!("soloist: cannot remember the denied key: {error}");
     }
 }
 

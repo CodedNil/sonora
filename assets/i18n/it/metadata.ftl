@@ -1,0 +1,101 @@
+# Songs, artists and releases
+album-also-like = Potrebbe piacerti anche
+album-label = ℗ { $label }
+artist-about = Sull'artista
+artist-about-fallback = Esplora i brani popolari e le pubblicazioni dell'artista.
+artist-appears-on = Appare in
+artist-eyebrow = Artista
+artist-filter-all = Tutti
+artist-filter-eps = EP
+artist-filter-singles = Singoli
+artist-monthly-listeners = { $count ->
+    [one] { $value } ascoltatore al mese
+   *[other] { $value } ascoltatori al mese
+}
+artist-popular = Popolari
+artist-popular-empty = Ancora nulla da riprodurre di questo artista
+artist-releases = Pubblicazioni
+date-full = { $day } { $month } { $year }
+date-just-now = Proprio ora
+date-minute-ago = Un minuto fa
+date-minutes-ago = { $count ->
+    [one] { $count } minuto fa
+   *[other] { $count } minuti fa
+}
+date-time = { $date }, { $time }
+date-today = Oggi alle { $time }
+date-yesterday = Ieri alle { $time }
+kind-album = Album
+kind-artist = Artista
+kind-playlist = Playlist
+kind-song = Brano
+language-ar = Arabo
+language-de = Tedesco
+language-en = Inglese
+language-es = Spagnolo
+language-fr = Francese
+language-hi = Hindi
+language-it = Italiano
+language-ja = Giapponese
+language-ko = Coreano
+language-pt = Portoghese
+language-ru = Russo
+language-tr = Turco
+language-uk = Ucraino
+language-zh = Cinese
+language-zxx = Nessun contenuto linguistico
+month-1 = gen
+month-2 = feb
+month-3 = mar
+month-4 = apr
+month-5 = mag
+month-6 = giu
+month-7 = lug
+month-8 = ago
+month-9 = set
+month-10 = ott
+month-11 = nov
+month-12 = dic
+release-album = Album
+release-audiobook = Audiolibro
+release-compilation = Compilation
+release-ep = EP
+release-podcast = Podcast
+release-single = Singolo
+runtime-hours = { $hours }h { $minutes }m
+runtime-minutes = { $minutes }m { $seconds }s
+runtime-seconds = { $seconds }s
+song-about = Informazioni sul brano
+song-album = Album
+song-clean = Pulito
+song-content = Contenuto
+song-copyright = © { $notice }
+song-credits = Crediti
+song-details = Generi e dettagli
+song-disc-track = Disco { $disc }, traccia { $track }
+song-explicit = Esplicito
+song-genres = Generi
+song-label = Etichetta
+song-performed-by = Interpretato da
+song-position = Posizione
+song-released = Pubblicato
+song-streams = Stream
+song-track = Traccia { $track }
+song-view-album = Mostra album
+
+# Tag editing
+tags-add-artist = Aggiungi un artista
+tags-album = Album
+tags-album-artist = Artista album
+tags-artist = Artista
+tags-comment = Commento
+tags-composer = Compositore
+tags-disc = Numero disco
+tags-disc-total = Dischi nella release
+tags-isrc = ISRC
+tags-publisher = Editore
+tags-remove-artist = Rimuovi questo artista
+tags-sheet-album = Album
+tags-sheet-details = Dettagli
+tags-track = Numero traccia
+tags-track-total = Tracce nella release

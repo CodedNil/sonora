@@ -4,6 +4,7 @@ mod native;
 mod sni;
 
 use std::sync::Arc;
+use tracing::warn;
 
 use anyhow::{Context as _, Result, bail};
 use futures::AsyncReadExt as _;
@@ -186,7 +187,7 @@ impl Tray {
             return;
         }
         if let Err(error) = self.icon.place(placed) {
-            log::warn!("tray: cannot place the tray icon: {error:#}");
+            warn!("tray: cannot place the tray icon: {error:#}");
             if placed {
                 Toasts::show(Outcome::Failed, "toast-tray-unavailable", cx);
                 let settings = Sonora::global(cx).settings.clone();
@@ -245,7 +246,7 @@ impl Tray {
         cx.spawn(async move |this, cx| {
             let art = match cx.background_spawn(art(cover, http)).await {
                 Ok(art) => art,
-                Err(error) => return log::warn!("tray: cannot draw the cover: {error:#}"),
+                Err(error) => return warn!("tray: cannot draw the cover: {error:#}"),
             };
             this.update(cx, |this, cx| {
                 this.art = Some(Arc::new(art));
@@ -336,12 +337,12 @@ fn shown(artwork: Option<Arc<Art>>, cx: &App) -> Shown {
         caption,
         song,
         toggle: match playing {
-            true => t!("tray-pause"),
-            false => t!("tray-play"),
+            true => t!("play-pause"),
+            false => t!("common-play"),
         },
         previous: t!("player-previous"),
         next: t!("player-next"),
-        shuffle: t!("player-shuffle"),
+        shuffle: t!("play-shuffle"),
         shuffle_on,
         repeat: t!("player-repeat"),
         repeat_on,

@@ -1,4 +1,5 @@
 use std::sync::OnceLock;
+use tracing::warn;
 
 use gpui::prelude::*;
 use gpui::{
@@ -310,7 +311,7 @@ fn caption_font(cx: &App) -> Option<Font> {
                 .any(|name| name.eq_ignore_ascii_case(family))
         });
         if found.is_none() {
-            log::warn!("controls: no caption icon font is installed, drawing the icons instead");
+            warn!("controls: no caption icon font is installed, drawing the icons instead");
         }
         found
     });

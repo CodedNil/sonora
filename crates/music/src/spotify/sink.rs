@@ -3,6 +3,7 @@
 //! `crate::output`.
 
 use std::time::Duration;
+use tracing::{error, info};
 
 use librespot_playback::audio_backend::{Sink, SinkError, SinkResult};
 use librespot_playback::convert::Converter;
@@ -29,7 +30,7 @@ impl OutputSink {
                 reopening: false,
             }),
             Err(error) => {
-                log::error!("sink: cannot open an output device: {error:#}");
+                error!("sink: cannot open an output device: {error:#}");
                 watch_for_output(changed);
                 Box::new(Silence(cue))
             }
@@ -41,7 +42,7 @@ impl OutputSink {
     /// pause, for what is a device change rather than a failure.
     fn reopen(&mut self) {
         if !std::mem::replace(&mut self.reopening, true) {
-            log::info!("sink: the audio output changed, waiting for the player to be rebuilt");
+            info!("sink: the audio output changed, waiting for the player to be rebuilt");
         }
     }
 }

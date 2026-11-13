@@ -14,6 +14,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::{debug, info, warn};
 
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -223,7 +224,7 @@ pub(crate) async fn device(http: &reqwest::Client, prompt: &PromptSink) -> Resul
         let response = match sent {
             Ok(response) => response,
             Err(error) => {
-                log::debug!("tidal: cannot poll the sign-in, trying again: {error}");
+                debug!("tidal: cannot poll the sign-in, trying again: {error}");
                 continue;
             }
         };
@@ -242,7 +243,7 @@ pub(crate) async fn device(http: &reqwest::Client, prompt: &PromptSink) -> Resul
             // A busy or failing Tidal names no OAuth error, and is given more room the way a
             // request to slow down is.
             "" => {
-                log::debug!("tidal: the sign-in poll answered {status}, trying again later");
+                debug!("tidal: the sign-in poll answered {status}, trying again later");
                 interval += POLL;
             }
             "slow_down" => interval += POLL,
@@ -268,14 +269,14 @@ pub(crate) async fn device(http: &reqwest::Client, prompt: &PromptSink) -> Resul
 pub(crate) async fn upgrade(http: &reqwest::Client, device: Credentials) -> Credentials {
     match renew(http, &device, APP_CLIENT).await {
         Ok(upgraded) => {
-            log::info!("tidal: the session is served lossless");
+            info!("tidal: the session is served lossless");
             Credentials {
                 lane: Lane::App,
                 ..upgraded
             }
         }
         Err(error) => {
-            log::warn!(
+            warn!(
                 "tidal: cannot move the session to the app client yet, so lossless tracks play as aac: {error:#}"
             );
             let lane = match refused(&error) {
@@ -300,18 +301,18 @@ pub(crate) async fn refresh(http: &reqwest::Client, stale: &Credentials) -> Resu
         Lane::App | Lane::Device => match renew(http, stale, APP_CLIENT).await {
             Ok(renewed) => (renewed, Lane::App),
             Err(error) if refused(&error) => {
-                log::warn!("tidal: the app client refused the session, falling back: {error:#}");
+                warn!("tidal: the app client refused the session, falling back: {error:#}");
                 (renew(http, stale, DEVICE_CLIENT).await?, Lane::Refused)
             }
             Err(error) if stale.lane == Lane::Device || !retryable(&error) => {
-                log::debug!("tidal: cannot renew as the app client this time: {error:#}");
+                debug!("tidal: cannot renew as the app client this time: {error:#}");
                 (renew(http, stale, DEVICE_CLIENT).await?, Lane::Device)
             }
             Err(error) => return Err(error),
         },
     };
     if stale.lane == Lane::Device && lane == Lane::App {
-        log::info!("tidal: the session is served lossless");
+        info!("tidal: the session is served lossless");
     }
     Ok(Credentials {
         lane,
@@ -323,7 +324,7 @@ pub(crate) async fn refresh(http: &reqwest::Client, stale: &Credentials) -> Resu
 /// Moves a session to the device client for good. It is for when Tidal's api refuses the app
 /// client's tokens even though its token endpoint still hands them out.
 pub(crate) async fn demote(http: &reqwest::Client, stale: &Credentials) -> Result<Credentials> {
-    log::warn!("tidal: the api refused the app client, so lossless tracks play as aac");
+    warn!("tidal: the api refused the app client, so lossless tracks play as aac");
     let renewed = renew(http, stale, DEVICE_CLIENT).await?;
     Ok(Credentials {
         lane: Lane::Refused,
@@ -440,7 +441,7 @@ fn path() -> PathBuf {
 pub(crate) fn load() -> Option<Credentials> {
     let bytes = std::fs::read(path()).ok()?;
     let credentials: Credentials = serde_json::from_slice(&bytes)
-        .inspect_err(|error| log::warn!("tidal: the stored sign-in cannot be read: {error}"))
+        .inspect_err(|error| warn!("tidal: the stored sign-in cannot be read: {error}"))
         .ok()?;
     (!credentials.refresh_token.is_empty()).then_some(credentials)
 }
@@ -467,11 +468,11 @@ pub(crate) fn store(credentials: &Credentials) -> Result<u64> {
 pub(crate) fn keep(generation: u64, credentials: &Credentials) -> Result<()> {
     let held = lock(&SIGN_OUTS);
     if *held != generation {
-        log::debug!("tidal: not keeping a renewal from a session that was signed out");
+        debug!("tidal: not keeping a renewal from a session that was signed out");
         return Ok(());
     }
     write(credentials).or_else(|error| {
-        log::debug!("tidal: cannot keep the renewed session, trying once more: {error:#}");
+        debug!("tidal: cannot keep the renewed session, trying once more: {error:#}");
         write(credentials)
     })
 }
@@ -498,7 +499,7 @@ pub(crate) fn abandon(generation: u64, refused: &[&str]) {
         return;
     }
     if load().is_some_and(|stored| refused.contains(&stored.refresh_token.as_str())) {
-        log::info!("tidal: forgetting the stored session tidal refused");
+        info!("tidal: forgetting the stored session tidal refused");
         credentials::remove(&path());
     }
 }

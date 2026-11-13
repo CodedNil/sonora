@@ -21,6 +21,7 @@ mod stream;
 mod wire;
 
 use std::sync::Arc;
+use tracing::{debug, warn};
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -71,18 +72,14 @@ impl AppleProvider {
         let Some(token) = auth::load() else {
             return Ok(None);
         };
-        match AppleClient::connect(&token).await {
-            Ok(client) => {
-                entitled(&client).await?;
-                let profile = client.profile().await?;
-                Ok(Some(session(client, profile)))
-            }
-            Err(error) if crate::trouble::offline(&format!("{error:#}")) => Err(error),
-            Err(error) => {
-                log::warn!("apple: the stored account is no longer usable: {error:#}");
-                Ok(None)
-            }
-        }
+        let Some(client) =
+            crate::credentials::restored("apple", AppleClient::connect(&token).await)?
+        else {
+            return Ok(None);
+        };
+        entitled(&client).await?;
+        let profile = client.profile().await?;
+        Ok(Some(session(client, profile)))
     }
 }
 
@@ -91,7 +88,7 @@ impl AppleProvider {
 async fn entitled(client: &AppleClient) -> Result<()> {
     match client.subscribed().await {
         Ok(Some(false)) => {
-            log::warn!(
+            warn!(
                 "apple: the account has no active subscription in storefront {}",
                 client.storefront()
             );
@@ -102,7 +99,7 @@ async fn entitled(client: &AppleClient) -> Result<()> {
         Ok(_) => Ok(()),
         Err(error) if crate::trouble::offline(&format!("{error:#}")) => Err(error),
         Err(error) => {
-            log::debug!("apple: cannot read the subscription status: {error:#}");
+            debug!("apple: cannot read the subscription status: {error:#}");
             Ok(())
         }
     }
@@ -111,7 +108,7 @@ async fn entitled(client: &AppleClient) -> Result<()> {
 fn session(client: AppleClient, profile: crate::UserProfile) -> ProviderSession {
     if !widevine::available() {
         // Metadata still works, so the account is worth keeping; only playback will refuse.
-        log::warn!("apple: no widevine module is here yet, so tracks cannot be decrypted");
+        warn!("apple: no widevine module is here yet, so tracks cannot be decrypted");
     }
     ProviderSession {
         profile,

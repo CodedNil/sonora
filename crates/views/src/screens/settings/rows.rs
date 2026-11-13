@@ -2,14 +2,24 @@ use std::rc::Rc;
 
 use gpui::accesskit::{Role, Toggled};
 use gpui::prelude::*;
-use gpui::{AnyElement, App, Div, ElementId, SharedString, Window, div};
+use gpui::{AnyElement, App, Context, Div, ElementId, Entity, SharedString, Window, div};
 use i18n::t;
+use state::AppSettings;
 use ui::{ActiveTheme as _, Button, OptionCard, Room, TabBar};
 
 use super::SettingsView;
 
 /// What a segmented control does with the option picked in it.
 type Pick<T> = Rc<dyn Fn(&T, &mut Window, &mut App)>;
+
+/// Reads and writes a boolean held by a settings or playback entity.
+type Toggle<T> = (fn(&T) -> bool, fn(&mut T, bool, &mut Context<T>));
+
+/// Reads and writes a choice held in the preferences entity.
+type Choice<T> = (
+    fn(&AppSettings) -> T,
+    fn(&mut AppSettings, T, &mut Context<AppSettings>),
+);
 
 /// One row of a group: the label and optional explanation at the start, the control at the end.
 /// It stands at least one list row tall, with no inset, so labels line up with group headings.
@@ -140,6 +150,50 @@ impl SettingsView {
             false => row,
         }
         .into_any_element()
+    }
+
+    /// The shared label and switch for a plain boolean setting, with its current value read on click.
+    pub(super) fn toggle_row<T: 'static>(
+        &self,
+        key: &'static str,
+        entity: &Entity<T>,
+        (read, write): Toggle<T>,
+        cx: &App,
+    ) -> AnyElement {
+        let on = read(entity.read(cx));
+        let entity = entity.clone();
+        self.row(
+            i18n::lookup(key, None),
+            ui::Switch::new(key, on)
+                .name(i18n::lookup(key, None))
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |value, cx| write(value, !read(value), cx));
+                })
+                .into_any_element(),
+        )
+    }
+
+    /// A preference with a fixed set of segments, sharing its label with the accessible control.
+    pub(super) fn segmented_setting<T: Copy + PartialEq + 'static>(
+        &self,
+        id: &'static str,
+        key: &'static str,
+        options: impl IntoIterator<Item = (T, SharedString)>,
+        (read, write): Choice<T>,
+        cx: &mut Context<Self>,
+    ) -> Row {
+        let label = i18n::lookup(key, None);
+        let choices = segmented(
+            id,
+            options,
+            read(self.settings.read(cx)),
+            cx.listener(move |this, choice: &T, _, cx| {
+                this.settings
+                    .update(cx, |settings, cx| write(settings, *choice, cx));
+                cx.notify();
+            }),
+        );
+        Row::new(label.clone(), choices.name(label).into_any_element())
     }
 
     /// A plain row: the label and the control.

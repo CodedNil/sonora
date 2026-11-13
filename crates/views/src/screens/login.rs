@@ -399,7 +399,7 @@ impl LoginView {
             )
             .action(
                 Button::new("submit-server")
-                    .label(t!("login-server-submit"))
+                    .label(t!("common-connect"))
                     .primary()
                     .on_click(cx.listener(|this, _, _, cx| this.submit_credentials(cx))),
             )

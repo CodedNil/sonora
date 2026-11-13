@@ -1,6 +1,7 @@
 use gpui::{Context, Entity};
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use tokio::sync::watch;
+use tracing::warn;
 
 use crate::{AppSettings, Io, Playback, PlaybackState};
 
@@ -137,7 +138,7 @@ impl Wake {
             }
             // SAFETY: called only on the main thread and only the documented request flags are passed.
             if unsafe { SetThreadExecutionState(flags) } == 0 {
-                log::warn!("wake: cannot set the execution state");
+                warn!("wake: cannot set the execution state");
             }
         }
 
@@ -198,7 +199,7 @@ fn hold_one(held: &mut Option<objc2_io_kit::IOPMAssertionID>, on: bool, kind: &s
         };
         match result == kIOReturnSuccess {
             true => *held = Some(id),
-            false => log::warn!("wake: cannot hold a power assertion: {result}"),
+            false => warn!("wake: cannot hold a power assertion: {result}"),
         }
     } else if let Some(id) = held.take() {
         let _ = IOPMAssertionRelease(id);
@@ -251,7 +252,7 @@ async fn acquire(
         match InhibitProxy::new().await {
             Ok(reached) => *proxy = Some(reached),
             Err(error) => {
-                log::warn!("wake: cannot reach the inhibit portal: {error}");
+                warn!("wake: cannot reach the inhibit portal: {error}");
                 return Err(NotHeld::Failed);
             }
         }
@@ -271,7 +272,7 @@ async fn acquire(
     let request = match reached.inhibit(None, flags, options).await {
         Ok(request) => request,
         Err(error) => {
-            log::warn!("wake: cannot inhibit: {error}");
+            warn!("wake: cannot inhibit: {error}");
             *proxy = None;
             return Err(NotHeld::Failed);
         }
@@ -279,7 +280,7 @@ async fn acquire(
     match request.response() {
         Ok(()) => Ok(request),
         Err(error) => {
-            log::warn!("wake: the portal refused to inhibit {flags:?}: {error}");
+            warn!("wake: the portal refused to inhibit {flags:?}: {error}");
             Err(NotHeld::Refused)
         }
     }
@@ -291,6 +292,6 @@ async fn release(request: Option<ashpd::desktop::Request<()>>) {
         return;
     };
     if let Err(error) = request.close().await {
-        log::warn!("wake: cannot release the inhibitor: {error}");
+        warn!("wake: cannot release the inhibitor: {error}");
     }
 }

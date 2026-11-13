@@ -4,6 +4,7 @@ use std::{
     sync::{Mutex, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use tracing::warn;
 
 use anyhow::{Context as _, Result, bail};
 use bytes::Bytes;
@@ -97,7 +98,7 @@ pub(super) async fn refetch(session: &Session, operation: &str, stale: &str) -> 
         .get(operation)
         .cloned()
         .or_else(|| {
-            log::warn!("pathfinder: the hash registry has no {operation} query");
+            warn!("pathfinder: the hash registry has no {operation} query");
             None
         })
 }
@@ -110,7 +111,7 @@ async fn refreshed(session: &Session, stale: Option<&str>) -> Result<HashMap<Str
     let operations = match download(session, stale).await {
         Ok(operations) => operations,
         Err(error) => {
-            log::warn!("pathfinder: cannot refresh the query hashes: {error:#}");
+            warn!("pathfinder: cannot refresh the query hashes: {error:#}");
             return Err(error);
         }
     };
@@ -212,7 +213,7 @@ fn write(registry: &Registry) {
         .context("cannot encode")
         .and_then(|body| std::fs::write(&path, body).context("cannot save"));
     if let Err(error) = written {
-        log::warn!("pathfinder: {error:#} {}", path.display());
+        warn!("pathfinder: {error:#} {}", path.display());
     }
 }
 

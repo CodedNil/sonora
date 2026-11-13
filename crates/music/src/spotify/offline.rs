@@ -14,6 +14,7 @@ use librespot_playback::offline::{self, Download, Offline, OfflineTrack};
 use librespot_protocol::metadata::Track as TrackMessage;
 use protobuf::Message as _;
 use serde::{Deserialize, Serialize};
+use tracing::{debug, warn};
 
 use crate::Throttled;
 use crate::spotify::playback::track_uri;
@@ -38,13 +39,13 @@ impl Offline for Kept {
     fn track(&self, track: SpotifyId) -> Option<OfflineTrack> {
         let (facts, file) = self.0.open_pinned(&track.to_base62())?;
         let facts = serde_json::from_slice::<Facts>(&facts)
-            .inspect_err(|error| log::warn!("spotify: the kept facts do not read: {error}"))
+            .inspect_err(|error| warn!("spotify: the kept facts do not read: {error}"))
             .ok()?;
         let metadata = STANDARD.decode(&facts.metadata).ok()?;
         let format = offline::AudioFileFormat::try_from(facts.format).ok()?;
         let file_id = FileId::from(hex(&facts.file_id)?.as_slice());
         let len = file.length();
-        log::debug!("spotify: {} plays from its download", track.to_base62());
+        debug!("spotify: {} plays from its download", track.to_base62());
         Some(OfflineTrack {
             metadata,
             format,
@@ -142,7 +143,7 @@ async fn relinked(
         };
         match offline::download(session, SpotifyUri::Track { id }, bitrate).await {
             Ok(fetched) => {
-                log::debug!("spotify: {uri} downloads as its alternative {id}");
+                debug!("spotify: {uri} downloads as its alternative {id}");
                 return Some(Ok(fetched));
             }
             Err(error) => last = Some(Err(error)),

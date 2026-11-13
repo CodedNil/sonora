@@ -2,6 +2,7 @@ use std::ffi::c_void;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
+use tracing::{debug, warn};
 
 use anyhow::{Context as _, Result};
 use gpui::{App, AppContext as _, Context, Entity, Global, Task};
@@ -65,7 +66,7 @@ pub fn attach(hwnd: Option<*mut c_void>, cx: &mut App) {
     let controls = match Controls::new(hwnd, sender, cx) {
         Ok(controls) => controls,
         Err(error) => {
-            return log::warn!("remote: cannot reach the system media controls: {error:#}");
+            return warn!("remote: cannot reach the system media controls: {error:#}");
         }
     };
 
@@ -221,7 +222,7 @@ impl Remote {
                 self.artwork = Some(self.fetch_artwork(track, url, cx));
             }
         }
-        if track.map(|track| track.duration) != self.length {
+        if track.and_then(|track| track.duration) != self.length {
             let art = self.art.take();
             self.describe(track, art.as_deref(), cx);
         }
@@ -255,7 +256,7 @@ impl Remote {
     fn describe(&mut self, track: Option<&Track>, cover: Option<&str>, cx: &App) {
         self.controls.describe(track, cover, cx);
         self.art = cover.map(str::to_owned);
-        self.length = track.map(|track| track.duration);
+        self.length = track.and_then(|track| track.duration);
     }
 
     /// The cover to publish: the album art `Cover` resolves once it arrives, the thumbnail the
@@ -279,7 +280,7 @@ impl Remote {
             let fetched = join(io.spawn(async move { artwork(&url).await })).await;
             let path = match fetched {
                 Ok(path) => path,
-                Err(error) => return log::debug!("remote: cannot fetch the cover: {error:#}"),
+                Err(error) => return debug!("remote: cannot fetch the cover: {error:#}"),
             };
             this.update(cx, |this, cx| {
                 let current = this.playback.read(cx).shown_track(cx);
@@ -376,7 +377,7 @@ fn extension(format: image::ImageFormat) -> &'static str {
 fn shift(playback: &mut Playback, target: Duration, cx: &mut Context<Playback>) {
     let end = playback
         .track()
-        .map(|track| track.duration)
+        .and_then(|track| track.duration)
         .unwrap_or(target);
     playback.seek(target.min(end), cx);
 }

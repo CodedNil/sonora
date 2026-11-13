@@ -1,4 +1,5 @@
 use std::time::Duration;
+use tracing::{info, warn};
 
 use gpui::{App, Context, Entity, EventEmitter, Task};
 
@@ -87,7 +88,7 @@ impl Network {
         if self.offline == offline {
             return;
         }
-        log::info!(
+        info!(
             "network: offline mode is {}",
             match offline {
                 true => "on",
@@ -124,7 +125,7 @@ impl Network {
             if this.lost {
                 return;
             }
-            log::warn!("network: the connection is gone: {reason}");
+            warn!("network: the connection is gone: {reason}");
             this.lost = true;
             this.watch(cx);
             cx.notify();
@@ -147,7 +148,7 @@ impl Network {
         if !self.lost {
             return;
         }
-        log::info!("network: the connection is back");
+        info!("network: the connection is back");
         self.lost = false;
         self.probe = None;
         cx.notify();

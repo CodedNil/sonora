@@ -7,6 +7,7 @@ use anyhow::{Context as _, Result, bail};
 use blowfish::Blowfish;
 use blowfish::cipher::{BlockModeDecrypt, InnerIvInit, KeyInit, block_padding::NoPadding};
 use md5::{Digest, Md5};
+use tracing::warn;
 
 /// Deezer's encryption block size.
 pub const BLOCK: usize = 2048;
@@ -67,7 +68,7 @@ impl Cipher {
         let decryptor =
             cbc::Decryptor::<Blowfish>::inner_iv_init(self.blowfish.clone(), &IV.into());
         if let Err(error) = decryptor.decrypt_padded::<NoPadding>(block) {
-            log::warn!("deezer: cannot decrypt block {index}: {error}");
+            warn!("deezer: cannot decrypt block {index}: {error}");
         }
     }
 }
@@ -128,9 +129,7 @@ pub async fn secret(http: &reqwest::Client) -> Secret {
     match fetch_secret(http).await {
         Ok(secret) => secret,
         Err(error) => {
-            log::warn!(
-                "deezer: cannot extract the stream secret ({error:#}); using the last known one"
-            );
+            warn!("deezer: cannot extract the stream secret ({error:#}); using the last known one");
             FALLBACK
         }
     }

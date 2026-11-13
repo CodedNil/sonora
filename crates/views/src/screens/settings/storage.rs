@@ -43,7 +43,7 @@ impl SettingsView {
             .child(ui::spoken("cache-used", size(used)).text_color(theme.muted_foreground))
             .child(
                 Button::new("clear-cache")
-                    .label(t!("settings-cache-clear"))
+                    .label(t!("common-clear"))
                     .small()
                     .outline()
                     .disabled(used.is_none_or(|used| used == 0))
@@ -100,7 +100,7 @@ impl SettingsView {
                         );
                     }),
             );
-        self.row(t!("settings-downloads-used"), control.into_any_element())
+        self.row(t!("settings-cache-used"), control.into_any_element())
     }
 }
 

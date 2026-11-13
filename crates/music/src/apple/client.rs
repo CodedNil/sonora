@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tracing::{debug, info, warn};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use async_trait::async_trait;
@@ -270,7 +271,7 @@ impl AppleClient {
         // A kept bearer token Apple has stopped taking is read off the page again, once.
         let body = match client.get("/me/storefront", &[]).await {
             Err(error) if format!("{error:#}").contains("answered 401") => {
-                log::info!("apple: the bearer token was turned down, reading a new one");
+                info!("apple: the bearer token was turned down, reading a new one");
                 auth::forget_bearer();
                 client.bearer = auth::bearer(&client.http).await?.into();
                 client.get("/me/storefront", &[]).await?
@@ -283,7 +284,7 @@ impl AppleClient {
             .first()
             .and_then(|row| row.id.as_str())
             .context("apple named no storefront for this account")?;
-        log::info!("apple: signed in, storefront {storefront}");
+        info!("apple: signed in, storefront {storefront}");
         let mut client = Self {
             storefront: storefront.into(),
             ..client
@@ -307,7 +308,7 @@ impl AppleClient {
         match named {
             Ok(names) => names.into_iter().next().unwrap_or_default().into(),
             Err(error) => {
-                log::warn!("apple: cannot read the root genre: {error:#}");
+                warn!("apple: cannot read the root genre: {error:#}");
                 Arc::default()
             }
         }
@@ -375,7 +376,7 @@ impl AppleClient {
                 return Err(error);
             }
             let wait = after.unwrap_or_else(|| backoff(tried - 1));
-            log::debug!(
+            debug!(
                 "apple: {method} {path} failed, asking again in {}ms: {error:#}",
                 wait.as_millis()
             );
@@ -420,7 +421,7 @@ impl AppleClient {
         let status = response.status();
         let after = retry_after(response.headers());
         // Every wait on a library load is a sum of these, so this is where a slow one shows.
-        log::debug!(
+        debug!(
             "apple: {method} {path} answered {status} in {} ms",
             started.elapsed().as_millis()
         );
@@ -550,6 +551,53 @@ impl AppleClient {
             .collect())
     }
 
+    /// Searches one catalog kind, preserving its relationship includes and dropping unreadable rows.
+    async fn search_items<T: Send>(
+        &self,
+        term: &str,
+        kind: MediaKind,
+        read: impl Fn(&Resource<'_>) -> Option<T> + Send,
+    ) -> Result<Vec<T>> {
+        let (kind, include) = match kind {
+            MediaKind::Track => ("songs", Some(("include[songs]", "artists,albums"))),
+            MediaKind::Album => ("albums", Some(ALBUM_ARTISTS)),
+            MediaKind::Artist => ("artists", None),
+            MediaKind::Playlist => ("playlists", None),
+        };
+        let limit = HITS.to_string();
+        let mut query = vec![("term", term), ("types", kind), ("limit", &limit)];
+        query.extend(include);
+        let body = self.get(&self.catalog("/search"), &query).await?;
+        let answered: wire::Answer<wire::Search> = wire::answer(&body);
+        let results = &answered.results;
+        let relation = match kind {
+            "songs" => &results.songs,
+            "albums" => &results.albums,
+            "artists" => &results.artists,
+            _ => &results.playlists,
+        };
+        Ok(relation.rows().iter().filter_map(read).collect())
+    }
+
+    /// Reads rated library rows through the same decoder as their unfiltered listing.
+    async fn favorites<T, F>(
+        &self,
+        kind: &str,
+        query: &[(&str, &str)],
+        batch: usize,
+        read: F,
+    ) -> Result<Vec<T>>
+    where
+        F: Fn(&Resource<'_>) -> Option<T>,
+    {
+        let items = self
+            .walk(&format!("/me/library/{kind}"), PAGE, query, |row| {
+                Some((library_id(row)?, read(row)?))
+            })
+            .await?;
+        self.rated(kind, batch, items).await
+    }
+
     /// Walks a paged listing and reads every row with `read`. The rows come from
     /// [`listing`](Self::listing), so two walks of one listing close together cost one fetch.
     async fn walk<T, F>(
@@ -642,12 +690,11 @@ impl AppleClient {
         query: &'static [(&'static str, &'static str)],
         read: impl Fn(&Resource<'_>) -> Option<T> + Send + Sync + 'static,
     ) -> Pages<T> {
-        let (sink, pages) = tokio::sync::mpsc::channel(FAN);
         let client = self.clone();
-        tokio::spawn(async move {
+        crate::pages(FAN, move |sink| async move {
             let cell = client.cell(path, page, query);
             let streamed = std::sync::atomic::AtomicBool::new(false);
-            let fetched = cell
+            let bodies = cell
                 .get_or_try_init(|| async {
                     streamed.store(true, std::sync::atomic::Ordering::Relaxed);
                     client
@@ -655,24 +702,18 @@ impl AppleClient {
                         .await
                         .map(Arc::new)
                 })
-                .await;
-            match fetched {
-                Ok(bodies) if !streamed.load(std::sync::atomic::Ordering::Relaxed) => {
-                    let items = bodies.read(&read);
-                    sink.send(Ok(Page {
-                        total: Some(bodies.rows),
-                        items,
-                    }))
-                    .await
-                    .ok();
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    sink.send(Err(error)).await.ok();
-                }
+                .await?;
+            if !streamed.load(std::sync::atomic::Ordering::Relaxed) {
+                let items = bodies.read(&read);
+                sink.send(Ok(Page {
+                    total: Some(bodies.rows),
+                    items,
+                }))
+                .await
+                .ok();
             }
-        });
-        pages
+            Ok(())
+        })
     }
 
     /// Drops every kept listing. Every write goes through here, since any of them can change
@@ -756,7 +797,7 @@ impl AppleClient {
                 }
             }
         }
-        log::debug!(
+        debug!(
             "apple: walked {path}: {} rows over {} page(s) in {} ms",
             bodies.rows,
             bodies.pages.len(),
@@ -912,7 +953,7 @@ impl AppleClient {
         let body = match answered {
             Ok(body) => body,
             Err(error) => {
-                log::debug!("apple: cannot read the details of {id}: {error:#}");
+                debug!("apple: cannot read the details of {id}: {error:#}");
                 return Details::default();
             }
         };
@@ -1139,7 +1180,7 @@ impl MusicApi for AppleClient {
             Ok(body) => body,
             // No social profile on the account: the service name and no picture still sign in.
             Err(error) => {
-                log::debug!("apple: no social profile for this account: {error:#}");
+                debug!("apple: no social profile for this account: {error:#}");
                 String::new()
             }
         };
@@ -1157,85 +1198,25 @@ impl MusicApi for AppleClient {
     }
 
     async fn search(&self, query: &str) -> Result<Vec<Track>> {
-        let limit = HITS.to_string();
-        let body = self
-            .get(
-                &self.catalog("/search"),
-                &[
-                    ("term", query),
-                    ("types", "songs"),
-                    ("limit", &limit),
-                    ("include[songs]", "artists,albums"),
-                ],
-            )
-            .await?;
-        let answered: wire::Answer<wire::Search> = wire::answer(&body);
-        Ok(answered
-            .results
-            .songs
-            .rows()
-            .iter()
-            .filter_map(|row| wire::song(row, &self.root_genre))
-            .collect())
+        self.search_items(query, MediaKind::Track, |row| {
+            wire::song(row, &self.root_genre)
+        })
+        .await
     }
 
     async fn search_albums(&self, query: &str) -> Result<Vec<Album>> {
-        let limit = HITS.to_string();
-        let body = self
-            .get(
-                &self.catalog("/search"),
-                &[
-                    ("term", query),
-                    ("types", "albums"),
-                    ("limit", &limit),
-                    ALBUM_ARTISTS,
-                ],
-            )
-            .await?;
-        let answered: wire::Answer<wire::Search> = wire::answer(&body);
-        Ok(answered
-            .results
-            .albums
-            .rows()
-            .iter()
-            .filter_map(wire::album)
-            .collect())
+        self.search_items(query, MediaKind::Album, wire::album)
+            .await
     }
 
     async fn search_artists(&self, query: &str) -> Result<Vec<SavedArtist>> {
-        let limit = HITS.to_string();
-        let body = self
-            .get(
-                &self.catalog("/search"),
-                &[("term", query), ("types", "artists"), ("limit", &limit)],
-            )
-            .await?;
-        let answered: wire::Answer<wire::Search> = wire::answer(&body);
-        Ok(answered
-            .results
-            .artists
-            .rows()
-            .iter()
-            .filter_map(wire::similar_artist)
-            .collect())
+        self.search_items(query, MediaKind::Artist, wire::similar_artist)
+            .await
     }
 
     async fn search_playlists(&self, query: &str) -> Result<Vec<Playlist>> {
-        let limit = HITS.to_string();
-        let body = self
-            .get(
-                &self.catalog("/search"),
-                &[("term", query), ("types", "playlists"), ("limit", &limit)],
-            )
-            .await?;
-        let answered: wire::Answer<wire::Search> = wire::answer(&body);
-        Ok(answered
-            .results
-            .playlists
-            .rows()
-            .iter()
-            .filter_map(wire::playlist)
-            .collect())
+        self.search_items(query, MediaKind::Playlist, wire::playlist)
+            .await
     }
 
     /// A catalog song, with its artists and album so both are somewhere to go.
@@ -1253,10 +1234,6 @@ impl MusicApi for AppleClient {
             .with_context(|| format!("apple music has no song {track_id}"))?;
         wire::song(found, &self.root_genre)
             .with_context(|| format!("cannot read the apple song {track_id}"))
-    }
-
-    async fn track_playcount(&self, _track_id: &str) -> Result<Option<u64>> {
-        Ok(None)
     }
 
     /// Reports a play to Apple's play-activity service, so the track reaches the account's
@@ -1400,34 +1377,24 @@ impl MusicApi for AppleClient {
     /// albums and artists. The rating is the source of truth, not the Favorite Songs playlist,
     /// which only exists while the account adds favorites to its library.
     async fn saved_tracks(&self) -> Result<Vec<Track>> {
-        let songs = self
-            .walk(SONGS, PAGE, SONGS_QUERY, |row| {
-                Some((library_id(row)?, wire::library_song(row, &self.root_genre)?))
-            })
-            .await?;
-        self.rated("songs", RATED_SONGS, songs).await
+        self.favorites("songs", SONGS_QUERY, RATED_SONGS, |row| {
+            wire::library_song(row, &self.root_genre)
+        })
+        .await
     }
 
     /// The favorite albums: the library albums the listener has rated, since a favorite is a
     /// personal rating and a rating only exists on a library resource. An album favorited from
     /// the catalog without being added is therefore not here.
     async fn saved_albums(&self) -> Result<Vec<Album>> {
-        let albums = self
-            .walk(ALBUMS, PAGE, ALBUMS_QUERY, |row| {
-                Some((library_id(row)?, wire::library_album(row)?))
-            })
-            .await?;
-        self.rated("albums", RATED_ALBUMS, albums).await
+        self.favorites("albums", ALBUMS_QUERY, RATED_ALBUMS, wire::library_album)
+            .await
     }
 
     /// The favorite artists, read the same way as the albums.
     async fn saved_artists(&self) -> Result<Vec<SavedArtist>> {
-        let artists = self
-            .walk(ARTISTS, PAGE, CATALOG_QUERY, |row| {
-                Some((library_id(row)?, wire::saved_artist(row)?))
-            })
-            .await?;
-        self.rated("artists", RATED_ARTISTS, artists).await
+        self.favorites("artists", CATALOG_QUERY, RATED_ARTISTS, wire::saved_artist)
+            .await
     }
 
     async fn playlists(&self) -> Result<Vec<Playlist>> {
@@ -1577,10 +1544,7 @@ impl MusicApi for AppleClient {
             .tracks
             .rows()
             .iter()
-            .filter_map(|row| match row.kind.as_str() {
-                Some("library-songs") => wire::library_song(row, &self.root_genre),
-                _ => wire::song(row, &self.root_genre),
-            })
+            .filter_map(|row| wire::playlist_track(row, &self.root_genre))
             .collect();
         let album = match Self::is_mine(album_id) {
             true => wire::library_album(found).or_else(|| wire::album(found)),
@@ -1590,10 +1554,6 @@ impl MusicApi for AppleClient {
             album: album.context("cannot read the apple album")?,
             tracks,
         })
-    }
-
-    async fn album_tracks(&self, album_id: &str) -> Result<Vec<Track>> {
-        Ok(self.album(album_id).await?.tracks)
     }
 
     async fn album_catalogue(
@@ -1709,7 +1669,8 @@ impl MusicApi for AppleClient {
         // way, so the count does not climb a page at a time.
         Ok(PlaylistDetail {
             playlist: Playlist {
-                track_count: total.unwrap_or(tracks.len() as u32),
+                track_count: total
+                    .or_else(|| continuation.is_none().then_some(tracks.len() as u32)),
                 ..playlist
             },
             tracks,
@@ -1957,13 +1918,13 @@ impl MusicApi for AppleClient {
                 },
             ),
             Ok(_) => {}
-            Err(error) => log::warn!("apple: cannot load recently added: {error:#}"),
+            Err(error) => warn!("apple: cannot load recently added: {error:#}"),
         }
         let containers = match containers {
             Ok(live) if !live.is_empty() => live,
             Ok(_) => recents,
             Err(error) => {
-                log::warn!("apple: cannot load recently played: {error:#}");
+                warn!("apple: cannot load recently played: {error:#}");
                 recents
             }
         };
@@ -1977,7 +1938,7 @@ impl MusicApi for AppleClient {
             );
         }
         let songs = songs.unwrap_or_else(|error| {
-            log::warn!("apple: cannot load recently played songs: {error:#}");
+            warn!("apple: cannot load recently played songs: {error:#}");
             Vec::new()
         });
         let listen_again = recent_mix(containers, songs);
@@ -2077,7 +2038,7 @@ impl MusicApi for AppleClient {
             Some(id) => id != track_id && seen.insert(id.to_owned()),
             None => false,
         });
-        log::debug!("apple: station {station} gave {} tracks", tracks.len());
+        debug!("apple: station {station} gave {} tracks", tracks.len());
         Ok((tracks, None))
     }
 }

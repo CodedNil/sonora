@@ -1,4 +1,5 @@
 use std::time::SystemTime;
+use tracing::debug;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -170,7 +171,7 @@ pub async fn lyrics(session: &Session, track_id: &str) -> Result<Option<Lyrics>>
     let body = match pace::send(session, request).await {
         Ok(body) => body,
         Err(error) => {
-            log::debug!("lyrics: spotify has none for {track_id}: {error}");
+            debug!("lyrics: spotify has none for {track_id}: {error}");
             return Ok(None);
         }
     };

@@ -3,6 +3,7 @@ mod artwork;
 mod button;
 mod card;
 mod checkbox;
+mod clip;
 mod controls;
 mod deck;
 mod drag;
@@ -71,20 +72,22 @@ pub use button::{Button, SMALL_INSET};
 pub use card::CARD_GROUP;
 pub use card::Card;
 pub use checkbox::Checkbox;
+pub use clip::ClipPlayer;
 pub use controls::WindowControls;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub use controls::WindowFrame;
 pub use deck::Deck;
-pub use drag::{Edge, Ghost, drop_gap, drop_into, drop_marker, grip};
+pub use drag::{Edge, Ghost, ReorderMotion, drop_gap, drop_into, drop_marker, grip, reorder_index};
 pub use dropdown::Dropdown;
 pub use explicit::ExplicitBadge;
 pub use filters::{
-    Filter, FilterChange, FlagAxis, RangeAxis, RangeScrubber, RangeState, SortAxis, Unit,
+    Choice, Filter, FilterChange, FilterKind, RangeAxis, RangeScrubber, RangeState, SortAxis, Unit,
 };
 pub use flight::{Flight, Zoom};
 pub use form::{FORM_CONTEXT, Submit};
 pub use glass::{
-    GLASS_BLUR, GLASS_FILL, bar_surface, blurring, frost, glass, popover_fill, popover_surface,
+    GLASS_BLUR, GLASS_FILL, bar_surface, blurring, floating_surface, frost, glass, popover_fill,
+    popover_surface,
 };
 pub use glide::{Glide, ScrollPosition};
 pub use info_card::{Fact, InfoCard};
@@ -104,8 +107,11 @@ pub use layout::{ALWAYS, MIN_CONTENT, ROOMY, Room, SNUG, VAST, WIDE};
 pub use lazy::Lazy;
 pub use level_meter::LevelMeter;
 pub use linger::{Linger, lingers};
-pub use menu::{MENU_CONTEXT, Menu, MenuItem, MenuSearch, SubmenuState, close_menu};
-pub use metrics::{LEADING, Metrics, Rounding, Text, snapped, tucked};
+pub use menu::{
+    MENU_CONTEXT, Menu, MenuItem, MenuSearch, SubmenuState, close_menu, menu_heading, menu_label,
+    menu_row,
+};
+pub use metrics::{LEADING, Metrics, Rounding, Text, snapped, text_width, tucked};
 pub use modal::{Modal, corners};
 pub use motion::{
     Entrance, Fading, Glow, Glowed, Glowing, HoverFade, Motion, Motioned, PRESS_SCALE,
@@ -133,7 +139,9 @@ pub use scrollbar::{
     Scrollbar, cancel_middle_scroll, quantize, release_middle_scroll, scrolled,
     update_middle_scroll,
 };
-pub use scroller::{Scroller, middle_scroll, perch_room, perched, return_to, return_top};
+pub use scroller::{
+    ScrollAnchors, Scroller, middle_scroll, perch_room, perched, return_to, return_top, wheel_to,
+};
 pub use scrubber::{Scrubber, ScrubberState};
 pub use separator::Separator;
 pub use shield::Shield;

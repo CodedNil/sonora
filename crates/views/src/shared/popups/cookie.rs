@@ -179,7 +179,7 @@ impl RenderOnce for CookiePrompt {
             )
             .action(
                 Button::new("submit-cookies")
-                    .label(t!("login-cookie-submit"))
+                    .label(t!("common-continue"))
                     .primary()
                     .on_click(move |_, window, cx| {
                         if let Some(submit) = &submit {

@@ -4,6 +4,7 @@
 //! than failing it.
 
 use std::collections::HashSet;
+use tracing::warn;
 
 use anyhow::{Context as _, Result};
 
@@ -44,7 +45,7 @@ pub(crate) async fn artist_catalogue(
     let albums = match albums {
         Ok(albums) => wire::newest_first(albums),
         Err(error) => {
-            log::warn!("apple: cannot read the discography of {artist_id}: {error:#}");
+            warn!("apple: cannot read the discography of {artist_id}: {error:#}");
             Vec::new()
         }
     };
@@ -92,7 +93,7 @@ pub(crate) async fn artist_tracks(client: &AppleClient, artist_id: &str) -> Resu
                 return Err(error).context("cannot read the artist's top songs");
             }
             Err(error) => {
-                log::warn!("apple: cannot read more top songs of {artist_id}: {error:#}");
+                warn!("apple: cannot read more top songs of {artist_id}: {error:#}");
                 break;
             }
         };
@@ -141,56 +142,53 @@ async fn more_from_artist(
     album_id: &str,
     artist_id: &str,
 ) -> Result<(Vec<Album>, Vec<SavedArtist>)> {
-    let artist_id = &client.catalog_artist(artist_id).await?;
-    let body = client
-        .get(
-            &client.catalog(&format!("/artists/{}", escape::component(artist_id))),
-            &[
-                ("views", "full-albums,singles,similar-artists"),
-                ALBUM_ARTISTS,
-            ],
-        )
-        .await
-        .context("cannot read more from this artist")?;
-    let answered: wire::Answer = wire::answer(&body);
-    let found = answered
-        .data
-        .first()
-        .context("apple music has no such artist")?;
-    let more = wire::view(found, "full-albums")
-        .iter()
-        .chain(wire::view(found, "singles").iter())
-        .filter_map(wire::album)
-        .filter(|album| album.id != album_id)
-        .collect();
-    let similar = wire::view(found, "similar-artists")
-        .iter()
-        .filter_map(wire::similar_artist)
-        .collect();
-    Ok((more, similar))
+    let artist_id = client.catalog_artist(artist_id).await?;
+    artist_releases(client, album_id, &artist_id, true, usize::MAX).await
 }
 
 /// A few releases by one similar artist, skipping the page's own album.
 async fn releases_by(client: &AppleClient, album_id: &str, artist_id: &str) -> Result<Vec<Album>> {
+    artist_releases(client, album_id, artist_id, false, SIMILAR_RELEASES)
+        .await
+        .map(|(albums, _)| albums)
+}
+
+/// Reads the same artist release views for the main rail and its similar-artist top-ups.
+async fn artist_releases(
+    client: &AppleClient,
+    album_id: &str,
+    artist_id: &str,
+    with_similar: bool,
+    limit: usize,
+) -> Result<(Vec<Album>, Vec<SavedArtist>)> {
+    let views = match with_similar {
+        true => "full-albums,singles,similar-artists",
+        false => "full-albums,singles",
+    };
     let body = client
         .get(
             &client.catalog(&format!("/artists/{}", escape::component(artist_id))),
-            &[("views", "full-albums,singles"), ALBUM_ARTISTS],
+            &[("views", views), ALBUM_ARTISTS],
         )
         .await
-        .with_context(|| format!("cannot read releases by similar artist {artist_id}"))?;
+        .with_context(|| format!("cannot read releases by artist {artist_id}"))?;
     let answered: wire::Answer = wire::answer(&body);
     let found = answered
         .data
         .first()
         .with_context(|| format!("apple music has no such artist {artist_id}"))?;
-    Ok(wire::view(found, "full-albums")
+    let albums = wire::view(found, "full-albums")
         .iter()
         .chain(wire::view(found, "singles").iter())
         .filter_map(wire::album)
         .filter(|album| album.id != album_id)
-        .take(SIMILAR_RELEASES)
-        .collect())
+        .take(limit)
+        .collect();
+    let similar = wire::view(found, "similar-artists")
+        .iter()
+        .filter_map(wire::similar_artist)
+        .collect();
+    Ok((albums, similar))
 }
 
 /// A few releases each from the first similar artists: the cross-artist half of the rail
@@ -204,7 +202,7 @@ async fn similar_releases(client: &AppleClient, album_id: &str, similar: &[Strin
     for read in futures::future::join_all(reads).await {
         match read {
             Ok(read) => releases.extend(read),
-            Err(error) => log::warn!("apple: {error:#}"),
+            Err(error) => warn!("apple: {error:#}"),
         }
     }
     releases
@@ -234,12 +232,12 @@ pub(crate) async fn album_catalogue(
         pair => pair,
     };
     if let Err(error) = &also_like {
-        log::warn!("apple: cannot read the related albums: {error:#}");
+        warn!("apple: cannot read the related albums: {error:#}");
     }
     let (more_by, similar) = match more {
         Ok(more) => more,
         Err(error) => {
-            log::warn!("apple: cannot read more from this artist: {error:#}");
+            warn!("apple: cannot read more from this artist: {error:#}");
             (Vec::new(), Vec::new())
         }
     };

@@ -9,6 +9,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
+use tracing::{info, warn};
 
 use tokio::process::Child;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -102,12 +103,12 @@ pub async fn pair(
     if let Some(account) = account
         && !same_account(&paired, &account)
     {
-        log::warn!("soloist: paired with another account than the one signed in");
+        warn!("soloist: paired with another account than the one signed in");
         return Err(Trouble::Account(paired));
     }
     blocking(move || adopt(&key)).await??;
     recheck();
-    log::info!("soloist: paired");
+    info!("soloist: paired");
     Ok(())
 }
 

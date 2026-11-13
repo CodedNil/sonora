@@ -106,7 +106,7 @@ impl SoloistSetup {
         let mut body = vec![
             progress(
                 [
-                    t!("soloist-step-download"),
+                    t!("menu-download"),
                     t!("soloist-step-key"),
                     t!("soloist-step-pair"),
                 ],
@@ -229,7 +229,7 @@ impl Render for SoloistSetup {
             SoloistStep::Pairing => modal.action(
                 Button::new("soloist-back")
                     .ghost()
-                    .label(t!("soloist-back"))
+                    .label(t!("nav-back"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.soloist.update(cx, |soloist, cx| soloist.back(cx));
                     })),
@@ -248,8 +248,8 @@ impl Render for SoloistSetup {
                     Button::new("soloist-proceed")
                         .primary()
                         .label(match step {
-                            SoloistStep::Key => t!("soloist-continue"),
-                            _ => t!("soloist-download"),
+                            SoloistStep::Key => t!("common-continue"),
+                            _ => t!("menu-download"),
                         })
                         .disabled(match step {
                             SoloistStep::Consent => false,

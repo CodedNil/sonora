@@ -4,7 +4,9 @@ use serde::Deserialize;
 
 use super::album::release_type;
 use super::query;
-use crate::{Album, ArtistRef, Playlist, SavedArtist};
+use super::wire::{Artists, Profile};
+use super::wire::{Artwork, Date as Year, Image};
+use crate::{Album, Playlist, SavedArtist};
 
 const ALBUMS: &str = "searchAlbums";
 /// The search page's own query, which answers artists among every other kind. The shared hash
@@ -14,30 +16,37 @@ const PLAYLISTS: &str = "searchPlaylists";
 const ALBUM_PREFIX: &str = "spotify:album:";
 const ARTIST_PREFIX: &str = "spotify:artist:";
 const PLAYLIST_PREFIX: &str = "spotify:playlist:";
-const HEADER: u32 = 300;
 const LIMIT: u32 = 20;
 
 #[derive(Deserialize)]
-struct AlbumSearch {
+struct Search<T> {
     #[serde(rename = "searchV2")]
-    search: Option<AlbumResults>,
+    search: Option<T>,
 }
 
 #[derive(Deserialize)]
 struct AlbumResults {
     #[serde(rename = "albumsV2", default)]
-    albums: AlbumHits,
+    albums: Hits<AlbumEntity>,
 }
 
-#[derive(Default, Deserialize)]
-struct AlbumHits {
+/// Search categories share their optional entity wrapper and empty-list behavior.
+#[derive(Deserialize)]
+#[serde(bound(deserialize = "T: Deserialize<'de>"))]
+struct Hits<T> {
     #[serde(default)]
-    items: Vec<AlbumHit>,
+    items: Vec<Hit<T>>,
 }
 
 #[derive(Deserialize)]
-struct AlbumHit {
-    data: Option<AlbumEntity>,
+struct Hit<T> {
+    data: Option<T>,
+}
+
+impl<T> Default for Hits<T> {
+    fn default() -> Self {
+        Self { items: Vec::new() }
+    }
 }
 
 #[derive(Deserialize)]
@@ -64,26 +73,9 @@ struct WireAlbum {
 }
 
 #[derive(Deserialize)]
-struct ArtistSearch {
-    #[serde(rename = "searchV2")]
-    search: Option<ArtistResults>,
-}
-
-#[derive(Deserialize)]
 struct ArtistResults {
     #[serde(default)]
-    artists: ArtistHits,
-}
-
-#[derive(Default, Deserialize)]
-struct ArtistHits {
-    #[serde(default)]
-    items: Vec<ArtistHit>,
-}
-
-#[derive(Deserialize)]
-struct ArtistHit {
-    data: Option<ArtistEntity>,
+    artists: Hits<ArtistEntity>,
 }
 
 #[derive(Deserialize)]
@@ -109,26 +101,9 @@ struct Visuals {
 }
 
 #[derive(Deserialize)]
-struct PlaylistSearch {
-    #[serde(rename = "searchV2")]
-    search: Option<PlaylistResults>,
-}
-
-#[derive(Deserialize)]
 struct PlaylistResults {
     #[serde(default)]
-    playlists: PlaylistHits,
-}
-
-#[derive(Default, Deserialize)]
-struct PlaylistHits {
-    #[serde(default)]
-    items: Vec<PlaylistHit>,
-}
-
-#[derive(Deserialize)]
-struct PlaylistHit {
-    data: Option<PlaylistEntity>,
+    playlists: Hits<PlaylistEntity>,
 }
 
 #[derive(Deserialize)]
@@ -151,47 +126,10 @@ struct WirePlaylist {
     owner: Option<Owner>,
 }
 
-#[derive(Deserialize)]
-struct Year {
-    #[serde(default)]
-    year: i32,
-}
-
-#[derive(Default, Deserialize)]
-struct Artists {
-    #[serde(default)]
-    items: Vec<Artist>,
-}
-
-#[derive(Deserialize)]
-struct Artist {
-    #[serde(default)]
-    uri: String,
-    profile: Option<Profile>,
-}
-
-#[derive(Deserialize)]
-struct Profile {
-    #[serde(default)]
-    name: String,
-}
-
 #[derive(Default, Deserialize)]
 struct Images {
     #[serde(default)]
     items: Vec<Artwork>,
-}
-
-#[derive(Default, Deserialize)]
-struct Artwork {
-    #[serde(default)]
-    sources: Vec<Image>,
-}
-
-#[derive(Deserialize)]
-struct Image {
-    height: Option<u32>,
-    url: String,
 }
 
 #[derive(Deserialize)]
@@ -211,7 +149,7 @@ pub(crate) async fn albums(session: &Session, term: &str) -> Result<Vec<Album>> 
     let Some(term) = wanted(term) else {
         return Ok(Vec::new());
     };
-    let data = query::<AlbumSearch>(session, ALBUMS, variables(term)).await?;
+    let data = query::<Search<AlbumResults>>(session, ALBUMS, variables(term)).await?;
     let results = data
         .search
         .context("searchAlbums Pathfinder response has no search")?;
@@ -223,7 +161,7 @@ pub(crate) async fn playlists(session: &Session, term: &str) -> Result<Vec<Playl
     let Some(term) = wanted(term) else {
         return Ok(Vec::new());
     };
-    let data = query::<PlaylistSearch>(session, PLAYLISTS, variables(term)).await?;
+    let data = query::<Search<PlaylistResults>>(session, PLAYLISTS, variables(term)).await?;
     let results = data
         .search
         .context("searchPlaylists Pathfinder response has no search")?;
@@ -251,7 +189,7 @@ pub(crate) async fn artists(session: &Session, term: &str) -> Result<Vec<SavedAr
     asked["includeAlbumPreReleases"] = false.into();
     asked["includeAuthors"] = false.into();
     asked["includeEpisodeContentRatingsV2"] = false.into();
-    let data = query::<ArtistSearch>(session, DESKTOP, asked).await?;
+    let data = query::<Search<ArtistResults>>(session, DESKTOP, asked).await?;
     let results = data
         .search
         .context("searchDesktop Pathfinder response has no search")?;
@@ -264,7 +202,7 @@ pub(crate) async fn artists(session: &Session, term: &str) -> Result<Vec<SavedAr
         .collect())
 }
 
-fn artist(hit: ArtistHit) -> Option<SavedArtist> {
+fn artist(hit: Hit<ArtistEntity>) -> Option<SavedArtist> {
     let ArtistEntity::Artist(artist) = hit.data? else {
         return None;
     };
@@ -278,12 +216,11 @@ fn artist(hit: ArtistHit) -> Option<SavedArtist> {
     })
 }
 
-fn album(hit: AlbumHit) -> Option<Album> {
+fn album(hit: Hit<AlbumEntity>) -> Option<Album> {
     let AlbumEntity::Album(album) = hit.data? else {
         return None;
     };
-    let (names, refs) = credits(album.artists);
-    let year = album.date.map(|date| date.year).unwrap_or_default();
+    let (names, refs) = album.artists.credits();
 
     Some(Album {
         id: trimmed(&album.uri, ALBUM_PREFIX)?,
@@ -293,78 +230,46 @@ fn album(hit: AlbumHit) -> Option<Album> {
         cover: cover(&album.cover.sources, false),
         cover_large: cover(&album.cover.sources, true),
         release_type: release_type(&album.kind),
-        year,
-        track_count: 0,
-        release_date: match year {
-            0 => String::new(),
-            year => year.to_string(),
-        },
+        track_count: None,
+        release_date: album.date.as_ref().and_then(Year::release),
         label: String::new(),
         copyrights: Vec::new(),
         added_at: None,
     })
 }
 
-fn playlist(hit: PlaylistHit, username: &str) -> Option<Playlist> {
+fn playlist(hit: Hit<PlaylistEntity>, username: &str) -> Option<Playlist> {
     let PlaylistEntity::Playlist(playlist) = hit.data? else {
         return None;
     };
     let owner = playlist.owner.and_then(|owner| owner.data);
+    let owned = owner
+        .as_ref()
+        .is_some_and(|account| account.username == username);
 
     Some(Playlist {
         id: trimmed(&playlist.uri, PLAYLIST_PREFIX)?,
         name: playlist.name,
-        owned: owner
-            .as_ref()
-            .is_some_and(|account| account.username == username),
+        owned,
         owner: owner.map(|account| account.name).unwrap_or_default(),
-        owner_id: String::new(),
-        collaborative: false,
+        owner_id: None,
+        can_edit_tracks: owned,
         blend: false,
-        public: true,
+        public: Some(true),
         cover: playlist
             .images
             .items
             .first()
             .and_then(|artwork| cover(&artwork.sources, false)),
-        track_count: 0,
+        track_count: None,
         modified_at: None,
     })
 }
 
-fn credits(artists: Artists) -> (String, Vec<ArtistRef>) {
-    let refs: Vec<_> = artists
-        .items
-        .into_iter()
-        .filter_map(|artist| {
-            Some(ArtistRef {
-                name: artist.profile.map(|profile| profile.name)?,
-                id: trimmed(&artist.uri, ARTIST_PREFIX),
-            })
-        })
-        .collect();
-    let names = refs
-        .iter()
-        .map(|artist| artist.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    (names, refs)
-}
-
 fn cover(sources: &[Image], large: bool) -> Option<String> {
-    let source = match large {
-        true => sources
-            .iter()
-            .filter(|source| height(source) >= HEADER)
-            .min_by_key(height)
-            .or_else(|| sources.iter().max_by_key(height)),
-        false => sources.iter().min_by_key(height),
-    }?;
-    (!source.url.is_empty()).then(|| source.url.clone())
-}
-
-fn height(source: &&Image) -> u32 {
-    source.height.unwrap_or_default()
+    super::wire::image(sources, large)
+        .filter(|image| !image.url.is_empty())
+        .map(|image| image.url.clone())
 }
 
 fn variables(term: &str) -> serde_json::Value {

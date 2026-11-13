@@ -1,3 +1,6 @@
+#[cfg(target_os = "macos")]
+use tracing::warn;
+
 /// Sets the Dock icon from the embedded family, including launches outside an app bundle.
 #[cfg(target_os = "macos")]
 pub fn install_icon() {
@@ -6,11 +9,11 @@ pub fn install_icon() {
     use objc2_foundation::NSData;
 
     let Some(mtm) = MainThreadMarker::new() else {
-        return log::warn!("dock: cannot set the app icon off the main thread");
+        return warn!("dock: cannot set the app icon off the main thread");
     };
     let data = NSData::with_bytes(include_bytes!("../../../assets/macos/sonora.icns"));
     let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
-        return log::warn!("dock: cannot decode the app icon");
+        return warn!("dock: cannot decode the app icon");
     };
     unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image)) };
 }
@@ -21,7 +24,7 @@ pub fn show(shown: bool) {
     use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 
     let Some(mtm) = MainThreadMarker::new() else {
-        return log::warn!("dock: activation policy changed off the main thread");
+        return warn!("dock: activation policy changed off the main thread");
     };
     let policy = match shown {
         true => NSApplicationActivationPolicy::Regular,

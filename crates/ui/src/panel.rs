@@ -7,11 +7,13 @@ use gpui::{
 };
 
 use crate::metrics::snapped;
+use crate::theme::ActiveTheme as _;
 
 const GRIP: Pixels = px(12.);
 const GRIP_INSET: Pixels = px(-6.);
 const GRIP_PRIORITY: usize = 0;
-
+/// How much of the sidebar colour an island keeps, so a little of the window shows through.
+const ISLAND_FILL: f32 = 0.8;
 type Resize = Box<dyn Fn(&Pixels, &mut Window, &mut App) + 'static>;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -32,12 +34,15 @@ pub struct Panel {
     key: ElementId,
     side: Side,
     width: Pixels,
+    content_width: Option<Pixels>,
     min: Pixels,
     max: Pixels,
     reach: Option<Pixels>,
     fill: bool,
     /// How far above the panel's foot the resize grip ends.
     grip_bottom: Pixels,
+    island: bool,
+    frosted: bool,
     resize: Option<Resize>,
     children: Vec<AnyElement>,
 }
@@ -51,14 +56,24 @@ impl Panel {
             key,
             side,
             width,
+            content_width: None,
             min: Pixels::ZERO,
             max: Pixels::MAX,
             reach: None,
             fill: false,
             grip_bottom: Pixels::ZERO,
+            island: false,
+            frosted: false,
             resize: None,
             children: Vec::new(),
         }
+    }
+
+    /// Keeps island contents at least this wide, sliding them toward the window edge as the
+    /// occupied width collapses. This avoids reflowing text and artwork during a close.
+    pub fn content_width(mut self, width: Pixels) -> Self {
+        self.content_width = Some(width);
+        self
     }
 
     pub fn limits(mut self, min: Pixels, max: Pixels) -> Self {
@@ -81,6 +96,20 @@ impl Panel {
     /// lower edge keeps its own pointer instead of the grip's, which is drawn over everything.
     pub fn grip_above(mut self, bottom: Pixels) -> Self {
         self.grip_bottom = bottom;
+        self
+    }
+
+    /// Draws the panel as an island: its content on a rounded, slightly see-through
+    /// card inset from the window and player bar by the theme's island gap. The width still
+    /// counts the inset, and the grip sits on the card's own edge.
+    pub fn island(mut self) -> Self {
+        self.island = true;
+        self
+    }
+
+    /// Gives the island the same translucent surface as floating previews.
+    pub fn frosted(mut self) -> Self {
+        self.frosted = true;
         self
     }
 
@@ -111,22 +140,30 @@ impl ParentElement for Panel {
 }
 
 impl RenderOnce for Panel {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let Self {
             mut base,
             key,
             side,
             width,
+            content_width,
             min,
             max,
             reach,
             fill,
             grip_bottom,
+            island,
+            frosted,
             resize,
             children,
         } = self;
+        let theme = cx.theme();
+        let gap = theme.metrics.island_gap();
         let overrides = std::mem::take(base.style());
         let width = width.clamp(min, max);
+        let content_width = content_width
+            .filter(|_| !fill)
+            .map(|content| content.max(width));
         let handle = (!fill).then_some(resize).flatten().map(|resize| {
             grip(key, side, width, min, reach.unwrap_or(max), resize).bottom(grip_bottom)
         });
@@ -137,7 +174,7 @@ impl RenderOnce for Panel {
             .flex()
             .flex_col()
             .h_full()
-            .map(|panel| match side {
+            .when(!island, |panel| match side {
                 Side::Left => panel.border_r_1(),
                 Side::Right => panel.border_l_1(),
             })
@@ -147,7 +184,36 @@ impl RenderOnce for Panel {
             });
         panel.style().refine(&overrides);
 
-        panel.children(children).children(handle)
+        // An island's grip hangs off its card rather than the panel around it, so it sits on the
+        // edge the reader sees. It is deferred, so the card's clipping never cuts it off.
+        match island {
+            false => panel.children(children).children(handle),
+            true => panel.child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .when_some(content_width, |island, content| {
+                        island
+                            .w((content - gap * 2.).max(Pixels::ZERO))
+                            .when(side == Side::Left, |island| island.left(width - content))
+                    })
+                    .mx(gap)
+                    .my(gap)
+                    .rounded(theme.radius)
+                    .map(|island| match frosted {
+                        true => crate::glass::floating_surface(island, cx),
+                        false => island.bg(theme.sidebar.opacity(ISLAND_FILL)),
+                    })
+                    .border_1()
+                    .border_color(theme.border.opacity(1.))
+                    .overflow_hidden()
+                    .children(children)
+                    .children(handle),
+            ),
+        }
     }
 }
 

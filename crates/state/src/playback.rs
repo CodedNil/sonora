@@ -2,6 +2,7 @@ use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
+use tracing::{debug, error, info, warn};
 
 use anyhow::Result;
 use futures::future::BoxFuture;
@@ -771,7 +772,8 @@ impl Playback {
                 let duration = match remote.state.duration.is_zero() {
                     true => self
                         .shown_track(cx)
-                        .map_or(Duration::ZERO, |track| track.duration),
+                        .and_then(|track| track.duration)
+                        .unwrap_or_default(),
                     false => remote.state.duration,
                 };
                 (remote.state.live_position(), duration)
@@ -780,7 +782,8 @@ impl Playback {
                 self.position,
                 self.track
                     .as_ref()
-                    .map_or(Duration::ZERO, |track| track.duration),
+                    .and_then(|track| track.duration)
+                    .unwrap_or_default(),
             ),
         }
     }
@@ -939,7 +942,7 @@ impl Playback {
         };
         if let Err(error) = engine.preload(id, segue) {
             self.preloaded = None;
-            log::warn!("playback: cannot preload {}: {error:#}", track.name);
+            warn!("playback: cannot preload {}: {error:#}", track.name);
         }
     }
 
@@ -1126,7 +1129,7 @@ impl Playback {
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    log::error!("playback: cannot load radio queue: {error:#}");
+                    error!("playback: cannot load radio queue: {error:#}");
                     crate::noted(&error, cx);
                     if this.origin(cx) == Some(&origin) {
                         Toasts::about(Outcome::Failed, "toast-radio-failed", title, cx);
@@ -1277,7 +1280,7 @@ impl Playback {
                     match provider.track_from_path(&path) {
                         Some(track) => tracks.push(track),
                         None => {
-                            log::warn!("local: cannot open {}", path.display());
+                            warn!("local: cannot open {}", path.display());
                             unread.push(Unread::of(&path));
                         }
                     }
@@ -1296,7 +1299,7 @@ impl Playback {
                         _ => this.enqueue_tracks(tracks, None, QueuePlacement::Next, cx),
                     }
                 }
-                Err(error) => log::warn!("playback: cannot open files: {error:#}"),
+                Err(error) => warn!("playback: cannot open files: {error:#}"),
             },
             cx,
         ));
@@ -1397,7 +1400,7 @@ impl Playback {
                         }
                     }
                     Err(error) => {
-                        log::error!("playback: cannot enqueue {source}: {error:#}");
+                        error!("playback: cannot enqueue {source}: {error:#}");
                         Toasts::show(Outcome::Failed, "toast-queue-failed", cx);
                     }
                 }
@@ -1530,9 +1533,9 @@ impl Playback {
                     self.warm = None;
                 }
                 match pressed {
-                    None => log::debug!("playback: cannot fetch a collection ahead: {error:#}"),
+                    None => debug!("playback: cannot fetch a collection ahead: {error:#}"),
                     Some(_) if self.has_active_playback() => {
-                        log::error!("playback: cannot load context: {error:#}");
+                        error!("playback: cannot load context: {error:#}");
                         cx.notify();
                     }
                     Some(_) => {
@@ -1677,7 +1680,7 @@ impl Playback {
     /// Lines the next track up behind the current one once it is near its end, so a gapless
     /// engine can join them. An engine that fetched it already only queues it here.
     fn preload_next(&mut self, position: Duration, cx: &Context<Self>) {
-        let Some(duration) = self.track.as_ref().map(|track| track.duration) else {
+        let Some(duration) = self.track.as_ref().and_then(|track| track.duration) else {
             return;
         };
         if duration.is_zero()
@@ -1785,7 +1788,7 @@ impl Playback {
                     }
                     Err(error) => {
                         this.station = None;
-                        log::warn!("playback: cannot continue the station: {error:#}");
+                        warn!("playback: cannot continue the station: {error:#}");
                     }
                 }
                 if this.station.is_none() {
@@ -1856,7 +1859,7 @@ impl Playback {
                 }),
                 Err(error) => {
                     this.seeded = None;
-                    log::warn!("playback: cannot load similar tracks: {error:#}");
+                    warn!("playback: cannot load similar tracks: {error:#}");
                     crate::noted(&error, cx);
                     if asked && this.radio {
                         Toasts::about(Outcome::Failed, "toast-similar-failed", title, cx);
@@ -1996,8 +1999,8 @@ impl Playback {
                     this.leave_station();
                     this.follow_queue(Start::Segue, cx);
                 }
-                Ok(_) => log::warn!("playback: radio returned no tracks"),
-                Err(error) => log::warn!("playback: cannot extend radio: {error:#}"),
+                Ok(_) => warn!("playback: radio returned no tracks"),
+                Err(error) => warn!("playback: cannot extend radio: {error:#}"),
             },
             cx,
         ));
@@ -2103,7 +2106,7 @@ impl Playback {
             .take()
             .is_some_and(|since| since.elapsed().unwrap_or(STALE_PAUSE) >= STALE_PAUSE)
         {
-            log::info!("playback: paused too long to trust the engine, reloading the track");
+            info!("playback: paused too long to trust the engine, reloading the track");
             return self.reload_and_seek(self.position, cx);
         }
         if let Some(engine) = self.active_engine() {
@@ -2145,7 +2148,7 @@ impl Playback {
                 self.position = at;
                 self.clock.reset(at, false);
             }
-            Err(error) => log::warn!(
+            Err(error) => warn!(
                 "playback: cannot prepare {} for resume: {error:#}",
                 track.name
             ),
@@ -2415,7 +2418,7 @@ impl Playback {
         let Some(total) = self
             .track
             .as_ref()
-            .map(|track| track.duration)
+            .and_then(|track| track.duration)
             .filter(|total| !total.is_zero())
         else {
             return;
@@ -2450,7 +2453,7 @@ impl Playback {
             true => self.clock.now(),
             false => self.position,
         };
-        match self.track.as_ref().map(|track| track.duration) {
+        match self.track.as_ref().and_then(|track| track.duration) {
             Some(total) if !total.is_zero() => live.min(total),
             _ => live,
         }
@@ -2807,7 +2810,7 @@ impl Playback {
             self.resume_at = Some(at);
         }
 
-        log::info!("playback: restarting after the audio output changed");
+        info!("playback: restarting after the audio output changed");
         match local {
             true => {
                 self.local_task = None;
@@ -2979,13 +2982,13 @@ impl Playback {
             {
                 self.resume_ready = false;
                 self.state = PlaybackState::Paused;
-                log::warn!("playback: cannot hold the restored track, waiting for play");
+                warn!("playback: cannot hold the restored track, waiting for play");
             }
             BackendEvent::Playing { .. } if self.overtaken(Intent::Play) => {
-                log::debug!("playback: ignoring a play the user has since paused");
+                debug!("playback: ignoring a play the user has since paused");
             }
             BackendEvent::Paused { .. } if self.overtaken(Intent::Pause) => {
-                log::debug!("playback: ignoring a pause the user has since undone");
+                debug!("playback: ignoring a pause the user has since undone");
             }
             BackendEvent::Loading { at, .. } => {
                 self.state = PlaybackState::Loading;
@@ -3034,7 +3037,7 @@ impl Playback {
                     if self.stale_positions <= STALE_POSITIONS {
                         return;
                     }
-                    log::warn!("playback: the seek did not land, carrying on from {at:?}");
+                    warn!("playback: the seek did not land, carrying on from {at:?}");
                     self.seek_in_flight = None;
                     failed = true;
                 }
@@ -3054,9 +3057,9 @@ impl Playback {
             BackendEvent::Length { duration, .. } => {
                 if let Some(track) = self.track.as_mut()
                     && !duration.is_zero()
-                    && track.duration != duration
+                    && track.duration != Some(duration)
                 {
-                    track.duration = duration;
+                    track.duration = Some(duration);
                 }
             }
             BackendEvent::Ended { .. } => {
@@ -3074,7 +3077,7 @@ impl Playback {
             BackendEvent::Throttled { .. } => self.throttled(cx),
             BackendEvent::Unavailable { .. } if self.ask_for_reconnect(cx) => {
                 self.state = PlaybackState::Loading;
-                log::warn!("playback: the provider went stale, waiting for a reconnect");
+                warn!("playback: the provider went stale, waiting for a reconnect");
             }
             BackendEvent::Unavailable { .. } => {
                 let failed = self.track.take();
@@ -3082,7 +3085,7 @@ impl Playback {
                 let name = failed
                     .as_ref()
                     .map_or_else(|| "?".to_owned(), |track| track.name.clone());
-                log::warn!(
+                warn!(
                     "playback: {name} failed to load, backing off {}s",
                     KEY_COOLDOWN.as_secs()
                 );
@@ -3094,12 +3097,12 @@ impl Playback {
                 let exhausted = self.failures >= FAILURE_LIMIT;
                 match exhausted {
                     true => {
-                        log::warn!("playback: {FAILURE_LIMIT} tracks failed in a row, stopping");
+                        warn!("playback: {FAILURE_LIMIT} tracks failed in a row, stopping");
                         match self.module_suspect(cx) {
                             true => {
                                 let toast = Toast::new(Outcome::Failed, "toast-widevine-failed")
                                     .note("toast-widevine-borrowed")
-                                    .open("toast-open-settings", Target::PlaybackSettings)
+                                    .open("nav-settings", Target::PlaybackSettings)
                                     .lasting();
                                 Toasts::post(toast, cx);
                             }
@@ -3180,7 +3183,7 @@ impl Playback {
 
     /// Stops with a reason the UI can show.
     fn failed(&mut self, problem: String, cx: &mut Context<Self>) {
-        log::error!("playback: {problem}");
+        error!("playback: {problem}");
         self.state = PlaybackState::Failed(problem);
         cx.notify();
     }
@@ -3204,7 +3207,7 @@ impl Playback {
             return self.hold(at, cx);
         }
         if self.throttles > THROTTLE_LIMIT {
-            log::warn!(
+            warn!(
                 "playback: {provider} kept turning {} down, waiting for play",
                 track.name
             );
@@ -3212,7 +3215,7 @@ impl Playback {
             return self.hold(at, cx);
         }
         let wait = throttle_wait(self.throttles);
-        log::warn!(
+        warn!(
             "playback: {provider} turned {} down for now, retrying in {}s",
             track.name,
             wait.as_secs()
@@ -3228,7 +3231,7 @@ impl Playback {
     /// keeps playing, since a local file needs nothing, and only a track the user picked says
     /// so out loud: the queue moving on by itself would otherwise toast once a track.
     fn unreachable(reason: Unreachable, start: Start, cx: &mut App) {
-        log::warn!("playback: nothing streams while the network is gone");
+        warn!("playback: nothing streams while the network is gone");
         if start == Start::Pick {
             reason.toast(cx);
         }
@@ -3269,7 +3272,7 @@ impl Playback {
             "{provider} only streams to a signed-in listener; nothing will play until you sign in"
         ));
         if first {
-            log::warn!(
+            warn!(
                 "playback: {provider} only streams to a signed-in listener, nothing will play \
                  until you sign in"
             );
@@ -3296,7 +3299,7 @@ impl Playback {
                 .to_owned(),
         );
         if first {
-            log::error!(
+            error!(
                 "playback: spotify denied an audio key for this account; nothing will play in \
                  this session"
             );
@@ -3307,7 +3310,7 @@ impl Playback {
         };
         let toast = Toast::new(Outcome::Failed, "toast-keys-error").note(note);
         let toast = match music::soloist::supported() {
-            true => toast.lead("toast-soloist-setup", Target::PlaybackSettings, |cx| {
+            true => toast.lead("soloist-setup-title", Target::PlaybackSettings, |cx| {
                 let soloist = Sonora::global(cx).soloist.clone();
                 soloist.update(cx, |soloist, cx| soloist.begin(cx));
             }),
@@ -3412,7 +3415,7 @@ fn retire(engine: Option<Box<dyn Player>>) {
         .name("engine-retire".to_owned())
         .spawn(move || drop(engine));
     if let Err(error) = spawned {
-        log::warn!("playback: cannot retire the old engine off the main thread: {error}");
+        warn!("playback: cannot retire the old engine off the main thread: {error}");
     }
 }
 #[cfg(test)]

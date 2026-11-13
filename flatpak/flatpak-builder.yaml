@@ -11,11 +11,10 @@ command: sonora
 finish-args:
   - --socket=wayland # Permission needed to show the window
   - --socket=fallback-x11 # Permission needed to show the window on legacy windowing systems
-  - --socket=pulseaudio # Play audio
   - --device=dri # GPU acceleration
   - --share=network # Internet access
   - --share=ipc
-  - --filesystem=xdg-run/pipewire-0:ro # Spotify flatpak has this
+  - --filesystem=xdg-run/pipewire-0:ro # Play audio through PipeWire
   # Open With passes an arbitrary path as argv; a plain Exec launch (unlike a portal file-open)
   # gets no per-file bind mount, so reading it needs read access to the whole host.
   - --filesystem=host:ro

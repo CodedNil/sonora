@@ -37,8 +37,10 @@ mod signal;
 mod snapshot;
 mod soloist;
 mod song;
+mod stage;
 mod tags;
 mod toast;
+mod track_counts;
 mod updates;
 mod usage;
 mod vault;
@@ -75,24 +77,27 @@ pub use playback::{Origin, Playback, PlaybackState, Sleep, Unreachable, Whence};
 pub use profile::Profile;
 pub use queue::{
     Queue, QueueKind, QueuePlacement, QueuePosition, QueueSections, QueueSlot, QueueView, Resume,
-    Stub,
+    SavedEntry,
 };
 pub use remote::{Remote, attach as attach_remote};
 pub use requirements::{Requirement, Requirements};
 pub use scan::Scan;
 pub use scrobble::{ScrobbleRow, ScrobbleState, Scrobbling};
-pub use search::{AlbumHit, ArtistHit, Hit, Kind, PlaylistHit, Search};
+pub use search::{ArtistHit, Hit, Kind, Search};
 pub use session::{Failure, ProviderInfo, Session, SessionEvent, SessionState};
 pub use settings::{
-    AppSettings, ConnectName, DiscordName, FilterValue, FullscreenControlsAutohide, LYRICS_SOURCES,
-    PlayerBarLayout, Reloaded, RomanizationScripts, SYSTEM_FONT, SideTab, ThemeFamily, ThemeOffer,
-    ThemeVariant, VisualizerScreens, equalizer_profile_label, remember_window, window_placement,
+    AppSettings, Cards, ConnectName, DiscordName, FilterValue, FullscreenControlsAutohide,
+    LYRICS_SOURCES, PlayerBarLayout, Reloaded, RomanizationScripts, SYSTEM_FONT, SideTab,
+    ThemeFamily, ThemeOffer, ThemeVariant, VisualizerScreens, equalizer_profile_label,
+    remember_window, window_placement,
 };
 pub use signal::{Change, Equalizing, FLOAT_BITS, Following, Signal, SignalPath};
 pub use soloist::{Soloist, SoloistProblem, SoloistState, SoloistStep, SoloistSwitched};
 pub use song::SongDetail;
+pub use stage::Stage;
 pub use tags::{TagState, Tags};
 pub use toast::{Outcome, Target, Toast, ToastAction, Toasts};
+pub use track_counts::TrackCounts;
 pub use updates::{Channel, Release, UpdateState, Updates, updates_itself, version};
 pub use usage::Usage;
 pub use vault::CACHE_GB_RANGE;
@@ -245,6 +250,10 @@ pub struct Sonora {
     pub scrobbling: Entity<Scrobbling>,
     pub settings: Entity<AppSettings>,
     pub signal: Entity<Signal>,
+    /// What the right sidebar shows about the song playing: its Canvas, credits and artist.
+    pub stage: Entity<Stage>,
+    /// Provider play counts shared by song tables and loaded only when needed.
+    pub track_counts: Entity<TrackCounts>,
     pub updates: Entity<Updates>,
     pub usage: Entity<Usage>,
     pub wake: Entity<Wake>,
@@ -358,6 +367,7 @@ pub fn init(
         )
     });
     let cover = cx.new(|cx| Cover::new(session.clone(), playback.clone(), io.clone(), cx));
+    let track_counts = cx.new(|cx| TrackCounts::new(session.clone(), io.clone(), cx));
     let drm = cx.new(|cx| Drm::new(session.clone(), io.clone(), cx));
     let soloist = cx.new(|cx| Soloist::new(session.clone(), io.clone(), cx));
     let updates = cx.new(|cx| Updates::new(settings.clone(), io.clone(), cx));
@@ -407,6 +417,15 @@ pub fn init(
         }
     })
     .detach();
+    let stage = cx.new(|cx| {
+        Stage::new(
+            session.clone(),
+            playback.clone(),
+            devices.clone(),
+            io.clone(),
+            cx,
+        )
+    });
     let links = cx.new(|cx| Links::new(session.clone(), devices.clone(), settings.clone(), cx));
     let control = cx.new(|cx| Control::new(session.clone(), playback.clone(), library.clone(), cx));
     discord::attach(
@@ -444,6 +463,8 @@ pub fn init(
         scrobbling,
         settings,
         signal,
+        stage,
+        track_counts,
         updates,
         usage,
         wake,

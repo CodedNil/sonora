@@ -23,6 +23,7 @@
 use std::io;
 use std::ops::Range;
 use std::time::{Duration, Instant};
+use tracing::{debug, error, info, warn};
 
 use anyhow::{Result, bail};
 use widevine::Cdm;
@@ -226,7 +227,7 @@ impl Cenc {
         let Some(init) = cenc::read_init(&front) else {
             return false;
         };
-        log::debug!(
+        debug!(
             "apple: init segment is {} bytes, {} encrypted track(s)",
             init.end,
             init.tracks.len()
@@ -235,7 +236,7 @@ impl Cenc {
         // moves forward, so nothing reads the sample entry again.
         cenc::unlock(&mut front, &init);
         if let Err(error) = spool.write_at(0, &front) {
-            log::warn!("apple: cannot relabel the sample entry: {error}");
+            warn!("apple: cannot relabel the sample entry: {error}");
             return false;
         }
         self.walked = init.end;
@@ -282,7 +283,7 @@ impl Cenc {
             License::Held(keys) => keys,
             License::Pending => return Err(io::Error::other("the track has no license loaded")),
             License::Released => {
-                log::error!(
+                error!(
                     "apple: sample {index} of {} is still encrypted after the license was released",
                     self.samples.len()
                 );
@@ -306,7 +307,7 @@ impl Cenc {
         let took = began.elapsed();
         if let Err(error) = spool.write_at(span.start, bytes) {
             self.seals[index] = Seal::Lost;
-            log::error!("apple: cannot keep the cleartext of sample {index}: {error}");
+            error!("apple: cannot keep the cleartext of sample {index}: {error}");
             return Err(error);
         }
         self.seals[index] = Seal::Clear;
@@ -447,7 +448,7 @@ impl Media {
             }
             let passed = tokio::task::spawn_blocking(move || clear_rest(&weak)).await;
             if let Err(error) = passed {
-                log::warn!("apple: the decrypt pass stopped: {error}");
+                warn!("apple: the decrypt pass stopped: {error}");
             }
         });
     }
@@ -477,7 +478,7 @@ impl Media {
             .0
             .with(|cenc, spool| (cenc.samples.len(), spool.len()))
             .unwrap_or_default();
-        log::info!(
+        info!(
             "apple: prebuffer ready, {} KiB in, {samples} samples indexed",
             indexed / 1024
         );
@@ -554,14 +555,14 @@ fn clear_rest(weak: &WeakStream<Cenc>) {
             Some(Ok(Pass::Cleared)) => count += 1,
             Some(Ok(Pass::Finished(keys))) => {
                 drop(keys);
-                log::info!(
+                info!(
                     "apple: decrypted the {count} samples left in {:.1}s, license released",
                     began.elapsed().as_secs_f32()
                 );
                 return;
             }
             Some(Err(error)) => {
-                log::warn!("apple: cannot decrypt ahead, keeping the license: {error}");
+                warn!("apple: cannot decrypt ahead, keeping the license: {error}");
                 return;
             }
             None => return,

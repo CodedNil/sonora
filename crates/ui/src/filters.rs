@@ -32,36 +32,59 @@ impl Unit {
     pub fn say(self, value: f32) -> SharedString {
         match self {
             Unit::Clock => clock(std::time::Duration::from_secs_f32(value.max(0.))),
-            Unit::Plain => SharedString::from(format!("{}", value.round() as i64)),
+            Unit::Plain => i18n::grouped_number(value.round() as i128, 10_000),
         }
     }
 }
 
+/// A filter's stable Fluent key and its control. Labels are resolved only when drawn.
 #[derive(Clone)]
-pub enum Filter {
+pub struct Filter {
+    pub key: &'static str,
+    pub kind: FilterKind,
+}
+
+/// The data needed to draw and apply one filter control.
+#[derive(Clone)]
+pub enum FilterKind {
     Range(RangeAxis),
-    Flag(FlagAxis),
+    Flag(bool),
+    Choice(Vec<Choice>),
 }
 
 impl Filter {
+    pub fn label(&self) -> SharedString {
+        i18n::lookup(self.key, None)
+    }
+
     pub fn narrowed(&self) -> bool {
-        match self {
-            Self::Range(axis) => !axis.whole(),
-            Self::Flag(axis) => axis.on,
+        match &self.kind {
+            FilterKind::Range(axis) => !axis.whole(),
+            FilterKind::Flag(on) => *on,
+            FilterKind::Choice(options) => options.iter().any(|option| option.on),
         }
     }
 }
 
 pub enum FilterChange {
-    Range(&'static str, (f32, f32)),
+    /// A range set to `None` is back at its full span, which narrows nothing.
+    Range(&'static str, Option<(f32, f32)>),
     Flag(&'static str, bool),
+    /// Turns one option of a choice axis on or off, by the option's id.
+    Choice(&'static str, SharedString, bool),
     Reset,
+}
+
+/// A stable choice id, its display label, and whether it is selected.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Choice {
+    pub id: SharedString,
+    pub label: SharedString,
+    pub on: bool,
 }
 
 #[derive(Clone)]
 pub struct RangeAxis {
-    pub key: &'static str,
-    pub label: SharedString,
     pub bounds: (f32, f32),
     pub value: (f32, f32),
     pub unit: Unit,
@@ -112,6 +135,13 @@ impl RangeAxis {
         (pick(share.0), pick(share.1))
     }
 
+    /// The change for a handle position: the range it picks, or `None` where that is the whole.
+    pub fn narrowing(&self, share: (f32, f32)) -> Option<(f32, f32)> {
+        let value = self.at(share);
+        let whole = self.seat(value.0) <= f32::EPSILON && self.seat(value.1) >= 1. - f32::EPSILON;
+        (!whole).then_some(value)
+    }
+
     pub fn stops(&self) -> Vec<f32> {
         let Some(steps) = self.steps() else {
             return Vec::new();
@@ -129,16 +159,12 @@ impl RangeAxis {
     }
 
     pub fn whole(&self) -> bool {
+        if self.bounds.1 - self.bounds.0 <= f32::EPSILON {
+            return true;
+        }
         let (low, high) = self.share();
         low <= f32::EPSILON && high >= 1. - f32::EPSILON
     }
-}
-
-#[derive(Clone)]
-pub struct FlagAxis {
-    pub key: &'static str,
-    pub label: SharedString,
-    pub on: bool,
 }
 
 #[derive(Clone)]
@@ -475,8 +501,6 @@ mod tests {
 
     fn axis(bounds: (f32, f32), value: (f32, f32)) -> RangeAxis {
         RangeAxis {
-            key: "test",
-            label: "Test".into(),
             bounds,
             value,
             unit: Unit::Plain,

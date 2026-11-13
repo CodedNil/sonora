@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::warn;
 
 use anyhow::{Context as _, Result};
 use gpui::{App, Context, Entity, Task};
@@ -14,8 +15,8 @@ use crate::{Io, Outcome, Playback, Session, SessionEvent, SessionState, Toast, T
 const LOCAL_LIMIT: usize = 500;
 /// Every column of `plays`, in the order a [`Row`] holds them.
 const COLUMNS: &str = "scope, provider, track_id, played_at, name, playable, artists, \
-                       artist_refs, album, album_id, cover, duration_ms, explicit";
-const COLUMN_COUNT: usize = 13;
+                       artist_refs, album, album_id, cover, duration_ms, explicit, track";
+const COLUMN_COUNT: usize = 14;
 
 /// One `plays` row as stored, column by column, so a removed play goes back exactly as it was.
 type Row = Vec<Value>;
@@ -49,12 +50,14 @@ impl Store {
         };
         let artist_refs = serde_json::to_string(&track.artist_refs)
             .context("cannot encode listening history artists")?;
+        let snapshot =
+            serde_json::to_string(track).context("cannot encode listening history metadata")?;
         self.open()?
             .execute(
                 "INSERT OR IGNORE INTO plays (
                     scope, provider, track_id, played_at, name, playable, artists,
-                    artist_refs, album, album_id, cover, duration_ms, explicit
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    artist_refs, album, album_id, cover, duration_ms, explicit, track
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params![
                     scope,
                     provider,
@@ -67,8 +70,12 @@ impl Store {
                     track.album,
                     track.album_id,
                     track.cover,
-                    track.duration.as_millis().min(i64::MAX as u128) as i64,
+                    track
+                        .duration
+                        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+                        .unwrap_or(0),
                     track.explicit,
+                    snapshot,
                 ],
             )
             .context("cannot save listening history")?;
@@ -110,7 +117,7 @@ impl Store {
         let (Some(track_id), Some(played_at)) = (track.id.as_deref(), track.added_at) else {
             return Ok(Vec::new());
         };
-        let played_at = played_at.saturating_mul(1_000);
+        let played_at = played_at.as_second().saturating_mul(1_000);
         let window = params![scope, track_id, played_at, played_at.saturating_add(1_000)];
         let mut connection = self.open()?;
         let transaction = connection
@@ -175,7 +182,7 @@ impl Store {
         let mut query = connection
             .prepare(
                 "SELECT track_id, played_at, name, playable, artists, artist_refs, album,
-                        album_id, cover, duration_ms, explicit
+                        album_id, cover, duration_ms, explicit, track
                  FROM plays
                  WHERE scope = ?
                  ORDER BY played_at DESC
@@ -187,6 +194,12 @@ impl Store {
                 let refs = row.get_ref(5)?.as_str()?;
                 let artist_refs: Vec<ArtistRef> = serde_json::from_str(refs).unwrap_or_default();
                 let played_at: i64 = row.get(1)?;
+                if let Some(stored) = row.get::<_, Option<String>>(11)?
+                    && let Ok(mut track) = serde_json::from_str::<Track>(&stored)
+                {
+                    track.added_at = music::Timestamp::from_millisecond(played_at).ok();
+                    return Ok(track);
+                }
                 let duration: i64 = row.get(9)?;
                 Ok(Track {
                     id: Some(row.get(0)?),
@@ -197,8 +210,9 @@ impl Store {
                     album: row.get(6)?,
                     album_id: row.get(7)?,
                     cover: row.get(8)?,
-                    duration: std::time::Duration::from_millis(duration.max(0) as u64),
-                    added_at: Some(played_at / 1_000),
+                    duration: (duration > 0)
+                        .then(|| std::time::Duration::from_millis(duration as u64)),
+                    added_at: music::Timestamp::from_millisecond(played_at).ok(),
                     explicit: row.get(10)?,
                     ..Default::default()
                 })
@@ -373,7 +387,7 @@ impl History {
             this.update(cx, |this, cx| {
                 match applied {
                     Ok(applied) => this.applied(applied, era, cx),
-                    Err(error) => log::warn!("history: write task failed: {error}"),
+                    Err(error) => warn!("history: write task failed: {error}"),
                 }
                 this.flush(cx);
             })
@@ -402,7 +416,7 @@ impl History {
                     track,
                     rows: Err(error),
                 } => {
-                    log::warn!("history: cannot remove a play: {error:#}");
+                    warn!("history: cannot remove a play: {error:#}");
                     if current && self.scope(cx).as_deref() == Some(scope.as_str()) {
                         self.put_back(*track);
                         cx.notify();
@@ -410,12 +424,12 @@ impl History {
                     failed("toast-history-remove-failed", &error, cx);
                 }
                 Applied::Restored(Err(error)) => {
-                    log::warn!("history: cannot restore plays: {error:#}");
+                    warn!("history: cannot restore plays: {error:#}");
                     failed("toast-history-restore-failed", &error, cx);
                     self.refresh(cx);
                 }
                 Applied::Wiped(Err(error)) => {
-                    log::warn!("history: cannot clear plays: {error:#}");
+                    warn!("history: cannot clear plays: {error:#}");
                     failed("toast-history-clear-failed", &error, cx);
                     self.refresh(cx);
                 }
@@ -542,7 +556,7 @@ impl History {
                         this.state = HistoryState::Ready;
                     }
                     Err(error) => {
-                        log::warn!("history: cannot load plays: {error:#}");
+                        warn!("history: cannot load plays: {error:#}");
                         this.state = HistoryState::Failed;
                     }
                 }
@@ -572,7 +586,7 @@ impl History {
         self.active = Some(key);
 
         let played_at = now();
-        track.added_at = Some(played_at / 1_000);
+        track.added_at = music::Timestamp::from_millisecond(played_at).ok();
         self.tracks.insert(0, track.clone());
         if self.task.is_some() {
             self.pending.push(track.clone());
@@ -592,8 +606,8 @@ impl History {
             .await;
             match saved {
                 Ok(Ok(())) => {}
-                Ok(Err(error)) => log::warn!("history: cannot save a play: {error:#}"),
-                Err(error) => log::warn!("history: save task failed: {error}"),
+                Ok(Err(error)) => warn!("history: cannot save a play: {error:#}"),
+                Err(error) => warn!("history: save task failed: {error}"),
             }
         });
     }
@@ -610,7 +624,7 @@ impl History {
         let track_id = track_id.to_owned();
         self.io.spawn(async move {
             if let Err(error) = client.report_play(&track_id).await {
-                log::warn!("history: cannot report the play to the provider: {error:#}");
+                warn!("history: cannot report the play to the provider: {error:#}");
             }
         });
     }
@@ -658,7 +672,7 @@ fn now() -> i64 {
 /// no more than `limit` plays come back.
 fn merge_recent(recent: Result<Vec<Track>>, mut local: Vec<Track>, limit: usize) -> Vec<Track> {
     let mut recent = recent.unwrap_or_else(|error| {
-        log::warn!("history: cannot load the provider's recently played: {error:#}");
+        warn!("history: cannot load the provider's recently played: {error:#}");
         Vec::new()
     });
     local.truncate(limit);

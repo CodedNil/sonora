@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::warn;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -123,12 +124,12 @@ impl MusicApi for YouTubeClient {
         let albums = match albums {
             Ok(albums) => albums,
             Err(error) => {
-                log::warn!("youtube: cannot read the discography of {artist_id}: {error:#}");
+                warn!("youtube: cannot read the discography of {artist_id}: {error:#}");
                 artist.albums.into_iter().chain(artist.singles).collect()
             }
         };
         let mut albums: Vec<Album> = albums.into_iter().map(wire::album).collect();
-        albums.sort_by(|left, right| right.release_date.cmp(&left.release_date));
+        albums.sort_by_key(|album| std::cmp::Reverse(album.release_date));
         let releases = stream::iter(albums)
             .map(|album| async move { (self.album_tracks(&album.id).await, album.id) })
             .buffered(ALBUM_READS)
@@ -137,14 +138,14 @@ impl MusicApi for YouTubeClient {
         match ranked {
             Ok(ranked) => tracks.extend(ranked),
             Err(error) => {
-                log::warn!("youtube: cannot read the songs of artist {artist_id}: {error:#}")
+                warn!("youtube: cannot read the songs of artist {artist_id}: {error:#}")
             }
         }
         for (read, album) in releases {
             match read {
                 Ok(songs) => tracks.extend(songs),
                 Err(error) => {
-                    log::warn!("youtube: cannot read the album {album}: {error:#}");
+                    warn!("youtube: cannot read the album {album}: {error:#}");
                 }
             }
         }
@@ -242,10 +243,6 @@ impl MusicApi for YouTubeClient {
             })
             .unwrap_or_default();
         Ok(track)
-    }
-
-    async fn track_playcount(&self, _track_id: &str) -> Result<Option<u64>> {
-        Ok(None)
     }
 
     async fn playlists(&self) -> Result<Vec<Playlist>> {
@@ -354,10 +351,6 @@ impl MusicApi for YouTubeClient {
         Ok(wire::album_detail(detail))
     }
 
-    async fn album_tracks(&self, album_id: &str) -> Result<Vec<Track>> {
-        Ok(self.album(album_id).await?.tracks)
-    }
-
     /// The artist's own releases without the album the page is already showing. Similar
     /// artists stay out: the client library reads no similarity off artist pages.
     async fn album_catalogue(
@@ -458,7 +451,7 @@ impl MusicApi for YouTubeClient {
             .search_playlists(query)
             .await?
             .into_iter()
-            .map(|playlist| wire::playlist(playlist, false, false))
+            .map(|playlist| wire::playlist(playlist, false))
             .collect())
     }
 
@@ -513,7 +506,7 @@ pub(crate) fn library_playlist(source: ytmusic::Playlist, account: &str) -> Opti
     if source.id == EPISODES {
         return None;
     }
-    let mut playlist = wire::playlist(source, false, false);
+    let mut playlist = wire::playlist(source, false);
     if playlist.owned && playlist.owner.is_empty() {
         playlist.owner = account.to_owned();
     }

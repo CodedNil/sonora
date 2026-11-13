@@ -2,12 +2,14 @@ pub mod auth;
 
 mod albums;
 mod artists;
+mod canvas;
 mod client;
 mod collection;
-mod collection2;
 mod connect;
+mod credits;
 mod links;
 mod lyrics;
+mod metadata;
 mod offline;
 mod pace;
 mod pathfinder;
@@ -21,6 +23,7 @@ mod sink;
 mod wire;
 
 use std::sync::Arc;
+use tracing::warn;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -123,7 +126,7 @@ impl MusicProvider for SpotifyProvider {
             return None;
         }
         let session = auth::session(&self.config)
-            .inspect_err(|error| log::warn!("spotify: cannot open an offline session: {error:#}"))
+            .inspect_err(|error| warn!("spotify: cannot open an offline session: {error:#}"))
             .ok()?;
         Some(Arc::new(Factory::offline(session)))
     }
@@ -155,7 +158,7 @@ impl MusicProvider for SpotifyProvider {
     fn sign_out(&self) {
         auth::forget(&self.config);
         if let Err(error) = crate::soloist::forget() {
-            log::warn!("spotify: cannot remove the soloist setup: {error:#}");
+            warn!("spotify: cannot remove the soloist setup: {error:#}");
         }
     }
 }

@@ -136,7 +136,7 @@ impl Render for JamInvite {
                     .action(
                         Button::new("join-jam")
                             .primary()
-                            .label(t!("devices-jam-invite-join"))
+                            .label(t!("common-join"))
                             .on_click(cx.listener(|this, _, window, cx| this.join(window, cx))),
                     )
                     .on_dismiss(cx.listener(|this, _, window, cx| this.decline(window, cx))),
@@ -252,7 +252,7 @@ impl Render for JamJoin {
                                     .secondary()
                                     .h(theme.metrics.field)
                                     .icon("icons/clipboard-paste.svg")
-                                    .label(t!("devices-jam-paste"))
+                                    .label(t!("common-paste"))
                                     .on_click(move |_, window, cx| {
                                         let Some(text) =
                                             cx.read_from_clipboard().and_then(|item| item.text())
@@ -276,7 +276,7 @@ impl Render for JamJoin {
                         Button::new("confirm-jam-join")
                             .primary()
                             .disabled(!ready)
-                            .label(t!("devices-jam-invite-join"))
+                            .label(t!("common-join"))
                             .on_click(cx.listener(|this, _, window, cx| this.join(window, cx))),
                     )
                     .on_dismiss(cx.listener(|this, _, window, cx| this.close(window, cx))),
@@ -531,7 +531,7 @@ pub(crate) fn faces(
                     .bg(theme.secondary)
                     .text_size(theme.text(Text::Tiny))
                     .text_color(theme.muted_foreground)
-                    .child(t!("devices-jam-more", count = more)),
+                    .child(t!("common-more-count", count = more)),
             )
         })
 }

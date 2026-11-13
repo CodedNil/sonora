@@ -6,6 +6,7 @@ mod playback;
 mod wire;
 
 use std::sync::Arc;
+use tracing::warn;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -54,18 +55,7 @@ impl SubsonicProvider {
             password,
             signature: Some(signature),
         })?;
-        Ok(ProviderSession {
-            profile,
-            api: Arc::new(client.clone()),
-            playback: Arc::new(Factory::new(client)),
-            shape: Shape::Catalog(Catalog::Fixed),
-            authenticated: true,
-            capabilities: Capabilities {
-                transcode: true,
-                playlist_covers: covers,
-                ..Capabilities::ALL
-            },
-        })
+        Ok(session(client, profile, covers))
     }
 
     async fn restore_stored() -> Result<Option<ProviderSession>> {
@@ -75,7 +65,7 @@ impl SubsonicProvider {
         if remembered.signature.is_none() {
             remembered.signature = Some(auth::sign(&remembered.username, &remembered.password));
             if let Err(error) = auth::store(&remembered) {
-                log::warn!("subsonic: cannot keep the cover signature: {error:#}");
+                warn!("subsonic: cannot keep the cover signature: {error:#}");
             }
         }
         let signature = remembered.signature.clone().unwrap_or_default();
@@ -85,25 +75,28 @@ impl SubsonicProvider {
             remembered.password.clone(),
             &signature,
         )?;
-        match client.profile().await {
-            Ok(profile) => Ok(Some(ProviderSession {
-                capabilities: Capabilities {
-                    transcode: true,
-                    playlist_covers: client.takes_playlist_covers().await,
-                    ..Capabilities::ALL
-                },
-                profile,
-                api: Arc::new(client.clone()),
-                playback: Arc::new(Factory::new(client)),
-                shape: Shape::Catalog(Catalog::Fixed),
-                authenticated: true,
-            })),
-            Err(error) if crate::trouble::offline(&format!("{error:#}")) => Err(error),
-            Err(error) => {
-                log::warn!("subsonic: the stored session is no longer usable: {error:#}");
-                Ok(None)
-            }
-        }
+        let Some(profile) = crate::credentials::restored("subsonic", client.profile().await)?
+        else {
+            return Ok(None);
+        };
+        let covers = client.takes_playlist_covers().await;
+        Ok(Some(session(client, profile, covers)))
+    }
+}
+
+/// Builds the same catalog and playback capabilities for fresh and restored accounts.
+fn session(client: SubsonicClient, profile: crate::UserProfile, covers: bool) -> ProviderSession {
+    ProviderSession {
+        profile,
+        api: Arc::new(client.clone()),
+        playback: Arc::new(Factory::new(client)),
+        shape: Shape::Catalog(Catalog::Fixed),
+        authenticated: true,
+        capabilities: Capabilities {
+            transcode: true,
+            playlist_covers: covers,
+            ..Capabilities::ALL
+        },
     }
 }
 
@@ -162,7 +155,7 @@ impl MusicProvider for SubsonicProvider {
             remembered.password,
             &signature,
         )
-        .inspect_err(|error| log::warn!("subsonic: cannot build an offline client: {error:#}"))
+        .inspect_err(|error| warn!("subsonic: cannot build an offline client: {error:#}"))
         .ok()?;
         Some(Arc::new(Factory::new(client)))
     }

@@ -9,6 +9,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash as _, Hasher as _};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::{debug, info, warn};
 
 use futures::{StreamExt as _, stream::SelectAll};
 use http::{HeaderMap, HeaderValue, Method, header::CONTENT_TYPE};
@@ -245,7 +246,7 @@ impl Worker {
                     Some(Ok(Incoming::Changes(changes))) => {
                         for event in changes { self.out.send(event).ok(); }
                     }
-                    Some(Err(error)) => log::warn!("connect: bad dealer update: {error}"),
+                    Some(Err(error)) => warn!("connect: bad dealer update: {error}"),
                     None => {}
                 },
                 () = acknowledge(self.rename_at) => {
@@ -293,7 +294,7 @@ impl Worker {
                 let sent = control(self.session.clone(), &device, command).await;
                 // a pick the other device refused plays here rather than going nowhere
                 if let Some(start) = start.filter(|_| !sent) {
-                    log::info!("connect: {device} did not take the pick, so it plays here");
+                    info!("connect: {device} did not take the pick, so it plays here");
                     self.out.send(Event::Command(Command::Start(start))).ok();
                 }
             }
@@ -304,10 +305,10 @@ impl Worker {
     /// moves the host's playback here the way it does for any transfer.
     async fn join(&mut self, link: &str) {
         if !self.enabled || !self.connected {
-            return log::warn!("connect: cannot join a jam while not listed as a device");
+            return warn!("connect: cannot join a jam while not listed as a device");
         }
         let Some(token) = jam_token(link).await else {
-            return log::warn!("connect: no jam token in the link");
+            return warn!("connect: no jam token in the link");
         };
         let endpoint = format!(
             "{JAM_JOIN}/{token}?playback_control=listen_and_control&join_type=deeplinking&local_device_id={}",
@@ -315,13 +316,13 @@ impl Worker {
         );
         match jam_read(&self.session, &Method::POST, &endpoint).await {
             Ok(Some(read)) => {
-                log::info!("connect: joined a jam");
+                info!("connect: joined a jam");
                 // the update that follows has the members, and this has them too when it reads
                 self.out.send(Event::Jam(Some(read.jam))).ok();
             }
             Ok(None) => {}
             Err(error) => {
-                log::warn!("connect: cannot join the jam: {error}");
+                warn!("connect: cannot join the jam: {error}");
                 self.out.send(Event::JamFailed).ok();
             }
         }
@@ -331,8 +332,8 @@ impl Worker {
     async fn current_jam(session: &Session) -> Result<Option<Jam>, Error> {
         let jam = Self::current_session(session).await?.map(|read| read.jam);
         match &jam {
-            Some(jam) => log::info!("connect: in a jam of {}", jam.members.len()),
-            None => log::info!("connect: not in a jam"),
+            Some(jam) => info!("connect: in a jam of {}", jam.members.len()),
+            None => info!("connect: not in a jam"),
         }
         Ok(jam)
     }
@@ -361,16 +362,16 @@ impl Worker {
 
     async fn peeked(&mut self, link: &str) -> Option<Invite> {
         if !self.enabled || !self.connected {
-            log::warn!("connect: cannot look up a jam while not listed as a device");
+            warn!("connect: cannot look up a jam while not listed as a device");
             return None;
         }
         let Some(token) = jam_token(link).await else {
-            log::warn!("connect: no jam token in the link");
+            warn!("connect: no jam token in the link");
             return None;
         };
         let read = jam_read(&self.session, &Method::GET, &format!("{JAM_INFO}/{token}"))
             .await
-            .inspect_err(|error| log::warn!("connect: cannot look up the jam: {error}"))
+            .inspect_err(|error| warn!("connect: cannot look up the jam: {error}"))
             .ok()??;
         Some(Invite {
             link: format!("{INVITE}{token}"),
@@ -382,7 +383,7 @@ impl Worker {
     /// The link to invite others with comes back in the `Event::Jam`.
     async fn start_jam(&mut self) {
         if !self.enabled || !self.connected {
-            return log::warn!("connect: cannot start a jam while not listed as a device");
+            return warn!("connect: cannot start a jam while not listed as a device");
         }
         // activate is what the desktop app asks for, and what has the session show in the others
         let endpoint = format!(
@@ -391,15 +392,15 @@ impl Worker {
         );
         match jam_read(&self.session, &Method::GET, &endpoint).await {
             Ok(Some(read)) => {
-                log::info!("connect: started a jam, link {}", read.jam.link.is_some());
+                info!("connect: started a jam, link {}", read.jam.link.is_some());
                 self.out.send(Event::Jam(Some(read.jam))).ok();
             }
             Ok(None) => {
-                log::warn!("connect: the jam that started cannot be read");
+                warn!("connect: the jam that started cannot be read");
                 self.out.send(Event::JamFailed).ok();
             }
             Err(error) => {
-                log::warn!("connect: cannot start a jam: {error}");
+                warn!("connect: cannot start a jam: {error}");
                 self.out.send(Event::JamFailed).ok();
             }
         }
@@ -412,7 +413,7 @@ impl Worker {
             Ok(Some(read)) if is_path_id(&read.id, "_-") => Some((read.id, read.jam.owner)),
             Ok(_) => None,
             Err(error) => {
-                log::warn!("connect: cannot read the jam to leave it: {error}");
+                warn!("connect: cannot read the jam to leave it: {error}");
                 return self.leave_failed().await;
             }
         };
@@ -435,7 +436,7 @@ impl Worker {
                 self.out.send(Event::Jam(None)).ok();
             }
             Err(error) => {
-                log::warn!("connect: cannot leave the jam: {error}");
+                warn!("connect: cannot leave the jam: {error}");
                 self.leave_failed().await;
             }
         }
@@ -455,13 +456,13 @@ impl Worker {
     async fn kick(&mut self, member: &str) {
         // the id goes into the path, so nothing else than what an id is made of is let through
         if !is_path_id(member, "._-") {
-            return log::warn!("connect: not a member id to remove");
+            return warn!("connect: not a member id to remove");
         }
         let id = match Self::current_session(&self.session).await {
             Ok(Some(read)) if read.jam.owner && is_path_id(&read.id, "_-") => read.id,
-            Ok(_) => return log::warn!("connect: only the owner of a jam can remove a member"),
+            Ok(_) => return warn!("connect: only the owner of a jam can remove a member"),
             Err(error) => {
-                return log::warn!("connect: cannot read the jam to remove from: {error}");
+                return warn!("connect: cannot read the jam to remove from: {error}");
             }
         };
         let endpoint = format!(
@@ -471,12 +472,12 @@ impl Worker {
         let answer = jam_request(&self.session, &Method::POST, &endpoint).await;
         match answer {
             Ok(_) => {
-                log::info!("connect: removed a member from the jam");
+                info!("connect: removed a member from the jam");
                 if let Ok(Some(read)) = Self::current_session(&self.session).await {
                     self.out.send(Event::Jam(Some(read.jam))).ok();
                 }
             }
-            Err(error) => log::warn!("connect: cannot remove the member: {error}"),
+            Err(error) => warn!("connect: cannot remove the member: {error}"),
         }
     }
 
@@ -486,10 +487,10 @@ impl Worker {
             return;
         };
         let Ok(json) = serde_json::from_str::<serde_json::Value>(&json) else {
-            return log::warn!("connect: unreadable jam update");
+            return warn!("connect: unreadable jam update");
         };
         let reason = json.get("reason").and_then(|reason| reason.as_str());
-        log::info!("connect: jam update {reason:?}");
+        info!("connect: jam update {reason:?}");
         let ended = matches!(
             reason,
             Some("SESSION_DELETED" | "YOU_LEFT" | "YOU_WERE_KICKED")
@@ -529,7 +530,7 @@ impl Worker {
         if put {
             self.put(PutStateReason::PLAYER_STATE_CHANGED).await;
         }
-        log::info!(
+        info!(
             "connect: moving playback, from here {}, state put {put}, held back {blocked}, at {:?}s, playing {:?}",
             from == mine,
             self.now.as_ref().map(|now| now.live_position().as_secs()),
@@ -541,7 +542,7 @@ impl Worker {
             let session = self.session.clone();
             self.session.spawn(async move {
                 if let Err(error) = move_playback(&session, &from, &to).await {
-                    log::warn!("connect: cannot move playback here: {error}");
+                    warn!("connect: cannot move playback here: {error}");
                 }
             });
             return;
@@ -549,13 +550,13 @@ impl Worker {
         let answer = move_playback(&self.session, &from, &to).await;
         match answer {
             Ok(_) => {
-                log::info!("connect: moved playback");
+                info!("connect: moved playback");
                 // the cluster naming the new device is no longer older than the claim
                 if from == mine && to != mine {
                     self.claimed_at = None;
                 }
             }
-            Err(error) => log::warn!("connect: cannot move playback: {error}"),
+            Err(error) => warn!("connect: cannot move playback: {error}"),
         }
     }
 
@@ -589,7 +590,7 @@ impl Worker {
             let wait = self.start_wait;
             self.start_wait = (wait * 2).min(START_LAST);
             self.start_at = Some(Instant::now() + wait);
-            log::warn!(
+            warn!(
                 "connect: cannot reach the dealer, trying again in {}s: {error}",
                 wait.as_secs()
             );
@@ -607,7 +608,7 @@ impl Worker {
         if let Err(error) = launched {
             self.streams = Subscriptions::new();
             self.launch_failed = true;
-            log::warn!("connect: cannot start the dealer, off until the next session: {error}");
+            warn!("connect: cannot start the dealer, off until the next session: {error}");
             self.drop_held();
         }
     }
@@ -645,7 +646,7 @@ impl Worker {
             true => "playback on another device",
             false => "no playback elsewhere",
         };
-        log::info!(
+        info!(
             "connect: listed, other devices: {}, {elsewhere}",
             roster.devices.len()
         );
@@ -655,7 +656,7 @@ impl Worker {
             Ok(jam) => {
                 self.out.send(Event::Jam(jam)).ok();
             }
-            Err(error) => log::warn!("connect: cannot read the jam: {error}"),
+            Err(error) => warn!("connect: cannot read the jam: {error}"),
         }
         // something may have been playing before the device was listed
         if self.now.is_some() {
@@ -670,7 +671,7 @@ impl Worker {
             return;
         }
         if let Err(error) = self.session.spclient().delete_connect_state_request().await {
-            log::warn!("connect: cannot leave the device list: {error}");
+            warn!("connect: cannot leave the device list: {error}");
         }
     }
 
@@ -692,7 +693,7 @@ impl Worker {
                     .put_connect_state_inactive(false)
                     .await
             {
-                log::warn!("connect: cannot go inactive: {error}");
+                warn!("connect: cannot go inactive: {error}");
             }
             return;
         };
@@ -766,14 +767,14 @@ impl Worker {
                 self.blocked_until = Some(until);
                 self.flush_at = Some(until);
                 self.hold(reason);
-                log::warn!(
+                warn!(
                     "connect: Spotify asked for fewer state updates, waiting {}s",
                     self.backoff.as_secs()
                 );
                 None
             }
             Err(error) => {
-                log::warn!("connect: cannot put the state: {error}");
+                warn!("connect: cannot put the state: {error}");
                 None
             }
         }
@@ -991,7 +992,7 @@ impl Worker {
 
     fn request(&mut self, (request, reply): RequestReply) {
         self.last_command = (request.message_id, request.sent_by_device_id.clone());
-        log::debug!("connect: asked, {}", request.command);
+        debug!("connect: asked, {}", request.command);
         if let Wire::Play(play) = request.command {
             self.play(*play);
             reply.send(Reply::Success).ok();
@@ -1030,7 +1031,7 @@ impl Worker {
         self.session.spawn(async move {
             match session.spclient().get_context(&uri).await {
                 Ok(context) => play.context.pages = context.pages,
-                Err(error) => log::warn!("connect: cannot read {uri} back: {error}"),
+                Err(error) => warn!("connect: cannot read {uri} back: {error}"),
             }
             out.send(Event::Command(Command::Start(started_by_play(&play))))
                 .ok();
@@ -1068,7 +1069,7 @@ impl Worker {
                 commands
             }
             Wire::AddToQueue(add) => {
-                log::debug!(
+                debug!(
                     "connect: a track was queued, it carries {:?}",
                     keys(&add.track)
                 );
@@ -1098,7 +1099,7 @@ impl Worker {
                 let fields = value
                     .as_object()
                     .map(|object| object.keys().collect::<Vec<_>>());
-                log::debug!("connect: unsupported player command, it carries {fields:?}");
+                debug!("connect: unsupported player command, it carries {fields:?}");
                 return None;
             }
         })
@@ -1151,7 +1152,7 @@ async fn control(session: Session, device: &str, command: Command) -> bool {
         ),
         command => {
             let Some(command) = wire_command(&command, &session.username()) else {
-                log::warn!("connect: nothing to send for {what}");
+                warn!("connect: nothing to send for {what}");
                 return true;
             };
             (
@@ -1172,7 +1173,7 @@ async fn control(session: Session, device: &str, command: Command) -> bool {
     match answer {
         Ok(_) => true,
         Err(error) => {
-            log::warn!("connect: cannot send {what} to {device}: {error}");
+            warn!("connect: cannot send {what} to {device}: {error}");
             false
         }
     }
@@ -1545,7 +1546,7 @@ fn listed(tracks: &[ProvidedTrack], limit: usize) -> Vec<QueuedTrack> {
         .take(limit)
         .collect::<Vec<_>>();
     if let Some(track) = tracks.iter().find(|track| track.provider == "queue") {
-        log::debug!("connect: a queued track carries {:?}", keys(track));
+        debug!("connect: a queued track carries {:?}", keys(track));
     }
     listed
 }
@@ -1721,7 +1722,7 @@ fn started_by_play(play: &PlayCommand) -> Start {
 
     // the same order librespot resolves a skip in: uri, then uid, then place
     let skip = play.options.skip_to.as_ref();
-    log::debug!(
+    debug!(
         "connect: play in {:?}, skip to {skip:?}, {} pages with {} tracks",
         play.context.uri.as_deref(),
         play.context.pages.len(),

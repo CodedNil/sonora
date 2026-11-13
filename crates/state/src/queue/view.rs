@@ -46,7 +46,7 @@ impl QueueSections {
         let kinds: Vec<_> = kinds.into_iter().collect();
         let mut slots = Vec::new();
         if past > 0 {
-            slots.push(QueueSlot::Header("queue-history"));
+            slots.push(QueueSlot::Header("nav-history"));
             slots.extend((0..past).map(|at| QueueSlot::Track(QueuePosition::Past(at))));
         }
         if current {

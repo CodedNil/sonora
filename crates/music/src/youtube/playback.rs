@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tracing::{debug, warn};
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -15,7 +16,6 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use ytmusic::{AudioStream, YtMusic};
 
-use crate::aac::Aac;
 use crate::audio::Trimmed;
 use crate::engine::{self, Fetch, Loudness};
 use crate::stream::{PREROLL, Plain, Reader, Source, Stream};
@@ -119,7 +119,7 @@ impl Source for AudioStream {
 #[async_trait]
 impl Fetch for YouTube {
     type Loaded = Loaded;
-    type Source = Trimmed<rodio::Decoder<Reader>>;
+    type Source = Trimmed<crate::decode::Decoder<Reader>>;
 
     fn name(&self) -> &'static str {
         "yt"
@@ -140,7 +140,7 @@ impl Fetch for YouTube {
         loop {
             match attempt_open(&self.api, id, self.ceiling, self.shelf.as_ref()).await {
                 Err(error) if attempt < ATTEMPTS && error.is::<tokio::time::error::Elapsed>() => {
-                    log::warn!("playback: {id} stalled, trying again: {error:#}");
+                    warn!("playback: {id} stalled, trying again: {error:#}");
                     attempt += 1;
                 }
                 result => return result,
@@ -202,15 +202,14 @@ impl Fetch for YouTube {
             Some(entry) => loaded.stream.spliced(entry.head, entry.graft),
             None => loaded.stream.reader(),
         };
-        let decoder = match rodio::Decoder::builder()
-            .with_symphonia_decoder::<Aac>()
+        let decoder = match crate::decode::Decoder::builder()
             .with_data(reader)
             .with_seekable(false)
             .build()
         {
             Ok(decoder) => decoder,
             Err(error) => {
-                log::warn!("playback: cannot decode the youtube track {id}: {error}");
+                warn!("playback: cannot decode the youtube track {id}: {error}");
                 return None;
             }
         };
@@ -234,17 +233,15 @@ impl YouTube {
             .find(id, &variant(self.ceiling))
             .await?;
         let facts = serde_json::from_slice::<Facts>(&kept.facts)
-            .inspect_err(|error| {
-                log::warn!("playback: the kept facts of {id} do not read: {error}")
-            })
+            .inspect_err(|error| warn!("playback: the kept facts of {id} do not read: {error}"))
             .ok()?;
         let stream = Stream::pulling(kept.source, Some(kept.length), Plain)
             .primed()
             .await
-            .inspect_err(|error| log::warn!("playback: the kept copy of {id} broke: {error:#}"))
+            .inspect_err(|error| warn!("playback: the kept copy of {id} broke: {error:#}"))
             .ok()?;
         let (segments, edit) = front(&stream);
-        log::debug!("playback: {id} started from the vault");
+        debug!("playback: {id} started from the vault");
         Some(Loaded {
             stream,
             segments: segments.map(Arc::new),
@@ -290,7 +287,7 @@ async fn attempt_open(
         .await
         .context("stream preroll timed out")??;
     let (segments, edit) = front(&stream);
-    log::debug!(
+    debug!(
         "playback: {id} started, itag {} {} {} kbps, {:.1} MiB, {} segments, in {:?}",
         format.itag,
         format.codec,
@@ -300,12 +297,11 @@ async fn attempt_open(
         started.elapsed()
     );
     match edit {
-        Some(edit) => log::debug!(
+        Some(edit) => debug!(
             "playback: {id} trims {:?} of priming, plays {:?}",
-            edit.skip,
-            edit.take
+            edit.skip, edit.take
         ),
-        None => log::debug!("playback: {id} carries no edit list"),
+        None => debug!("playback: {id} carries no edit list"),
     }
     Ok(Loaded {
         stream,

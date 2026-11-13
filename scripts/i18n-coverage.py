@@ -13,38 +13,30 @@ START = "<!-- i18n:start -->"
 END = "<!-- i18n:end -->"
 
 SOURCE = "en-US"
-ARM = re.compile(r"Self::(\w+) => \"([^\"]+)\",")
+LOCALE = re.compile(r'^\s*\(\w+, "([^"]+)", "([^"]+)"\),$', re.M)
 
 
 def shipped():
     source = LANGUAGES.read_text(encoding="utf-8")
-    blocks = {}
-    for name in ("id", "label"):
-        match = re.search(rf"fn {name}\(self\) -> &'static str \{{(.*?)\n    \}}", source, re.S)
-        if not match:
-            sys.exit(f"cannot find Language::{name} in {LANGUAGES}")
-        blocks[name] = dict(ARM.findall(match.group(1)))
-
-    ids, labels = blocks["id"], blocks["label"]
-    missing = set(ids) - set(labels)
-    if missing:
-        sys.exit(f"Language::label is missing {sorted(missing)}")
-
-    return [(ids[variant], labels[variant]) for variant in ids]
+    locales = LOCALE.findall(source)
+    if not locales:
+        sys.exit(f"cannot find the shipped locales in {LANGUAGES}")
+    return locales
 
 
 def keys(locale):
-    path = LOCALES / locale / "main.ftl"
-    if not path.is_file():
-        sys.exit(f"cannot find {path}")
+    paths = sorted((LOCALES / locale).glob("*.ftl"))
+    if not paths:
+        sys.exit(f"cannot find Fluent resources for {locale}")
 
     found = set()
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line or line[0] in " #.*[" or " =" not in line:
-            continue
-        key = line.split(" =", 1)[0]
-        if key and not key.startswith("-"):
-            found.add(key)
+    for path in paths:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line or line[0] in " #.*[" or " =" not in line:
+                continue
+            key = line.split(" =", 1)[0]
+            if key and not key.startswith("-"):
+                found.add(key)
     return found
 
 

@@ -22,6 +22,9 @@ use std::path::PathBuf;
 use std::process::{ExitCode, exit};
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::error;
+#[cfg(target_os = "macos")]
+use tracing::warn;
 
 use cli::commands::CommandType;
 use gpui::{
@@ -45,6 +48,8 @@ const FIRST_SIZE: Size<Pixels> = size(px(920.), px(640.));
 const OPEN_COALESCE: Duration = Duration::from_millis(250);
 
 fn main() -> ExitCode {
+    #[cfg(target_os = "linux")]
+    configure_vulkan();
     memory::tune();
     if let Some(code) = webview::probed() {
         exit(code);
@@ -54,7 +59,7 @@ fn main() -> ExitCode {
     if let Some(module) = music::drm::hosted() {
         logging::console();
         if let Err(error) = music::drm::host(&module) {
-            log::error!("widevine: the cdm host failed: {error:#}");
+            error!("widevine: the cdm host failed: {error:#}");
             exit(1);
         }
         return ExitCode::SUCCESS;
@@ -116,7 +121,7 @@ fn main() -> ExitCode {
         #[cfg(target_os = "macos")]
         dock::install_icon();
         if let Err(error) = assets::Assets.load_fonts(cx) {
-            log::error!("sonora: cannot load bundled fonts: {error:#}");
+            error!("sonora: cannot load bundled fonts: {error:#}");
         }
 
         let database = storage::Database::standard();
@@ -257,6 +262,27 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// D3D12's Vulkan driver needs WSL's dxg device. Skip it on native Linux unless the user
+/// explicitly chose Vulkan drivers, avoiding loader errors while leaving all other ICDs available.
+#[cfg(target_os = "linux")]
+fn configure_vulkan() {
+    if std::path::Path::new("/dev/dxg").exists()
+        || [
+            "VK_DRIVER_FILES",
+            "VK_ICD_FILENAMES",
+            "VK_ADD_DRIVER_FILES",
+            "VK_LOADER_DRIVERS_SELECT",
+            "VK_LOADER_DRIVERS_DISABLE",
+        ]
+        .iter()
+        .any(|key| std::env::var_os(key).is_some())
+    {
+        return;
+    }
+    // SAFETY: called at the beginning of main before Sonora starts any threads.
+    unsafe { std::env::set_var("VK_LOADER_DRIVERS_DISABLE", "*dzn*") };
+}
+
 /// Opens what a launch or a hand-off passed: a provider's link opens on that provider, and
 /// anything else is read as a file to play. An address no provider knows is refused with a
 /// toast rather than tried as a file.
@@ -309,32 +335,10 @@ fn show_window(cx: &mut App) {
 fn open_window(cx: &mut App) {
     let Sonora {
         session,
-        control: _,
-        cover: _,
-        devices: _,
-        downloads: _,
-        drm: _,
-        soloist: _,
-        equalizer: _,
         library,
-        links: _,
-        listening: _,
-        history: _,
-        lyrics: _,
-        network: _,
-        outputs: _,
-        pins: _,
         playback,
-        potoken: _,
         queue,
-        requirements: _,
-        scan: _,
-        scrobbling: _,
-        settings: _,
-        signal: _,
-        updates: _,
-        usage: _,
-        wake: _,
+        ..
     } = Sonora::global(cx);
     let (session, library, playback, queue) = (
         session.clone(),
@@ -449,7 +453,7 @@ fn set_toolbar_style(window: &gpui::Window, rounding: ui::Rounding) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     let Some(mtm) = MainThreadMarker::new() else {
-        return log::warn!("window: toolbar style changed off the main thread");
+        return warn!("window: toolbar style changed off the main thread");
     };
     let Ok(RawWindowHandle::AppKit(handle)) =
         HasWindowHandle::window_handle(window).map(|handle| handle.as_raw())

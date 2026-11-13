@@ -9,6 +9,7 @@ mod wire;
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
+use tracing::{debug, info, warn};
 
 use gpui::{App, Context, Entity, Task};
 use music::Track;
@@ -379,7 +380,7 @@ impl Listening {
                         Toasts::show(Outcome::Done, "toast-sessions-server-saved", cx);
                     }
                     Ok(Err(error)) => {
-                        log::info!("listening: {socket} did not pass its health check: {error:#}");
+                        info!("listening: {socket} did not pass its health check: {error:#}");
                         this.rejected = true;
                         Toasts::show(Outcome::Failed, "toast-sessions-server-silent", cx);
                     }
@@ -464,7 +465,7 @@ impl Listening {
                 }
                 self.checking = Some(self.check_every(cx));
                 if first {
-                    log::info!("listening: joined a session");
+                    info!("listening: joined a session");
                 }
             }
             Reply::Members { members } => {
@@ -482,7 +483,7 @@ impl Listening {
                     return;
                 }
                 if self.echoed < self.sent {
-                    log::debug!("listening: passing over a state older than our own");
+                    debug!("listening: passing over a state older than our own");
                     return;
                 }
                 self.shared = Some(state.clone());
@@ -507,7 +508,7 @@ impl Listening {
     /// the log, since the session carries on.
     fn refused(&mut self, reason: Reason, provider: Option<String>, cx: &mut Context<Self>) {
         if !self.asking {
-            log::warn!("listening: the server refused a request: {reason:?}");
+            warn!("listening: the server refused a request: {reason:?}");
             return;
         }
         let rejoining = self.room.is_some();
@@ -552,7 +553,7 @@ impl Listening {
         let wait = Duration::from_secs(1 << self.retries.min(4));
         self.retries += 1;
         self.asking = false;
-        log::info!("listening: connection lost, trying again in {wait:?}");
+        info!("listening: connection lost, trying again in {wait:?}");
         self.retry = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(wait).await;
             this.update(cx, |this, cx| {
@@ -624,7 +625,7 @@ impl Listening {
         if self.session.read(cx).provider_slug() == Some(provider.as_str()) {
             return;
         }
-        log::info!("listening: switching to {provider} for the session");
+        info!("listening: switching to {provider} for the session");
         self.session
             .update(cx, |session, cx| session.switch(&provider, cx));
     }
@@ -677,7 +678,7 @@ impl Listening {
         self.playback.update(cx, |playback, cx| {
             playback.locally(cx, |playback, cx| {
                 if current.as_deref() != Some(id.as_str()) {
-                    log::info!("listening: playing {id} from {at:?} for the session");
+                    info!("listening: playing {id} from {at:?} for the session");
                     if queue.read(cx).shuffle() {
                         queue.update(cx, |queue, cx| queue.set_shuffle(false, cx));
                     }
@@ -723,7 +724,7 @@ impl Listening {
             .chosen_upcoming()
             .next()
             .and_then(|track| track.id.as_deref());
-        let Some(total) = queue.current().map(|track| track.duration) else {
+        let Some(total) = queue.current().and_then(|track| track.duration) else {
             return false;
         };
         let near = !total.is_zero() && total.saturating_sub(playback.live_position()) < LATE;
@@ -784,11 +785,9 @@ impl Listening {
             false => 0,
         };
         self.sent += 1;
-        log::debug!(
+        debug!(
             "listening: sharing {:?} for its {reason}, playing {}, at {} ms",
-            mark.track,
-            state.playing,
-            state.position
+            mark.track, state.playing, state.position
         );
         if let Some(link) = &self.link {
             link.send(Request::State {
@@ -887,7 +886,7 @@ impl Listening {
         if drift <= tolerance {
             return;
         }
-        log::info!("listening: {drift:?} out of step, seeking to {at:?}");
+        info!("listening: {drift:?} out of step, seeking to {at:?}");
         self.playback.update(cx, |playback, cx| {
             playback.locally(cx, |playback, cx| playback.seek(at, cx))
         });
@@ -897,7 +896,7 @@ impl Listening {
     /// Where the session's track is now, going by when the server took `state`.
     fn expected(&self, state: &Shared) -> Duration {
         let at = self.unclamped(state);
-        match state.track.as_ref().map(|track| track.duration) {
+        match state.track.as_ref().and_then(|track| track.duration) {
             Some(total) if !total.is_zero() => at.min(total),
             _ => at,
         }
@@ -916,7 +915,7 @@ impl Listening {
         state
             .track
             .as_ref()
-            .map(|track| track.duration)
+            .and_then(|track| track.duration)
             .is_some_and(|total| !total.is_zero() && self.unclamped(state) >= total)
     }
 

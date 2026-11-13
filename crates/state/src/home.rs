@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::warn;
 
 use gpui::{App, Context, Entity, Task};
 use music::{GenreItem, GenreSection, HomeFeed, MusicApi, Track};
@@ -200,7 +201,7 @@ impl Home {
             let mut feed = match opened {
                 Ok(feed) => feed,
                 Err(error) => {
-                    log::warn!("home: cannot load the feed: {error:#}");
+                    warn!("home: cannot load the feed: {error:#}");
                     this.update(cx, |this, cx| {
                         this.error = Some(crate::blamed(&error, cx));
                         this.fed(cx);
@@ -216,7 +217,7 @@ impl Home {
                     match lot {
                         Ok(feed) => this.land(feed, cx),
                         Err(error) => {
-                            log::warn!("home: cannot load the feed: {error:#}");
+                            warn!("home: cannot load the feed: {error:#}");
                             this.error = Some(crate::blamed(&error, cx));
                         }
                     }
@@ -514,7 +515,7 @@ mod tests {
                 name: format!("Artist {artist}"),
                 id: Some(format!("artist-{artist}")),
             }],
-            duration: Duration::from_secs(180),
+            duration: Some(Duration::from_secs(180)),
             ..Default::default()
         }
     }

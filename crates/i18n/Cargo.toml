@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 fluent-bundle.workspace = true
 gpui.workspace = true
-log.workspace = true
+tracing.workspace = true
 sys-locale.workspace = true
 unic-langid.workspace = true
 

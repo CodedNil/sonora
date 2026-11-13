@@ -53,7 +53,13 @@ impl EqualizerView {
         div()
             .flex()
             .flex_col()
-            .child(heading("equalizer-rules", ICON, None, cx))
+            .child(heading(
+                "equalizer-rules",
+                "equalizer-rules",
+                ICON,
+                None,
+                cx,
+            ))
             .when(!rows.is_empty(), |group| {
                 group.child(
                     div()
@@ -306,7 +312,7 @@ impl EqualizerView {
                 .as_ref()
                 .map_or_else(|| t!("equalizer-rule-choose-sound"), sound_label),
         )
-        .name(t!("equalizer-sound"))
+        .name(t!("settings-page-sound"))
         .when_some(shape, Picker::leading)
         .left()
         .width(Picker::REGULAR)

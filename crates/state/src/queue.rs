@@ -1,11 +1,10 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::{Rc, Weak};
-use std::time::Duration;
 
 use gpui::{App, Context, Entity};
+use music::Track;
 use music::connect::QueuedTrack;
-use music::{ArtistRef, Track};
 use serde::{Deserialize, Serialize};
 
 use crate::{AppSettings, Origin, Outcome, Session, SessionEvent, Toast, Toasts};
@@ -17,48 +16,31 @@ const PAST_LIMIT: usize = 500;
 const KEPT_PAST: usize = 20;
 const KEPT_UPCOMING: usize = 200;
 
+/// A bounded queue snapshot with playback position and deduplicated collection origins.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Resume {
     pub(crate) provider: String,
     pub(crate) position: f32,
-    /// The one origin older versions saved for the whole queue, read only to restore such a queue.
-    #[serde(skip_serializing)]
-    pub(crate) origin: Option<Origin>,
     /// The collections the saved tracks were queued from. Each stub points into this list.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) origins: Vec<Origin>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) current: Option<Stub>,
+    pub(crate) current: Option<SavedEntry>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) past: Vec<Stub>,
+    pub(crate) past: Vec<SavedEntry>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) upcoming: Vec<Stub>,
-    /// Legacy boundary, read only to migrate queues saved before per-song provenance.
-    #[serde(skip_serializing)]
-    pub(crate) manual: usize,
+    pub(crate) upcoming: Vec<SavedEntry>,
 }
 
+/// A queue occurrence saved with the complete shared track model and its provenance.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Stub {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    pub(crate) artists: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) credited: Vec<ArtistRef>,
-    pub(crate) album: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) album_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) cover: Option<String>,
-    pub(crate) seconds: f32,
-    pub(crate) explicit: bool,
-    /// Which of the resume's `origins` the track was queued from.
-    #[serde(skip_serializing_if = "Option::is_none")]
+pub struct SavedEntry {
+    pub(crate) track: Track,
+    /// Index of this occurrence's collection in the resume's origin list.
     pub(crate) from: Option<usize>,
-    /// Provenance survives saving and replaying history.
-    #[serde(skip_serializing_if = "QueueKind::is_context")]
+    /// Why this occurrence appears in the queue.
+    #[serde(default)]
     pub(crate) kind: QueueKind,
 }
 
@@ -119,10 +101,6 @@ pub enum QueueKind {
 }
 
 impl QueueKind {
-    fn is_context(&self) -> bool {
-        *self == Self::Context
-    }
-
     pub fn heading(self) -> &'static str {
         match self {
             Self::Context => "queue-up-next",
@@ -183,36 +161,14 @@ struct Taken {
     batch: u64,
 }
 
-fn stub(track: &Track) -> Option<Stub> {
-    Some(Stub {
-        id: track.id.clone()?,
-        name: track.name.clone(),
-        artists: track.artists.clone(),
-        credited: track.artist_refs.clone(),
-        album: track.album.clone(),
-        album_id: track.album_id.clone(),
-        cover: track.cover.clone(),
-        seconds: track.duration.as_secs_f32(),
-        explicit: track.explicit,
+/// Saves identified tracks without maintaining a second, lossy metadata model.
+fn stub(track: &Track) -> Option<SavedEntry> {
+    track.id.as_ref()?;
+    Some(SavedEntry {
+        track: track.clone(),
         from: None,
         kind: QueueKind::Context,
     })
-}
-
-fn hydrate(stub: Stub) -> Track {
-    Track {
-        id: Some(stub.id),
-        name: stub.name,
-        playable: true,
-        artists: stub.artists,
-        artist_refs: stub.credited,
-        album: stub.album,
-        album_id: stub.album_id,
-        cover: stub.cover,
-        duration: Duration::from_secs_f32(stub.seconds.max(0.)),
-        explicit: stub.explicit,
-        ..Default::default()
-    }
 }
 
 /// Snapshots provenance and collection metadata for the next launch, omitting suggestions.
@@ -250,12 +206,10 @@ fn record<'a>(
     Resume {
         provider: provider.to_owned(),
         position: 0.,
-        origin: None,
         origins,
         current,
         past,
         upcoming,
-        manual: 0,
     }
 }
 
@@ -543,30 +497,17 @@ impl Queue {
             .update(cx, |settings, cx| settings.set_resume(resume, cx));
     }
 
-    /// Restores a saved queue. A queue saved by an older version has one origin for all of it,
-    /// which goes to every track except the ones queued by hand.
+    /// Restores the saved tracks and each occurrence's origin and queue placement.
     pub(crate) fn revive(&mut self, resume: Resume, cx: &mut Context<Self>) -> Option<Track> {
         let origins = resume.origins;
-        let entry = |stub: Stub| {
+        let entry = |stub: SavedEntry| {
             let kind = stub.kind;
             let origin = stub.from.and_then(|index| origins.get(index).cloned());
-            Entry::new(hydrate(stub), origin, kind)
+            Entry::new(stub.track, origin, kind)
         };
         self.past = resume.past.into_iter().map(entry).collect();
         self.current = resume.current.map(entry);
         self.upcoming = resume.upcoming.into_iter().map(entry).collect();
-        for entry in self.upcoming.iter_mut().take(resume.manual) {
-            entry.kind = QueueKind::Queued;
-        }
-        self.suggested += 1;
-        if let Some(origin) = resume.origin {
-            self.past
-                .iter_mut()
-                .chain(self.current.as_mut())
-                .chain(self.upcoming.iter_mut())
-                .filter(|entry| entry.kind == QueueKind::Context)
-                .for_each(|entry| entry.origin = Some(origin.clone()));
-        }
         self.source = source_of(
             self.past
                 .iter()
@@ -669,6 +610,11 @@ impl Queue {
     /// The full upcoming play order, including recommendations.
     pub fn upcoming(&self) -> impl ExactSizeIterator<Item = &Track> {
         self.upcoming.iter().map(|entry| entry.track.as_ref())
+    }
+
+    /// Stable occurrence keys for queue-row reorder animations.
+    pub fn upcoming_keys(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.upcoming.iter().map(|entry| entry.uid.as_str())
     }
 
     /// How many songs are left to play before the recommendations.
@@ -1366,8 +1312,8 @@ mod tests {
     use music::{ArtistRef, Track};
 
     use super::{
-        Entry, gap_target, hydrate, in_order, local, move_item, record, restore, scramble,
-        select_past, select_upcoming, sift, stub, trim,
+        Entry, gap_target, in_order, local, move_item, record, restore, scramble, select_past,
+        select_upcoming, sift, stub, trim,
     };
 
     fn track(id: &str) -> Track {
@@ -1375,7 +1321,7 @@ mod tests {
             id: Some(id.to_owned()),
             name: id.to_owned(),
             playable: true,
-            duration: Duration::from_secs(180),
+            duration: Some(Duration::from_secs(180)),
             ..Default::default()
         }
     }
@@ -1626,7 +1572,9 @@ mod tests {
 
         let saved = stub(&source).expect("a track with an id");
         let json = serde_json::to_string(&saved).expect("a serializable stub");
-        let restored = hydrate(serde_json::from_str(&json).expect("a readable stub"));
+        let restored = serde_json::from_str::<super::SavedEntry>(&json)
+            .expect("a readable entry")
+            .track;
 
         assert_eq!(restored.id, source.id);
         assert_eq!(restored.name, source.name);
@@ -1659,15 +1607,26 @@ mod tests {
 
         assert_eq!(resume.provider, "spotify");
         assert_eq!(resume.position, 0.);
-        assert_eq!(resume.current.map(|stub| stub.id), Some("now".to_owned()));
+        assert_eq!(
+            resume.current.and_then(|stub| stub.track.id),
+            Some("now".to_owned())
+        );
         assert_eq!(resume.past.len(), 20);
-        assert_eq!(resume.past.first().map(|stub| stub.id.as_str()), Some("40"));
+        assert_eq!(
+            resume
+                .past
+                .first()
+                .and_then(|stub| stub.track.id.as_deref()),
+            Some("40")
+        );
         assert_eq!(resume.upcoming.len(), 200);
         assert_eq!(resume.upcoming[0].kind, super::QueueKind::Context);
         assert_eq!(resume.upcoming[1].kind, super::QueueKind::Queued);
-        assert_eq!(resume.manual, 0);
         assert_eq!(
-            resume.upcoming.first().map(|stub| stub.id.as_str()),
+            resume
+                .upcoming
+                .first()
+                .and_then(|stub| stub.track.id.as_deref()),
             Some("0")
         );
     }

@@ -128,18 +128,18 @@ impl Render for Page {
             ("toast-action", "With action", |_, cx| {
                 let toast = Toast::new(Outcome::Plain, "toast-sample-event")
                     .detail(t!("toast-sample-event-detail"))
-                    .action("toast-sample-undo", undo);
+                    .action("common-undo", undo);
                 Toasts::post(toast, cx);
             }),
             ("toast-cancel", "Action and cancel", |_, cx| {
                 let toast = Toast::new(Outcome::Plain, "toast-sample-delete")
                     .name(NAME)
-                    .cancel("toast-sample-cancel", |_| {})
-                    .action("toast-sample-undo", undo);
+                    .cancel("common-cancel", |_| {})
+                    .action("common-undo", undo);
                 Toasts::post(toast, cx);
             }),
             ("toast-name", "With a name", |_, cx| {
-                Toasts::about(Outcome::Done, "toast-sample-queued", NAME, cx)
+                Toasts::about(Outcome::Done, "toast-queued-track", NAME, cx)
             }),
             ("toast-long", "Long message", |_, cx| {
                 Toasts::show(Outcome::Info, "toast-sample-long", cx)

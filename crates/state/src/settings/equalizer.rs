@@ -4,6 +4,7 @@
 //! whole file unreadable.
 
 use std::collections::HashSet;
+use tracing::{info, warn};
 
 use anyhow::{Context as _, Result};
 use gpui::{Context, SharedString};
@@ -116,7 +117,7 @@ impl Values {
                 false => Some(Sound::Profile(profile.name.clone())),
             };
             let Some(sound) = sound else {
-                log::warn!(
+                warn!(
                     "settings: dropping the outputs bound to the unnamed equalizer profile, whose curve is no preset"
                 );
                 continue;
@@ -131,7 +132,7 @@ impl Values {
             }));
         }
         if !migrated.is_empty() {
-            log::info!(
+            info!(
                 "settings: made {} equalizer output bindings into device rules; the bindings are dropped the next time settings are saved",
                 migrated.len()
             );
@@ -152,7 +153,7 @@ impl Values {
             }
         }
         if upgraded > 0 {
-            log::info!(
+            info!(
                 "settings: moved {upgraded} equalizer device rules to their output's current key; the old keys are dropped the next time settings are saved"
             );
         }
@@ -165,7 +166,7 @@ impl Values {
         let profiles = &self.equalizer_profiles;
         self.equalizer_rules.retain(|rule| {
             if !seen.insert(rule.device.id().map(str::to_owned)) {
-                log::warn!(
+                warn!(
                     "settings: a device has two equalizer rules, keeping the first; the second is dropped the next time settings are saved"
                 );
                 return false;
@@ -175,7 +176,7 @@ impl Values {
             };
             let stored = profiles.iter().any(|profile| profile.name == *name);
             if !stored {
-                log::warn!(
+                warn!(
                     "settings: dropping an equalizer rule for {name:?}, which is no stored profile; it is gone the next time settings are saved"
                 );
             }
@@ -200,7 +201,7 @@ impl Profile {
     ) -> Result<Vec<Self>, D::Error> {
         let value = serde_json::Value::deserialize(deserializer)?;
         let serde_json::Value::Array(items) = value else {
-            log::warn!(
+            warn!(
                 "settings: equalizer_profiles is not a list, starting over with one; the stored value is replaced the next time settings are saved"
             );
             return Ok(Vec::new());
@@ -210,7 +211,7 @@ impl Profile {
 
     fn read(value: serde_json::Value) -> Option<Self> {
         let serde_json::Value::Object(mut fields) = value else {
-            log::warn!(
+            warn!(
                 "settings: dropping an equalizer profile that is not an object; it is gone the next time settings are saved"
             );
             return None;
@@ -220,10 +221,10 @@ impl Profile {
             profile.name = name;
         }
         match profile_field(&mut fields, "preamp") {
-            Some(StoredPreamp::Decibels(db)) if !PREAMP_RANGE.contains(&db) => log::warn!(
+            Some(StoredPreamp::Decibels(db)) if !PREAMP_RANGE.contains(&db) => warn!(
                 "settings: equalizer preamp {db} dB is outside {PREAMP_RANGE:?}, taking auto; the stored value is replaced the next time settings are saved"
             ),
-            Some(StoredPreamp::Word(word)) if word != "auto" => log::warn!(
+            Some(StoredPreamp::Word(word)) if word != "auto" => warn!(
                 "settings: equalizer preamp {word:?} is not a number nor auto, taking auto; the stored value is replaced the next time settings are saved"
             ),
             Some(preamp) => profile.preamp = preamp,
@@ -239,7 +240,7 @@ impl Profile {
                     .and_then(|filter| filter.parse())
                     .map(|filter| StoredFilter::of(&filter))
                     .map_err(|error| {
-                        log::warn!(
+                        warn!(
                             "settings: dropping an equalizer filter, gone the next time settings are saved: {error:#}"
                         );
                     })
@@ -253,7 +254,7 @@ impl Profile {
             .filter_map(|output| match serde_json::from_value::<OutputId>(output) {
                 Ok(output) if !output.id.is_empty() => Some(output),
                 _ => {
-                    log::warn!(
+                    warn!(
                         "settings: dropping an equalizer profile's output that has no id and name, gone the next time settings are saved"
                     );
                     None
@@ -262,7 +263,7 @@ impl Profile {
             .collect();
         profile.other_outputs = profile_field(&mut fields, "other_outputs").unwrap_or(false);
         if profile.filters.len() > MAX_FILTERS {
-            log::warn!(
+            warn!(
                 "settings: dropping {} equalizer filters past the first {MAX_FILTERS}",
                 profile.filters.len() - MAX_FILTERS
             );
@@ -627,7 +628,7 @@ pub(super) fn read_rules<'de, D: Deserializer<'de>>(
 ) -> Result<Vec<DeviceRule>, D::Error> {
     let value = serde_json::Value::deserialize(deserializer)?;
     let serde_json::Value::Array(items) = value else {
-        log::warn!(
+        warn!(
             "settings: equalizer_rules is not a list, starting with none; the stored value is replaced the next time settings are saved"
         );
         return Ok(Vec::new());
@@ -637,7 +638,7 @@ pub(super) fn read_rules<'de, D: Deserializer<'de>>(
         .filter_map(|item| {
             let rule = read_rule(&item);
             if rule.is_none() {
-                log::warn!(
+                warn!(
                     "settings: dropping the equalizer rule {item}, which needs an output and a known preset or a profile name; it is gone the next time settings are saved"
                 );
             }
@@ -673,7 +674,7 @@ pub(super) fn write_rules<S: Serializer>(
 pub(super) fn read_gains<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<f32>, D::Error> {
     let value = serde_json::Value::deserialize(deserializer)?;
     let serde_json::Value::Array(gains) = value else {
-        log::warn!(
+        warn!(
             "settings: equalizer_bands {value} is not a list, ignoring it; the key is dropped the next time settings are saved"
         );
         return Ok(Vec::new());
@@ -683,7 +684,7 @@ pub(super) fn read_gains<'de, D: Deserializer<'de>>(deserializer: D) -> Result<V
         .map(|gain| match gain.as_f64() {
             Some(gain) => gain as f32,
             None => {
-                log::warn!(
+                warn!(
                     "settings: equalizer band {gain} is not a number, taking 0 dB; equalizer_bands is dropped the next time settings are saved"
                 );
                 0.
@@ -700,7 +701,7 @@ fn profile_field<T: DeserializeOwned>(
 ) -> Option<T> {
     serde_json::from_value(fields.remove(key)?)
         .map_err(|error| {
-            log::warn!(
+            warn!(
                 "settings: an equalizer profile's {key} does not read, taking the default; the stored value is replaced the next time settings are saved: {error}"
             );
         })
@@ -733,7 +734,7 @@ pub(super) fn read_tone<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f6
     let value = serde_json::Value::deserialize(deserializer)?;
     let gain = value.as_f64();
     if gain.is_none() {
-        log::warn!(
+        warn!(
             "settings: equalizer tone gain {value} is not a number, taking 0 dB; the stored value is replaced the next time settings are saved"
         );
     }
@@ -743,7 +744,7 @@ pub(super) fn read_tone<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f6
 pub(super) fn read_index<'de, D: Deserializer<'de>>(deserializer: D) -> Result<usize, D::Error> {
     let value = serde_json::Value::deserialize(deserializer)?;
     if !value.is_number() {
-        log::warn!(
+        warn!(
             "settings: equalizer_profile {value} is not a number, taking the first; the stored value is replaced the next time settings are saved"
         );
     }

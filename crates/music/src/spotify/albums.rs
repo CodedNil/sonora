@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use tracing::warn;
 
 use anyhow::{Context as _, Result};
 use librespot_core::Session;
@@ -8,7 +9,7 @@ use librespot_protocol::metadata::album::Type as AlbumType;
 use librespot_protocol::metadata::copyright::Type as CopyrightType;
 use protobuf::Message as _;
 
-use crate::spotify::{collection, collection2, pathfinder, wire};
+use crate::spotify::{collection, metadata, pathfinder, wire};
 use crate::{Album, AlbumDetail, ReleaseType, Track};
 
 const ALBUM_PREFIX: &str = "spotify:album:";
@@ -16,7 +17,7 @@ const TRACK_PREFIX: &str = "spotify:track:";
 const UNKNOWN: &str = "Unknown";
 
 pub async fn saved_albums(session: &Session) -> Result<Vec<Album>> {
-    let items = collection2::saved_items(session, collection2::COLLECTION, ALBUM_PREFIX).await?;
+    let items = collection::saved_items(session, collection::COLLECTION, ALBUM_PREFIX).await?;
     if items.is_empty() {
         return Ok(Vec::new());
     }
@@ -35,8 +36,11 @@ pub async fn saved_albums(session: &Session) -> Result<Vec<Album>> {
 
 pub async fn album(session: &Session, album_id: &str) -> Result<AlbumDetail> {
     match pathfinder::album(session, album_id).await {
-        Ok(album) => return Ok(album),
-        Err(error) => log::warn!("albums: cannot load Pathfinder album: {error:#}"),
+        Ok(mut album) => {
+            metadata::enrich(session, &mut album.tracks).await;
+            return Ok(album);
+        }
+        Err(error) => warn!("albums: cannot load Pathfinder album: {error:#}"),
     }
 
     legacy_album(session, album_id).await
@@ -44,27 +48,18 @@ pub async fn album(session: &Session, album_id: &str) -> Result<AlbumDetail> {
 
 async fn legacy_album(session: &Session, album_id: &str) -> Result<AlbumDetail> {
     let uri = format!("{ALBUM_PREFIX}{album_id}");
-    let message =
-        collection::extended(session, std::slice::from_ref(&uri), ExtensionKind::ALBUM_V4)
-            .await
-            .context("cannot read album metadata")?
-            .into_iter()
-            .find_map(|entity| AlbumMessage::parse_from_bytes(&entity.extension_data.value).ok())
-            .context("album metadata is missing")?;
+    let message = metadata::extended(session, std::slice::from_ref(&uri), ExtensionKind::ALBUM_V4)
+        .await
+        .context("cannot read album metadata")?
+        .into_iter()
+        .find_map(|entity| AlbumMessage::parse_from_bytes(&entity.extension_data.value).ok())
+        .context("album metadata is missing")?;
     let album = album_from(&uri, &message);
     let uris: Vec<_> = track_ids(&message)
         .into_iter()
         .map(|id| format!("{TRACK_PREFIX}{id}"))
         .collect();
-    let tracks = match uris.is_empty() {
-        true => Vec::new(),
-        false => {
-            let known = collection::metadata(session, &uris).await?;
-            uris.iter()
-                .filter_map(|uri| known.get(uri).cloned())
-                .collect()
-        }
-    };
+    let tracks = metadata::ordered(session, &uris).await?;
     Ok(AlbumDetail { album, tracks })
 }
 
@@ -77,7 +72,7 @@ fn track_ids(album: &AlbumMessage) -> Vec<String> {
         .disc
         .iter()
         .flat_map(|disc| disc.track.iter())
-        .filter_map(|track| collection::base62(track.gid.as_ref()?))
+        .filter_map(|track| metadata::base62(track.gid.as_ref()?))
         .collect()
 }
 
@@ -88,7 +83,7 @@ const ALBUM_BATCH: usize = 200;
 
 pub(crate) async fn metadata(session: &Session, uris: &[String]) -> Result<HashMap<String, Album>> {
     let mut albums = HashMap::with_capacity(uris.len());
-    collection::batched(
+    metadata::batched(
         session,
         uris,
         ExtensionKind::ALBUM_V4,
@@ -102,7 +97,6 @@ pub(crate) async fn metadata(session: &Session, uris: &[String]) -> Result<HashM
                 let album = album_from(&entity.entity_uri, &message);
                 albums.insert(entity.entity_uri, album);
             }
-            Ok(())
         },
     )
     .await
@@ -114,7 +108,7 @@ pub(crate) async fn metadata(session: &Session, uris: &[String]) -> Result<HashM
 pub(crate) async fn track_uris(session: &Session, uris: &[String]) -> Result<Vec<String>> {
     let mut seen = HashSet::new();
     let mut tracks = Vec::new();
-    collection::batched(
+    metadata::batched(
         session,
         uris,
         ExtensionKind::ALBUM_V4,
@@ -131,7 +125,6 @@ pub(crate) async fn track_uris(session: &Session, uris: &[String]) -> Result<Vec
                     }
                 }
             }
-            Ok(())
         },
     )
     .await
@@ -141,7 +134,7 @@ pub(crate) async fn track_uris(session: &Session, uris: &[String]) -> Result<Vec
 }
 
 fn album_from(uri: &str, album: &AlbumMessage) -> Album {
-    let (artists, artist_refs) = collection::artists_from(&album.artist);
+    let (artists, artist_refs) = metadata::artists_from(&album.artist);
 
     Album {
         id: uri.strip_prefix(ALBUM_PREFIX).unwrap_or(uri).to_owned(),
@@ -153,22 +146,8 @@ fn album_from(uri: &str, album: &AlbumMessage) -> Album {
         cover: cover(album),
         cover_large: cover_large(album),
         release_type: release_type(album.type_()),
-        year: album.date.as_ref().map(|date| date.year()).unwrap_or(0),
-        track_count: track_ids(album).len() as u32,
-        release_date: album
-            .date
-            .as_ref()
-            .map(|date| {
-                let year = date.year();
-                let month = date.month();
-                let day = date.day();
-                match (month > 0, day > 0) {
-                    (true, true) => format!("{year:04}-{month:02}-{day:02}"),
-                    (true, false) => format!("{year:04}-{month:02}"),
-                    _ => format!("{year:04}"),
-                }
-            })
-            .unwrap_or_default(),
+        track_count: Some(track_ids(album).len() as u32),
+        release_date: album.date.as_ref().and_then(wire::release_date),
         label: album.label().to_owned(),
         copyrights: album
             .copyright

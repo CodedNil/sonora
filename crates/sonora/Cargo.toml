@@ -13,9 +13,9 @@ bundled-sqlite = ["state/bundled-sqlite"]
 anyhow.workspace = true
 cli.workspace = true
 dirs.workspace = true
-env_logger.workspace = true
+tracing-subscriber.workspace = true
 futures.workspace = true
-log.workspace = true
+tracing.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 i18n.workspace = true
@@ -67,7 +67,6 @@ raw-window-handle.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle.workspace = true
-resvg.workspace = true
 state = { workspace = true, features = ["bundled-sqlite"] }
 widestring.workspace = true
 windows.workspace = true

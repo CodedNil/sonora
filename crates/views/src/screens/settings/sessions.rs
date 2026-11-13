@@ -14,13 +14,7 @@ impl SettingsView {
         if !self.settings.read(cx).sessions_official() {
             slots.push(Slot::SessionsServer);
         }
-        vec![
-            Group::new(
-                "settings-group-sessions",
-                "icons/users-round-collaboration.svg",
-            )
-            .rows(slots),
-        ]
+        vec![Group::new("player-sessions", "icons/users-round-collaboration.svg").rows(slots)]
     }
 
     pub(super) fn sessions_button_row(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -66,7 +60,7 @@ impl SettingsView {
         let field = self.sessions_server.clone();
 
         self.yielding_row(
-            t!("settings-sessions-server"),
+            t!("common-server-address"),
             div()
                 .flex_1()
                 .min_w_0()
@@ -86,7 +80,7 @@ impl SettingsView {
                         .flex_none()
                         .secondary()
                         .small()
-                        .label(t!("settings-sessions-save"))
+                        .label(t!("common-save"))
                         .disabled(saving)
                         .on_click(move |_, _, cx| {
                             let typed = field.read(cx).text().to_owned();

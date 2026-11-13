@@ -22,6 +22,7 @@ crates/
   embed/      build-script helper that walks a folder and writes include_bytes! literals
   webview/    a native browser window over a throwaway session, for cookie sign-ins and PO tokens
   widevine/   the Widevine CDM host, pssh and CENC fMP4 parsing, for any DRM'd provider
+  video/      short H.264 clips (a song's Canvas) decoded a frame at a time with openh264 (no GPUI)
 ```
 
 Dependency direction is strict. Do not create a back edge:
@@ -31,7 +32,7 @@ sonora → views → state → music
          state, music → storage
          state → webview
          music → widevine
-         all ui-side crates → ui, router, input → ui → gpui
+         all ui-side crates → ui, router, input → ui → gpui, video
          every ui-side crate → i18n, icons → gpui
 ```
 
@@ -63,7 +64,10 @@ sonora → views → state → music
 - **Never write a bare breakpoint.** Use the `ui::Room` ladder, and classify width with
   `Chrome::room` or `Chrome::content`, never the raw viewport. A view whose layout depends on
   width observes `Chrome::entity(cx)`.
-- **Every user-facing string comes from Fluent.** Add the key to `assets/i18n/en-US/main.ftl`. Other
+- **Every user-facing string comes from Fluent.** Add the key to the relevant resource under
+  `assets/i18n/en-US/`: use the matching domain file; `main.ftl` holds shared actions and navigation.
+  Reuse a shared
+  message before adding a synonym. Other
   locales may lag. Never call `t!` in a constructor: store the key and resolve it in `render`.
   Counts use Fluent selectors. Log messages and `.context(…)` stay in English.
 - **Every interactive element is announced by screen readers.** A node reaches the

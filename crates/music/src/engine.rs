@@ -20,6 +20,7 @@
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
+use tracing::{error, warn};
 
 use anyhow::{Context as _, Result, anyhow, ensure};
 use async_trait::async_trait;
@@ -179,7 +180,7 @@ pub fn start<F: Fetch>(
         .name(format!("{name}-playback"))
         .spawn(move || run(Arc::new(fetch), config, command_rx, events, engine_spectrum));
     if let Err(error) = spawned {
-        log::error!("playback: cannot spawn the {name} engine thread: {error}");
+        error!("playback: cannot spawn the {name} engine thread: {error}");
     }
     (
         Box::new(Handle {
@@ -435,7 +436,7 @@ fn run<F: Fetch>(
     {
         Ok(runtime) => runtime,
         Err(error) => {
-            log::error!("playback: cannot build the engine runtime: {error}");
+            error!("playback: cannot build the engine runtime: {error}");
             return;
         }
     };
@@ -485,7 +486,7 @@ async fn engine_loop<F: Fetch>(
             )
         });
     if let Err(error) = spawned {
-        log::error!("playback: cannot spawn the audio thread: {error}");
+        error!("playback: cannot spawn the audio thread: {error}");
         return;
     }
 
@@ -677,7 +678,7 @@ async fn engine_loop<F: Fetch>(
                 let loaded = match result {
                     Ok(loaded) => loaded,
                     Err(error) => {
-                        log::warn!("playback: cannot load {id}: {error:#}");
+                        warn!("playback: cannot load {id}: {error:#}");
                         if current_load {
                             awaited = None;
                             inflight = None;
@@ -1070,7 +1071,7 @@ fn audio_loop<F: Fetch>(
             // until the engine is dropped. Returning would close `joins` and end the engine, and
             // the watch below ends with the engine before its first try, so playback would stay
             // silent. A device that would not open once usually opens on the watch's next try.
-            log::error!("playback: cannot open audio output: {error:#}");
+            error!("playback: cannot open audio output: {error:#}");
             watch_for_output(changed);
             while jobs.recv().is_ok() {}
             return;
@@ -1232,7 +1233,7 @@ fn audio_loop<F: Fetch>(
                         &events,
                     );
                     if current.is_none() {
-                        log::warn!("playback: cannot seek {}", join.ended);
+                        warn!("playback: cannot seek {}", join.ended);
                         events
                             .send(PlaybackEvent::Unavailable {
                                 id: Some(join.ended),
@@ -1265,7 +1266,7 @@ fn audio_loop<F: Fetch>(
                                 // The seek has already cleared the queue, so the old decoder
                                 // would go on unheard. The app moves on as from a failed load.
                                 None => {
-                                    log::warn!("playback: cannot seek {id}");
+                                    warn!("playback: cannot seek {id}");
                                     events
                                         .send(PlaybackEvent::Unavailable { id: Some(id) })
                                         .ok();
@@ -1275,7 +1276,7 @@ fn audio_loop<F: Fetch>(
                         }
                         false => {
                             if let Err(error) = held.source.try_seek(position) {
-                                log::warn!("playback: cannot seek {}: {error}", held.id);
+                                warn!("playback: cannot seek {}: {error}", held.id);
                             }
                             held.base = position;
                             held.offset = 0;

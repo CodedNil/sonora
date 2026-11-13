@@ -1,8 +1,8 @@
 use gpui::accesskit::{Role, Toggled};
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, Hsla, Pixels, Point, Render, ScrollHandle, SharedString,
-    WeakEntity, Window, div, px,
+    AnyElement, App, Context, Entity, Hsla, Pixels, Render, ScrollHandle, SharedString, WeakEntity,
+    Window, div,
 };
 
 use std::rc::Rc;
@@ -11,19 +11,16 @@ use i18n::t;
 use music::{Album, AlbumDetail, Playlist, ReleaseType, Track};
 use router::{Destination, navigate};
 use state::{
-    AppSettings, Collection, Detail, DownloadsChanged, LibraryEvent, Origin, Playback, Progress,
-    Sonora,
+    AppSettings, Collection, Detail, DownloadsChanged, FilterValue, LibraryEvent, Origin, Playback,
+    Progress, Sonora,
 };
-use ui::{
-    ActiveTheme as _, ArrowRing, Button, InlineLink, InlineLinks, Menu, Picker, Popovers, Popup,
-    SortAxis,
-};
+use ui::{ActiveTheme as _, ArrowRing, Button, InlineLink, InlineLinks, Menu, Picker, Popovers};
 use ui::{
     ColumnSpec, FilterChange, Listing as _, MIN_CONTENT, Pending, Pin, PinKind, Scrollbar,
-    Scroller, TableDelegate, TableEvent, TableState, Text, runtime, table,
+    Scroller, TableDelegate, TableEvent, TableState, Text, table,
 };
 
-use crate::shared::menus::{album_menu, playlist_menu};
+use crate::shared::menus::{CardMenu, Item};
 use crate::shared::trouble;
 
 use crate::chrome::tools::{self, Sliders};
@@ -40,6 +37,7 @@ use crate::shared::tracks::{
 };
 use crate::shared::{cells, page};
 
+const SEARCH_FILTER: &str = "search-query";
 const PINNED: [&str; 3] = ["cover", "title", "name"];
 
 enum Saveable {
@@ -64,8 +62,8 @@ impl RailTab {
 
     fn label(self) -> SharedString {
         match self {
-            Self::Albums => t!("album-tab-albums"),
-            Self::Artists => t!("album-tab-artists"),
+            Self::Albums => t!("nav-albums"),
+            Self::Artists => t!("nav-artists"),
         }
     }
 }
@@ -89,9 +87,9 @@ impl Tracks for DetailTracks {
             return None;
         }
         Some(
-            match detail.header().map_or(0, |header| header.track_count) {
-                0 => Pending::Screen,
-                count => Pending::Rows(count as usize),
+            match detail.header().and_then(|header| header.track_count) {
+                None => Pending::Screen,
+                Some(count) => Pending::Rows(count as usize),
             },
         )
     }
@@ -108,7 +106,6 @@ pub(crate) struct DetailView {
     section: &'static str,
     sorted: Option<String>,
     shown: Option<String>,
-    context_menu: Option<Point<Pixels>>,
     toolbar: Entity<Toolbar>,
     popovers: Popovers,
     sliders: Sliders,
@@ -183,6 +180,7 @@ impl DetailView {
             let shown = detail.read(cx).id().map(str::to_owned);
             if this.shown != shown {
                 this.shown = shown;
+                this.restore_search(cx);
                 this.rails.clear();
                 this.rail_tab = RailTab::Albums;
                 this.scrollbar
@@ -192,10 +190,13 @@ impl DetailView {
                 this.restore_sorting(cx);
                 // The rows belong to another detail now, so its filters must not leak across.
                 this.table.filter(FilterChange::Reset, cx);
-                this.restore_filters(cx);
             }
             this.retune(cx);
             this.rebuild(cx);
+            // Restore against the metadata of the loaded tracks, including later playlist pages.
+            if !detail.read(cx).is_loading() {
+                this.restore_filters(cx);
+            }
             cx.notify();
         })
         .detach();
@@ -269,8 +270,12 @@ impl DetailView {
         })
         .detach();
 
+        let shown = detail.read(cx).id().map(str::to_owned);
         let me = cx.entity();
         let toolbar = Toolbar::searchable(&me, cx);
+        if section == "playlist" {
+            toolbar.update(cx, |toolbar, cx| toolbar.set_hint("filter-tracks", cx));
+        }
 
         let mut view = Self {
             detail,
@@ -282,17 +287,40 @@ impl DetailView {
             settings,
             section,
             sorted: None,
-            shown: None,
-            context_menu: None,
+            shown,
             toolbar,
             popovers: Popovers::default(),
-            sliders: Sliders::default(),
+            sliders: Sliders::with_choices(crate::shared::tracks::choice_filters(), id, cx),
             me: me.downgrade(),
             rails: Vec::new(),
             rail_tab: RailTab::Albums,
         };
-        view.restore_filters(cx);
+        view.restore_search(cx);
+        view.table.update(cx, |table, cx| table.refresh(cx));
+        if !view.detail.read(cx).is_loading() {
+            view.restore_filters(cx);
+        }
         view
+    }
+
+    /// Restores the playlist's saved query without treating it as an edit.
+    fn restore_search(&mut self, cx: &mut Context<Self>) {
+        let query = match (self.section, self.detail.read(cx).id()) {
+            ("playlist", Some(id)) => self
+                .settings
+                .read(cx)
+                .filters(&format!("playlist:{id}"))
+                .and_then(|filters| match filters.get(SEARCH_FILTER) {
+                    Some(FilterValue::Text(query)) => Some(query.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        self.table
+            .update(cx, |table, cx| table.delegate_mut().set_query(&query, cx));
+        self.toolbar
+            .update(cx, |toolbar, cx| toolbar.switch_query(&query, cx));
     }
 
     fn retune(&mut self, cx: &mut Context<Self>) {
@@ -349,6 +377,9 @@ impl DetailView {
     }
 
     fn sift(&mut self, change: FilterChange, cx: &mut Context<Self>) {
+        if matches!(change, FilterChange::Reset) {
+            page::clear_filters(&self.settings, &self.sort_key(cx), cx);
+        }
         self.table.filter(change, cx);
         self.persist(cx);
         cx.notify();
@@ -360,7 +391,7 @@ impl DetailView {
         page::restore(&self.settings.clone(), &self.table, &key, cx);
     }
 
-    fn header(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
+    fn header(&self, compact: bool, window: &Window, cx: &Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let header = self.detail.read(cx).header();
@@ -379,14 +410,17 @@ impl DetailView {
             .map(|header| header.artist_refs.clone())
             .unwrap_or_default();
         let owner = header.and_then(|header| header.owner.clone());
-        let release_date = header.and_then(|header| header.release_date.as_deref());
+        let release_date = header.and_then(|header| header.release_date);
         let owner_name = header.and_then(|header| header.owner_name.clone());
-        let track_count = header.map(|header| header.track_count).unwrap_or(0);
+        let track_count = header.and_then(|header| header.track_count);
         let listed = self.detail.read(cx).tracks();
-        let duration: std::time::Duration = listed.iter().map(|track| track.duration).sum();
-        let eyebrow = match kind {
-            Collection::Playlist => t!("detail-playlist"),
-            Collection::Album => i18n::lookup(cards::release_key(release), None),
+        let duration: Option<std::time::Duration> = listed.iter().map(|track| track.duration).sum();
+        let (category, label) = match kind {
+            Collection::Playlist => (t!("kind-playlist"), t!("detail-play-playlist")),
+            Collection::Album => (
+                i18n::lookup(cards::release_key(release), None),
+                t!("detail-play-album"),
+            ),
         };
 
         let mut strip = HeroMetaStrip::new();
@@ -416,17 +450,24 @@ impl DetailView {
         if let Some(owner_name) = owner_name {
             strip = strip.text(owner_name);
         }
-        if track_count > 0 {
+        if let Some(track_count) = track_count {
             strip = strip.text(t!("count-songs", count = track_count));
         }
-        if !duration.is_zero() {
-            strip = strip.text(runtime(duration));
-        }
+        strip = strip.duration(duration);
 
-        let play = HeroPlayButton::listed("play-detail", &self.table, self.playback.clone());
+        let play = HeroPlayButton::listed_labeled(
+            "play-detail",
+            label,
+            &self.table,
+            self.playback.clone(),
+        )
+        .compact(compact);
         let shuffle =
             HeroPlayButton::shuffle_listed("shuffle-detail", &self.table, self.playback.clone());
-        let menu = self.menu(cx);
+        let menu = match compact {
+            true => None,
+            false => self.menu(cx),
+        };
         // Buttons whose action the overflow menu also offers fold into it from the right when
         // the row runs out of room, Download first and Shuffle last. Play and More always show.
         let mut spare = match menu.is_some() {
@@ -445,12 +486,12 @@ impl DetailView {
                 true
             }
         };
-        let (shuffle, folded) = match fits() {
+        let (shuffle, folded) = match compact || fits() {
             true => (Some(shuffle), None),
             false => (None, Some(shuffle.shuffle_item(cx))),
         };
-        let library = self.library_button(cx).filter(|_| fits());
-        let download = self.download_button(cx).filter(|_| fits());
+        let library = self.library_button(cx).filter(|_| compact || fits());
+        let download = self.download_button(cx).filter(|_| compact || fits());
         let overflow = menu.map(|menu| {
             Picker::icon("detail-overflow", &self.popovers, "icons/ellipsis.svg")
                 .tooltip("common-more")
@@ -460,13 +501,17 @@ impl DetailView {
         });
         let actions = div()
             .flex()
+            .w_full()
+            .min_w_0()
             .items_center()
             .gap(ACTION_GAP)
             .child(play)
             .children(shuffle)
             .children(library)
             .children(download)
-            .children(overflow);
+            .children(overflow)
+            .min_w_0()
+            .child(self.toolbar.clone());
 
         let cover = header.and_then(|header| header.cover.clone());
         let pin = self.detail.read(cx).id().map(|id| {
@@ -479,17 +524,19 @@ impl DetailView {
 
         let view = self.me.clone();
         PageHero::new("detail-hero", title)
+            .compact(compact)
             .pending(header.is_none() && self.detail.read(cx).is_loading())
             .pin(pin)
             .cover(cover)
-            .eyebrow(eyebrow)
+            .eyebrow(category)
             .meta(strip)
             .actions(actions)
             .drag_start(move |event, window, cx| {
                 window.prevent_default();
                 view.update(cx, |this, cx| {
-                    this.context_menu = Some(event.position);
-                    cx.notify();
+                    if let Some(item) = this.menu_item(cx) {
+                        CardMenu::open(item, this.playback.clone(), event.position, cx);
+                    }
                 })
                 .ok();
             })
@@ -623,7 +670,7 @@ impl DetailView {
         notify: &Rc<dyn Fn(&mut App)>,
         cx: &mut App,
     ) -> Vec<AnyElement> {
-        let grid = CardGrid::layout(self.width - cx.theme().metrics.inset * 2.);
+        let grid = CardGrid::layout(self.width);
         let card = grid.card;
         let columns = grid.columns.max(1);
         let detail = self.detail.read(cx);
@@ -769,22 +816,26 @@ impl DetailView {
         )
     }
 
-    fn menu(&self, cx: &App) -> Option<Menu> {
+    /// Resolves the header's collection using current library metadata where available.
+    fn menu_item(&self, cx: &App) -> Option<Item> {
         let detail = self.detail.read(cx);
-        let id = detail.id()?.to_owned();
-        let header = detail.header()?;
-
-        Some(match header.kind {
-            Collection::Album => {
-                let menus = self.table.read(cx).delegate().source().menu();
-                album_menu(detail.album()?.clone(), self.playback.clone(), menus, cx)
-            }
-            Collection::Playlist => {
-                let saved = Sonora::global(cx).library.read(cx).playlist(&id).cloned();
-                let playlist = saved.or_else(|| detail.playlist().cloned())?;
-                playlist_menu(playlist, self.playback.clone(), cx)
-            }
+        let id = detail.id()?;
+        Some(match detail.header()?.kind {
+            Collection::Album => Item::Album(detail.album()?.clone()),
+            Collection::Playlist => Item::Playlist(
+                Sonora::global(cx)
+                    .library
+                    .read(cx)
+                    .playlist(id)
+                    .cloned()
+                    .or_else(|| detail.playlist().cloned())?,
+            ),
         })
+    }
+
+    fn menu(&self, cx: &App) -> Option<Menu> {
+        let menus = self.table.read(cx).delegate().source().menu();
+        Some(self.menu_item(cx)?.menu(menus, self.playback.clone(), cx))
     }
 }
 
@@ -802,26 +853,15 @@ impl Render for DetailView {
 
         self.table.claim(cx);
         let inset = cx.theme().metrics.inset;
-        let width = cells::content_width(window, Pixels::ZERO, cx);
-        if (width - self.width).abs() >= px(0.5) {
-            self.width = width;
-            self.table.set_width(width, cx);
-        }
+        page::resize(&self.table, &mut self.width, inset, window, cx);
 
         let scroll = self.scrollbar.read(cx).scroll().clone();
-        let viewport = page::viewport(&scroll, inset, window);
+        let sticky = page::sticky(&self.scrollbar, cx);
+        let viewport = page::viewport(&scroll, sticky, window);
+        let anchors = self.scrollbar.read(cx).anchors();
+        self.table.set_anchors(anchors, cx);
         self.table
             .update(cx, |table, _| table.set_viewport(viewport));
-
-        let context_menu = self.context_menu.and_then(|position| {
-            let menu = self.menu(cx)?;
-            Some(
-                Popup::new(position, menu).on_close(cx.listener(|this, _, _, cx| {
-                    this.context_menu = None;
-                    cx.notify();
-                })),
-            )
-        });
 
         while self.rails.is_empty() {
             self.rails.push(Rail::new(cx.entity_id()));
@@ -841,14 +881,16 @@ impl Render for DetailView {
             .child(
                 Scroller::new("detail-page", &self.scrollbar)
                     .bottom_inset(crate::chrome::Chrome::bottom(cx))
-                    .pt(inset)
+                    .px(inset)
                     .pb(inset)
-                    .child(div().px(inset).child(self.header(window, cx)))
+                    .child(self.header(false, window, cx))
                     .child(table(&self.table))
                     .children(self.notices(cx))
-                    .child(div().px(inset).pt_10().children(rails)),
+                    .child(div().pt_10().children(rails)),
             )
-            .when_some(context_menu, |this, menu| this.child(menu))
+            .when(sticky > Pixels::ZERO, |this| {
+                this.child(page::header(self.header(true, window, cx), inset, cx))
+            })
             .into_any_element()
     }
 }
@@ -899,22 +941,23 @@ impl Searchable for DetailView {
             table.delegate_mut().set_query(query, cx);
             table.refresh(cx);
         });
+        if self.section == "playlist" && self.detail.read(cx).id().is_some() {
+            let key = self.sort_key(cx);
+            self.settings.update(cx, |settings, cx| {
+                let mut filters = settings.filters(&key).unwrap_or_default();
+                if query.is_empty() {
+                    filters.remove(SEARCH_FILTER);
+                } else {
+                    filters.insert(SEARCH_FILTER.into(), FilterValue::Text(query.into()));
+                }
+                settings.set_filters(&key, filters, cx);
+            });
+        }
         cx.notify();
     }
 
     fn hint() -> SharedString {
         "filter-album".into()
-    }
-}
-
-impl DetailView {
-    fn sorts(&self, cx: &App) -> Vec<SortAxis> {
-        self.table.sortables(cx)
-    }
-
-    fn set_sort(&mut self, key: &'static str, cx: &mut Context<Self>) {
-        self.table.clone().cycle_sort(key, cx);
-        cx.notify();
     }
 }
 
@@ -924,27 +967,20 @@ impl Tooled for DetailView {
     }
 
     fn tools(&self, cx: &App) -> Vec<AnyElement> {
-        let sifted = self.me.clone();
-        let sorted = self.me.clone();
-
-        vec![
-            tools::filters(
-                &self.popovers,
-                &self.sliders,
-                self.table.filters(cx),
-                move |change, cx| {
-                    sifted.update(cx, |view, cx| view.sift(change, cx)).ok();
-                },
-                cx,
-            ),
-            tools::sorts(
-                &self.popovers,
-                self.sorts(cx),
-                move |key, cx| {
-                    sorted.update(cx, |view, cx| view.set_sort(key, cx)).ok();
-                },
-                cx,
-            ),
-        ]
+        let axes = self.table.filters(cx);
+        // The funnel stays while anything is narrowed, so an empty result cannot lock its filter.
+        if axes.is_empty() && !self.table.narrowed(cx) {
+            return Vec::new();
+        }
+        let filtered = self.me.clone();
+        vec![tools::filters(
+            &self.popovers,
+            &self.sliders,
+            axes,
+            move |change, cx| {
+                filtered.update(cx, |view, cx| view.sift(change, cx)).ok();
+            },
+            cx,
+        )]
     }
 }

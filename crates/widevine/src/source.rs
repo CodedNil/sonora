@@ -17,6 +17,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
+use tracing::{debug, info};
 
 use anyhow::{Context as _, Result};
 
@@ -128,7 +129,7 @@ pub(crate) fn prefer(found: Found) -> Found {
 pub fn uninstall() -> Result<()> {
     let store = store();
     match std::fs::remove_dir_all(&store) {
-        Ok(()) => log::info!("widevine: removed the store at {}", store.display()),
+        Ok(()) => info!("widevine: removed the store at {}", store.display()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             return Err(error).with_context(|| format!("cannot remove {}", store.display()));
@@ -168,7 +169,7 @@ pub fn configured() -> Option<PathBuf> {
 /// place holding one answers. Nothing when `SONORA_WIDEVINE_SKIP_BROWSERS` is set.
 pub fn installed() -> Option<PathBuf> {
     if std::env::var_os(SKIP_BROWSERS).is_some_and(|value| !value.is_empty()) {
-        log::debug!("widevine: skipping the browser search as asked");
+        debug!("widevine: skipping the browser search as asked");
         return None;
     }
     places().into_iter().find_map(look)

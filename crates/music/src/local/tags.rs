@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io::Read as _;
 use std::path::Path;
 use std::time::Duration;
+use tracing::warn;
 
 use anyhow::{Context as _, Result};
 use lofty::config::{ParseOptions, WriteOptions};
@@ -140,7 +141,7 @@ pub(super) fn ttml_lyrics(origin: &Path, text: &str) -> Option<Lyrics> {
     let lyrics = match ttml::parse(text) {
         Ok(sheet) => sheet.lyrics,
         Err(error) => {
-            log::warn!(
+            warn!(
                 "lyrics: cannot decode the TTML of {}: {error:#}",
                 origin.display()
             );
@@ -152,7 +153,7 @@ pub(super) fn ttml_lyrics(origin: &Path, text: &str) -> Option<Lyrics> {
         Lyrics::Synced { lines } => lines.is_empty(),
     };
     if empty {
-        log::warn!("lyrics: the TTML of {} holds no line", origin.display());
+        warn!("lyrics: the TTML of {} holds no line", origin.display());
         return None;
     }
     Some(lyrics)

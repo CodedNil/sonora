@@ -59,17 +59,11 @@ impl AppNotice {
 
     fn requirement(&self, requirement: Requirement) -> Card {
         let (id, icon, title, detail) = match requirement {
-            Requirement::AudioBridge(server) => (
+            Requirement::AudioBridge(SoundServer::PipeWire) => (
                 "requirement-audio-bridge",
                 "icons/volume-x.svg",
                 t!("requirement-audio-bridge-title"),
-                t!(
-                    "requirement-audio-bridge",
-                    server = match server {
-                        SoundServer::PipeWire => "pipewire",
-                        SoundServer::PulseAudio => "pulseaudio",
-                    }
-                ),
+                t!("requirement-audio-bridge", server = "pipewire"),
             ),
             Requirement::AudioOutput => (
                 "requirement-audio-output",

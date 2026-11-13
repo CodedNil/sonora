@@ -3,6 +3,7 @@
 
 use std::sync::OnceLock;
 use std::time::Duration;
+use tracing::warn;
 
 use reqwest::Url;
 
@@ -84,7 +85,7 @@ pub async fn follow(link: &str) -> Option<Followed> {
         .get(url)
         .send()
         .await
-        .inspect_err(|error| log::warn!("links: cannot follow a short link: {error}"))
+        .inspect_err(|error| warn!("links: cannot follow a short link: {error}"))
         .ok()?;
     let address = response.url().to_string();
     let mut page = Vec::new();

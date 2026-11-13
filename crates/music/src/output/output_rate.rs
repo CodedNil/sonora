@@ -10,7 +10,7 @@
 //! rate is watched there.
 //!
 //! On Linux a sound server's default config is the rate it runs the device at. A picked rate
-//! opens the stream at that rate, on PulseAudio, `pipewire-pulse` included, and on ALSA alike, and
+//! opens the stream at that rate on PipeWire and ALSA alike, and
 //! the server moves the device to it where it allows that rate.
 //!
 //! Every output opens in stereo at most, whatever channels the device has. rodio shifts every
@@ -21,6 +21,7 @@
 use cpal::SupportedStreamConfig;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use cpal::traits::DeviceTrait as _;
+use tracing::warn;
 
 #[cfg(target_os = "linux")]
 use super::output_host;
@@ -165,7 +166,7 @@ fn stereo(device: &cpal::Device, config: SupportedStreamConfig) -> SupportedStre
     match offered {
         Some(stereo) => stereo,
         None => {
-            log::warn!(
+            warn!(
                 "output: the card takes only {} channels, so it opens with all of them",
                 config.channels()
             );

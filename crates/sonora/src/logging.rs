@@ -1,10 +1,14 @@
-use std::borrow::Cow;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-use env_logger::{Env, Logger, Target};
-use log::{Log, Metadata, Record};
+use tracing::{Event, Subscriber, debug, error};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
+use tracing_subscriber::fmt::{self, FmtContext};
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::registry::LookupSpan;
 
 const CONSOLE: &str = "warn,symphonia=error,lofty=error,discord_rich_presence=error";
 const DISK: &str = "warn,symphonia=error,lofty=error,discord_rich_presence=error,sonora=debug,sonora::memory=info,ui=debug,music=debug,ytmusic=debug,state::potoken=debug,state::lyrics=debug";
@@ -18,37 +22,44 @@ const STARTED: &str = "logging: sonora";
 
 /// Logs to stderr only, for a process that is not the app, such as the Widevine host.
 pub fn console() {
-    env_logger::Builder::from_env(Env::default().default_filter_or(CONSOLE))
-        .format_timestamp(None)
-        .init();
+    tracing_subscriber::registry()
+        .with(
+            fmt::layer()
+                .event_format(Redacted { timestamps: false })
+                .with_writer(io::stderr)
+                .with_filter(filter("RUST_LOG", CONSOLE)),
+        )
+        .try_init()
+        .ok();
 }
 
 pub fn init() {
-    let console = env_logger::Builder::from_env(Env::default().default_filter_or(CONSOLE))
-        .format_timestamp(None)
-        .format_module_path(false)
-        .build();
-
+    let console = fmt::layer()
+        .event_format(Redacted { timestamps: false })
+        .with_writer(io::stderr)
+        .with_filter(filter("RUST_LOG", CONSOLE));
     let disk = open().map(|file| {
-        env_logger::Builder::from_env(Env::new().filter_or(FILTER, DISK))
-            .target(Target::Pipe(Box::new(file)))
-            .build()
+        fmt::layer()
+            .event_format(Redacted { timestamps: true })
+            .with_writer(Mutex::new(file))
+            .with_filter(filter(FILTER, DISK))
     });
 
-    let (level, logger): (log::LevelFilter, Box<dyn Log>) = match disk {
-        None => (console.filter(), Box::new(console)),
-        Some(disk) => (
-            console.filter().max(disk.filter()),
-            Box::new(Fan { console, disk }),
-        ),
-    };
-
-    if log::set_boxed_logger(Box::new(Redacted(logger))).is_ok() {
-        log::set_max_level(level);
-    }
+    // Subscriber initialization also bridges dependency log records into tracing.
+    tracing_subscriber::registry()
+        .with(console)
+        .with(disk)
+        .try_init()
+        .ok();
     catch_panics();
+    debug!("{STARTED} {} started", state::version());
+}
 
-    log::debug!("{STARTED} {} started", state::version());
+/// Reads each destination's filter independently, without treating user input as a regex.
+fn filter(variable: &str, fallback: &str) -> EnvFilter {
+    EnvFilter::builder()
+        .with_regex(false)
+        .parse_lossy(std::env::var(variable).unwrap_or_else(|_| fallback.to_owned()))
 }
 
 /// Writes a panic to the log before the default hook prints it. A Sonora started from a
@@ -63,11 +74,11 @@ fn catch_panics() {
         let backtrace = std::backtrace::Backtrace::capture();
         match backtrace.status() {
             std::backtrace::BacktraceStatus::Captured => {
-                log::error!("panic: {panic} on the {name} thread\n{backtrace}")
+                error!("panic: {panic} on the {name} thread\n{backtrace}")
             }
-            _ => log::error!("panic: {panic} on the {name} thread"),
+            _ => error!("panic: {panic} on the {name} thread"),
         }
-        log::logger().flush();
+        // Both destinations write synchronously, so the panic record is already on disk.
         default(panic);
     }));
 }
@@ -101,58 +112,32 @@ impl Write for Capped {
     }
 }
 
-/// Passes every record on with [`music::redact`] applied to its message, so neither the terminal
-/// nor the file Sonora asks people to attach to a bug report carries a token, an account name or
-/// the home folder. This covers the lines other crates write as well as Sonora's own.
-struct Redacted(Box<dyn Log>);
-
-impl Log for Redacted {
-    fn enabled(&self, metadata: &Metadata) -> bool {
-        self.0.enabled(metadata)
-    }
-
-    fn log(&self, record: &Record) {
-        if !self.0.enabled(record.metadata()) {
-            return;
-        }
-        let text = record.args().to_string();
-        match music::redact(&text) {
-            Cow::Borrowed(_) => self.0.log(record),
-            Cow::Owned(clean) => self.0.log(
-                &Record::builder()
-                    .args(format_args!("{clean}"))
-                    .metadata(record.metadata().clone())
-                    .module_path(record.module_path())
-                    .file(record.file())
-                    .line(record.line())
-                    .build(),
-            ),
-        }
-    }
-
-    fn flush(&self) {
-        self.0.flush();
-    }
+/// Redacts the complete formatted event, including structured fields and dependency records,
+/// before either destination sees it. Disk records retain timestamps; terminal records do not.
+struct Redacted {
+    timestamps: bool,
 }
 
-struct Fan {
-    console: Logger,
-    disk: Logger,
-}
-
-impl Log for Fan {
-    fn enabled(&self, metadata: &Metadata) -> bool {
-        self.console.enabled(metadata) || self.disk.enabled(metadata)
-    }
-
-    fn log(&self, record: &Record) {
-        self.console.log(record);
-        self.disk.log(record);
-    }
-
-    fn flush(&self) {
-        self.console.flush();
-        self.disk.flush();
+impl<S, N> FormatEvent<S, N> for Redacted
+where
+    S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+    N: for<'writer> FormatFields<'writer> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &Event<'_>,
+    ) -> std::fmt::Result {
+        let mut text = String::new();
+        let format = fmt::format().with_ansi(false);
+        match self.timestamps {
+            true => format.format_event(ctx, Writer::new(&mut text), event),
+            false => format
+                .without_time()
+                .format_event(ctx, Writer::new(&mut text), event),
+        }?;
+        writer.write_str(&music::redact(&text))
     }
 }
 
@@ -181,7 +166,7 @@ fn trim(path: &Path) {
     let Ok(text) = fs::read_to_string(path) else {
         return;
     };
-    let marker = format!("] {STARTED} ");
+    let marker = format!("{STARTED} ");
     let starts: Vec<usize> = text
         .match_indices(&marker)
         .map(|(at, _)| text[..at].rfind('\n').map_or(0, |line| line + 1))

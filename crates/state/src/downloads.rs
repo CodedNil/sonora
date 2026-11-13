@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tracing::{debug, warn};
 
 use anyhow::{Context as _, Result};
 use gpui::{App, Context, Entity, EventEmitter, SharedString, Task};
@@ -677,7 +678,7 @@ impl Downloads {
                             .then_some(more)
                             .flatten(),
                         Err(error) => {
-                            log::warn!("downloads: cannot list more of playlist {id}: {error:#}");
+                            warn!("downloads: cannot list more of playlist {id}: {error:#}");
                             None
                         }
                     })
@@ -983,7 +984,7 @@ impl Downloads {
                 // limit clear. Widening the pause as well left a quick burst crawling for good.
                 self.gap = bursts;
                 self.streak = 0;
-                log::warn!(
+                warn!(
                     "downloads: the provider is refusing {id} for now, resting {}s, then {}s apart",
                     wait.as_secs(),
                     self.gap.as_secs()
@@ -997,7 +998,7 @@ impl Downloads {
             }
             Err(error) => {
                 let reason = format!("{error:#}");
-                log::warn!("downloads: cannot download {id}: {reason}");
+                warn!("downloads: cannot download {id}: {reason}");
                 crate::noted(&error, cx);
                 if self.tracks.contains_key(&id) {
                     match music::trouble::offline(&reason) {
@@ -1027,7 +1028,7 @@ impl Downloads {
         if self.gap < bursts / 4 {
             self.gap = Duration::ZERO;
         }
-        log::debug!("downloads: now {}s apart", self.gap.as_secs_f32());
+        debug!("downloads: now {}s apart", self.gap.as_secs_f32());
     }
 
     /// Starts the queue again at `at`, unless something already will.
@@ -1049,7 +1050,7 @@ impl Downloads {
 
     /// Says the tracks of an album or playlist could not be listed.
     fn failed_to_fetch(&mut self, error: &anyhow::Error, cx: &mut Context<Self>) {
-        log::warn!("downloads: cannot list the tracks to download: {error:#}");
+        warn!("downloads: cannot list the tracks to download: {error:#}");
         crate::noted(error, cx);
         Toasts::post(Toast::new(Outcome::Failed, "toast-download-failed"), cx);
     }
@@ -1199,7 +1200,7 @@ impl Downloads {
                             this.sets.entry((kind, id)).or_insert(set);
                         }
                     }
-                    Err(error) => log::warn!("downloads: cannot read the list: {error:#}"),
+                    Err(error) => warn!("downloads: cannot read the list: {error:#}"),
                 }
                 this.pump(cx);
                 cx.emit(DownloadsChanged);
@@ -1236,7 +1237,7 @@ impl Downloads {
         let store = self.store.clone();
         self.io.spawn_blocking(move || {
             if let Err(error) = edit(&store) {
-                log::warn!("downloads: cannot save the list: {error:#}");
+                warn!("downloads: cannot save the list: {error:#}");
             }
         });
     }

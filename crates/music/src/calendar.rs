@@ -1,66 +1,104 @@
-//! Dates as providers write them, turned into seconds since the epoch.
-//!
-//! Every provider stamps when something was added or changed, and each spells it a little
-//! differently, so one tolerant reader serves them all rather than one per provider.
+use std::fmt;
 
-/// An ISO-8601 stamp as seconds since the epoch. It takes a bare date (`2026-09-15`), a date and
-/// time joined by `T` or a space, fractional seconds, and a `Z`, `+02:00` or `+0000` offset,
-/// which covers what Apple Music, Deezer and Tidal write. A missing month or day reads as the
-/// first. `None` when not even the year is a number.
-pub(crate) fn seconds(stamp: &str) -> Option<i64> {
-    let stamp = stamp.trim();
-    let (date, time) = stamp.split_once(['T', ' ']).unwrap_or((stamp, ""));
-    let mut parts = date.split('-');
-    let year: i64 = parts.next()?.parse().ok()?;
-    let month: i64 = parts.next().unwrap_or("1").parse().unwrap_or(1);
-    let day: i64 = parts.next().unwrap_or("1").parse().unwrap_or(1);
-    let (time, zone) = zone_of(time.trim_end_matches('Z'));
-    let mut clock = time.split(':');
-    let hour: i64 = clock.next().unwrap_or("0").parse().unwrap_or(0);
-    let minute: i64 = clock.next().unwrap_or("0").parse().unwrap_or(0);
-    let second: i64 = clock
-        .next()
-        .and_then(|second| second.split('.').next())
-        .unwrap_or("0")
-        .parse()
-        .unwrap_or(0);
-    Some(days(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second - zone)
+use jiff::{Timestamp, civil::Date, fmt::temporal::DateTimeParser};
+use serde::{Deserialize, Serialize};
+
+/// A release date with only the components the provider supplied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ReleaseDate {
+    year: u16,
+    month: Option<u8>,
+    day: Option<u8>,
 }
 
-/// Days from the epoch to a civil date, by Howard Hinnant's algorithm.
-fn days(year: i64, month: i64, day: i64) -> i64 {
-    let year = year - i64::from(month <= 2);
-    let era = year.div_euclid(400);
-    let yoe = year - era * 400;
-    let shifted = match month > 2 {
-        true => month - 3,
-        false => month + 9,
-    };
-    let doy = (153 * shifted + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
+impl ReleaseDate {
+    /// Reads a year, year/month or complete ISO date, including the date of a timestamp.
+    pub fn parse(value: &str) -> Option<Self> {
+        let mut parts = value.trim().split(['T', ' ']).next()?.split('-');
+        let year = parts.next()?.parse().ok()?;
+        let month = parts.next().map(str::parse).transpose().ok()?;
+        let day = parts.next().map(str::parse).transpose().ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        Self::from_parts(year, month, day)
+    }
+
+    /// Validates provider date components; a day requires a month, and zero is never a date.
+    pub fn from_parts(year: i32, month: Option<u32>, day: Option<u32>) -> Option<Self> {
+        if year <= 0 || (month.is_none() && day.is_some()) {
+            return None;
+        }
+        let date = Date::new(
+            year.try_into().ok()?,
+            month.unwrap_or(1).try_into().ok()?,
+            day.unwrap_or(1).try_into().ok()?,
+        )
+        .ok()?;
+        Some(Self {
+            year: date.year() as u16,
+            month: month.map(|_| date.month() as u8),
+            day: day.map(|_| date.day() as u8),
+        })
+    }
+
+    /// Converts a provider's year without supplying a month or day.
+    pub fn from_year(year: i32) -> Option<Self> {
+        Self::from_parts(year, None, None)
+    }
+
+    pub fn year(self) -> u16 {
+        self.year
+    }
+
+    /// The complete date, absent when its month or day was not supplied.
+    pub fn full_date(self) -> Option<Date> {
+        Date::new(
+            self.year.try_into().ok()?,
+            self.month?.try_into().ok()?,
+            self.day?.try_into().ok()?,
+        )
+        .ok()
+    }
 }
 
-/// Splits a time of day from the offset after it, as seconds east of UTC. A time with no offset
-/// is UTC.
-fn zone_of(time: &str) -> (&str, i64) {
-    let Some(at) = time.rfind(['+', '-']).filter(|&at| at > 0) else {
-        return (time, 0);
-    };
-    let (clock, zone) = time.split_at(at);
-    let sign = match zone.starts_with('-') {
-        true => -1i64,
-        false => 1,
-    };
-    let zone = zone.trim_start_matches(['+', '-']);
-    // `+02:00` and `+0200` both occur, so the hours are the first two digits either way.
-    let (hours, minutes) = match zone.split_once(':') {
-        Some((hours, minutes)) => (hours, minutes),
-        None => zone
-            .split_at_checked(zone.len().min(2))
-            .unwrap_or((zone, "")),
-    };
-    let hours: i64 = hours.parse().unwrap_or(0);
-    let minutes: i64 = minutes.parse().unwrap_or(0);
-    (clock, sign * (hours * 3_600 + minutes * 60))
+impl From<Date> for ReleaseDate {
+    fn from(date: Date) -> Self {
+        Self {
+            year: date.year() as u16,
+            month: Some(date.month() as u8),
+            day: Some(date.day() as u8),
+        }
+    }
+}
+
+impl fmt::Display for ReleaseDate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:04}", self.year)?;
+        if let Some(month) = self.month {
+            write!(f, "-{month:02}")?;
+        }
+        if let Some(day) = self.day {
+            write!(f, "-{day:02}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Reads a provider timestamp, interpreting a missing offset or time of day as UTC.
+pub fn parse_timestamp(value: &str) -> Option<Timestamp> {
+    let parser = DateTimeParser::new();
+    parser
+        .parse_timestamp(value)
+        .or_else(|_| {
+            parser
+                .parse_datetime(value)
+                .and_then(|date| jiff::tz::TimeZone::UTC.to_timestamp(date))
+        })
+        .or_else(|_| {
+            parser
+                .parse_date(value)
+                .and_then(|date| jiff::tz::TimeZone::UTC.to_timestamp(date.at(0, 0, 0, 0)))
+        })
+        .ok()
 }

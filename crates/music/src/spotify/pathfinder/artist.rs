@@ -5,7 +5,8 @@ use librespot_core::Session;
 use serde::Deserialize;
 
 use super::query;
-use crate::{Album, ArtistRef, ReleaseType};
+use super::wire::{Artwork as Cover, Copyrights, Date as PathDate, Image};
+use crate::{Album, ArtistRef, ReleaseType, SavedArtist};
 
 pub(crate) struct Overview {
     pub(crate) name: String,
@@ -15,6 +16,7 @@ pub(crate) struct Overview {
     pub(crate) monthly_listeners: Option<u64>,
     pub(crate) tracks: Vec<(String, Option<u64>)>,
     pub(crate) albums: Vec<Album>,
+    pub(crate) similar: Vec<SavedArtist>,
 }
 
 #[derive(Deserialize)]
@@ -32,6 +34,31 @@ struct PathArtist {
     header: Option<Header>,
     discography: Option<Discography>,
     stats: Option<Stats>,
+    #[serde(rename = "relatedContent", default)]
+    related: RelatedContent,
+}
+
+/// Related shelves returned by the current artist overview.
+#[derive(Default, Deserialize)]
+struct RelatedContent {
+    #[serde(rename = "relatedArtists", default)]
+    artists: RelatedArtists,
+}
+
+/// The artists in the overview’s Fans also like shelf.
+#[derive(Default, Deserialize)]
+struct RelatedArtists {
+    #[serde(default)]
+    items: Vec<RelatedArtist>,
+}
+
+/// An artist card with the same profile and portrait fields used by Spotify’s page.
+#[derive(Deserialize)]
+struct RelatedArtist {
+    uri: String,
+    profile: Profile,
+    #[serde(default)]
+    visuals: Visuals,
 }
 
 #[derive(Deserialize)]
@@ -114,19 +141,6 @@ struct Release {
     tracks: ReleaseTracks,
 }
 
-#[derive(Deserialize)]
-struct PathDate {
-    year: i32,
-    month: Option<u32>,
-    day: Option<u32>,
-}
-
-#[derive(Default, Deserialize)]
-struct Cover {
-    #[serde(default)]
-    sources: Vec<Image>,
-}
-
 /// The banner over an artist page. It sits beside `visuals` rather than in it, and its sources
 /// give a largest size instead of an exact one.
 #[derive(Deserialize)]
@@ -145,23 +159,6 @@ struct HeaderImage {
 struct HeaderSource {
     url: String,
     max_width: Option<u32>,
-}
-
-#[derive(Deserialize)]
-struct Image {
-    height: u32,
-    url: String,
-}
-
-#[derive(Default, Deserialize)]
-struct Copyrights {
-    #[serde(default)]
-    items: Vec<Copyright>,
-}
-
-#[derive(Deserialize)]
-struct Copyright {
-    text: String,
 }
 
 #[derive(Default, Deserialize)]
@@ -228,7 +225,7 @@ fn overview(data: Data, artist_id: &str) -> Result<Overview> {
             .avatar
             .sources
             .iter()
-            .max_by_key(|image| image.height)
+            .max_by_key(|image| image.height.unwrap_or_default())
             .map(|image| image.url.clone()),
         banner: artist
             .header
@@ -247,6 +244,20 @@ fn overview(data: Data, artist_id: &str) -> Result<Overview> {
         monthly_listeners: artist.stats.and_then(|stats| stats.monthly_listeners),
         tracks,
         albums,
+        similar: artist
+            .related
+            .artists
+            .items
+            .into_iter()
+            .filter_map(|artist| {
+                Some(SavedArtist {
+                    id: artist.uri.strip_prefix("spotify:artist:")?.to_owned(),
+                    name: artist.profile.name,
+                    cover: cover(&artist.visuals.avatar.sources, true),
+                    added_at: None,
+                })
+            })
+            .collect(),
     })
 }
 
@@ -270,13 +281,6 @@ fn releases(
 }
 
 fn album(release: Release, artist: &ArtistRef) -> Album {
-    let release_date = release.date.as_ref().map(date).unwrap_or_default();
-    let year = release
-        .date
-        .as_ref()
-        .map(|date| date.year)
-        .unwrap_or_default();
-
     Album {
         id: release.id,
         name: release.name,
@@ -285,9 +289,8 @@ fn album(release: Release, artist: &ArtistRef) -> Album {
         cover: cover(&release.cover.sources, false),
         cover_large: cover(&release.cover.sources, true),
         release_type: release_type(&release.kind),
-        year,
-        track_count: release.tracks.total_count,
-        release_date,
+        track_count: Some(release.tracks.total_count),
+        release_date: release.date.as_ref().and_then(PathDate::release),
         label: release.label,
         copyrights: release
             .copyright
@@ -299,25 +302,8 @@ fn album(release: Release, artist: &ArtistRef) -> Album {
     }
 }
 
-fn date(date: &PathDate) -> String {
-    match (date.month, date.day) {
-        (Some(month), Some(day)) => format!("{:04}-{month:02}-{day:02}", date.year),
-        (Some(month), None) => format!("{:04}-{month:02}", date.year),
-        _ => format!("{:04}", date.year),
-    }
-}
-
 fn cover(sources: &[Image], large: bool) -> Option<String> {
-    let picked = match large {
-        true => sources
-            .iter()
-            .filter(|image| image.height >= 300)
-            .min_by_key(|image| image.height)
-            .or_else(|| sources.iter().max_by_key(|image| image.height)),
-        false => sources.iter().min_by_key(|image| image.height),
-    }?;
-
-    Some(picked.url.clone())
+    super::wire::image(sources, large).map(|image| image.url.clone())
 }
 
 fn release_type(kind: &str) -> ReleaseType {
@@ -361,8 +347,14 @@ mod tests {
             overview.albums[0].cover_large.as_deref(),
             Some("album-large")
         );
-        assert_eq!(overview.albums[0].release_date, "2024-03-02");
-        assert_eq!(overview.albums[0].track_count, 12);
+        assert_eq!(
+            overview.albums[0]
+                .release_date
+                .map(|date| date.to_string())
+                .as_deref(),
+            Some("2024-03-02")
+        );
+        assert_eq!(overview.albums[0].track_count, Some(12));
         assert_eq!(
             overview.albums[0].artist_refs[0].id.as_deref(),
             Some("artist")

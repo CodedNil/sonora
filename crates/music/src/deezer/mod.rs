@@ -9,6 +9,7 @@ mod playback;
 mod wire;
 
 use std::sync::Arc;
+use tracing::warn;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -56,17 +57,13 @@ impl DeezerProvider {
         let Some(remembered) = auth::load() else {
             return Ok(None);
         };
-        match DeezerClient::connect(&remembered.arl).await {
-            Ok(client) => {
-                let profile = client.profile().await?;
-                Ok(Some(session(client, profile)))
-            }
-            Err(error) if crate::trouble::offline(&format!("{error:#}")) => Err(error),
-            Err(error) => {
-                log::warn!("deezer: the stored session is no longer usable: {error:#}");
-                Ok(None)
-            }
-        }
+        let Some(client) =
+            crate::credentials::restored("deezer", DeezerClient::connect(&remembered.arl).await)?
+        else {
+            return Ok(None);
+        };
+        let profile = client.profile().await?;
+        Ok(Some(session(client, profile)))
     }
 }
 
@@ -126,7 +123,7 @@ impl MusicProvider for DeezerProvider {
     fn offline_playback(&self) -> Option<Arc<dyn PlaybackFactory>> {
         let remembered = auth::load()?;
         let client = DeezerClient::offline(&remembered.arl)
-            .inspect_err(|error| log::warn!("deezer: cannot build an offline client: {error:#}"))
+            .inspect_err(|error| warn!("deezer: cannot build an offline client: {error:#}"))
             .ok()?;
         Some(Arc::new(Factory::new(client)))
     }

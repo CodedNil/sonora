@@ -7,15 +7,18 @@ use i18n::t;
 use music::Track;
 use state::{History, HistoryState, Playback, Sonora};
 use ui::{
-    ActiveTheme as _, Button, Listing as _, Modal, Scrollbar, Scroller, TableDelegate, TableEvent,
-    TableState, runtime, table, vacant,
+    ActiveTheme as _, Button, FilterChange, Listing as _, Modal, Popovers, Scrollbar, Scroller,
+    TableDelegate, TableEvent, TableState, table, vacant,
 };
 
+use crate::chrome::tools::{self, Sliders};
 use crate::chrome::{Searchable, Toolbar, Tooled};
 use crate::shared::cells;
 use crate::shared::hero::{HeroMetaStrip, PageHero};
 use crate::shared::page;
 use crate::shared::tracks::{HISTORY_COLUMNS, TrackSource, Tracks, drop_picked};
+
+const SECTION: &str = "history";
 
 struct HistoryTracks(Entity<History>);
 
@@ -36,6 +39,8 @@ pub(crate) struct HistoryView {
     scrollbar: Entity<Scrollbar>,
     table: Entity<TableState<TrackSource>>,
     toolbar: Entity<Toolbar>,
+    popovers: Popovers,
+    sliders: Sliders,
     clearing: bool,
 }
 
@@ -63,7 +68,11 @@ impl HistoryView {
             .with_history(history.clone())
             .with_liked(Sonora::global(cx).library.clone())
             .table(cx.weak_entity());
-            TableState::new(TableDelegate::new(source, width, cx), cx).follow(scroll)
+            let settings = Sonora::global(cx).settings.read(cx);
+            let mut delegate = TableDelegate::new(source, width, cx);
+            delegate.set_layout(settings.table(SECTION), cx);
+            delegate.set_sorting(settings.sorting(SECTION).flatten(), cx);
+            TableState::new(delegate, cx).follow(scroll)
         });
 
         cx.observe(&history, |this, _, cx| {
@@ -90,7 +99,10 @@ impl HistoryView {
                 page::play_or_toggle(&this.table, &this.playback, *display, cx);
             }
             TableEvent::Removed => drop_picked(&this.table, cx),
-            _ => {}
+            _ => {
+                let settings = Sonora::global(cx).settings.clone();
+                page::store(&settings, &this.table, SECTION, SECTION, cx);
+            }
         })
         .detach();
 
@@ -102,6 +114,8 @@ impl HistoryView {
             scrollbar,
             table,
             toolbar,
+            popovers: Popovers::default(),
+            sliders: Sliders::with_choices(crate::shared::tracks::choice_filters(), id, cx),
             clearing: false,
         }
     }
@@ -116,40 +130,46 @@ impl HistoryView {
             HistoryState::Loading => None,
             HistoryState::Failed => Some(t!("history-not-loaded")),
             _ if self.table.row_count(cx) > 0 => None,
-            _ if self.table.filtering(cx) => Some(t!("library-no-matches")),
+            _ if self.table.filtering(cx) => Some(t!("common-no-matches")),
             _ => Some(t!("history-empty")),
         }
     }
 
-    fn header(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn header(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
         let (count, duration) = {
             let history = self.history.read(cx);
             let tracks = history.tracks();
-            let duration: std::time::Duration = tracks.iter().map(|track| track.duration).sum();
+            let duration: Option<std::time::Duration> =
+                tracks.iter().map(|track| track.duration).sum();
             (tracks.len(), duration)
         };
-        let mut strip = HeroMetaStrip::new().text(t!("count-songs", count = count));
-        if !duration.is_zero() {
-            strip = strip.text(runtime(duration));
-        }
+        let strip = HeroMetaStrip::new()
+            .text(t!("count-songs", count = count))
+            .duration(duration);
 
         PageHero::new("history-hero", t!("nav-history"))
+            .compact(compact)
             .fallback("icons/rotate-ccw-clock.svg")
             .accent()
-            .eyebrow(t!("detail-playlist"))
+            .top_bar(t!("kind-playlist"), self.toolbar.clone(), cx)
             .meta(strip)
             .actions(
-                div().flex().items_center().child(
-                    Button::new("clear-history")
-                        .outline()
-                        .icon("icons/trash-2.svg")
-                        .label(t!("history-clear"))
-                        .disabled(count == 0)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.clearing = true;
-                            cx.notify();
-                        })),
-                ),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Button::new("clear-history")
+                            .outline()
+                            .icon("icons/trash-2.svg")
+                            .label(t!("history-clear"))
+                            .disabled(count == 0)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.clearing = true;
+                                cx.notify();
+                            })),
+                    )
+                    .child(self.toolbar.clone()),
             )
             .into_any_element()
     }
@@ -185,23 +205,22 @@ impl Render for HistoryView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.table.claim(cx);
         let inset = cx.theme().metrics.inset;
-        let width = cells::content_width(window, Pixels::ZERO, cx);
-        if (width - self.width).abs() >= gpui::px(0.5) {
-            self.width = width;
-            self.table.set_width(width, cx);
-        }
+        page::resize(&self.table, &mut self.width, inset, window, cx);
 
         let scroll = self.scrollbar.read(cx).scroll().clone();
-        let viewport = page::viewport(&scroll, inset, window);
+        let sticky = page::sticky(&self.scrollbar, cx);
+        let viewport = page::viewport(&scroll, sticky, window);
+        let anchors = self.scrollbar.read(cx).anchors();
+        self.table.set_anchors(anchors, cx);
         self.table
             .update(cx, |table, _| table.set_viewport(viewport));
 
         let note = self.note(cx);
         let page = Scroller::new("history-page", &self.scrollbar)
             .bottom_inset(crate::chrome::Chrome::bottom(cx))
-            .pt(inset)
+            .px(inset)
             .pb(inset)
-            .child(div().px(inset).child(self.header(cx)))
+            .child(div().child(self.header(false, cx)))
             .child(table(&self.table))
             .when_some(note, |this, note| {
                 this.child(
@@ -214,8 +233,12 @@ impl Render for HistoryView {
             });
 
         div()
+            .relative()
             .size_full()
             .child(page)
+            .when(sticky > Pixels::ZERO, |this| {
+                this.child(page::header(self.header(true, cx), inset, cx))
+            })
             .when(self.clearing, |this| this.child(self.confirmation(cx)))
     }
 }
@@ -236,7 +259,22 @@ impl Tooled for HistoryView {
         self.toolbar.clone()
     }
 
-    fn tools(&self, _cx: &App) -> Vec<AnyElement> {
-        Vec::new()
+    fn tools(&self, cx: &App) -> Vec<AnyElement> {
+        let axes = self.table.filters(cx);
+        if axes.is_empty() && !self.table.narrowed(cx) {
+            return Vec::new();
+        }
+        let table = self.table.clone();
+        let toolbar = self.toolbar.clone();
+        vec![tools::filters(
+            &self.popovers,
+            &self.sliders,
+            axes,
+            move |change: FilterChange, cx| {
+                table.filter(change, cx);
+                toolbar.update(cx, |_, cx| cx.notify());
+            },
+            cx,
+        )]
     }
 }

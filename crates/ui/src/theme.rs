@@ -125,7 +125,7 @@ impl ThemeKind {
 
     pub fn label(self) -> SharedString {
         match self {
-            Self::System => t!("theme-system"),
+            Self::System => t!("common-system"),
             Self::Dark => t!("theme-dark"),
             Self::Light => t!("theme-light"),
         }

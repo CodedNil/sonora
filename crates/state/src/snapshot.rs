@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{debug, warn};
 
 use music::{Album, Playlist, SavedArtist, Shape, Track};
 use serde::de::DeserializeOwned;
@@ -145,7 +146,7 @@ impl Snapshots {
                     .write(&key(provider, kind, part), &value, stamp())
             });
         if let Err(error) = recorded {
-            log::warn!(
+            warn!(
                 "library: cannot record the {} snapshot: {error:#}",
                 part.key()
             );
@@ -155,7 +156,7 @@ impl Snapshots {
     /// Drops everything kept for a provider, which is what signing out of it means.
     pub fn forget(&self, provider: &str) {
         if let Err(error) = self.cache.forget(&format!("{provider}/")) {
-            log::warn!("library: cannot drop the {provider} snapshots: {error:#}");
+            warn!("library: cannot drop the {provider} snapshots: {error:#}");
         }
     }
 
@@ -178,10 +179,10 @@ impl Snapshots {
             .read(&key(provider, kind, part), |value| {
                 serde_json::from_str::<Snapshot<T>>(value)
             })
-            .inspect_err(|error| log::warn!("library: cannot read a snapshot: {error:#}"))
+            .inspect_err(|error| warn!("library: cannot read a snapshot: {error:#}"))
             .ok()??
             .inspect_err(|error| {
-                log::debug!(
+                debug!(
                     "library: the {} snapshot no longer parses: {error:#}",
                     part.key()
                 );
