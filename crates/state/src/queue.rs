@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
 
@@ -8,10 +8,17 @@ use music::Track;
 
 use crate::{AppSettings, Origin, Outcome, Session, SessionEvent, Toast, Toasts};
 
-mod view;
 pub use logic::queue::{QueueKind, QueuePlacement, QueuePosition, QueueSections, QueueSlot, Stub};
 pub(crate) use logic::queue::{Reach, gap_target};
-pub use view::QueueView;
+
+/// History, current provenance, and upcoming entries from a resolved device report.
+pub(crate) type RemoteWindow = (Vec<(Track, QueueKind)>, QueueKind, Vec<(Track, QueueKind)>);
+
+/// A handoff either seeds a collection or names its complete resolved order.
+pub(crate) enum QueueStart {
+    Collection(Vec<Track>, usize),
+    Reported(Box<Track>, RemoteWindow),
+}
 
 /// A queue as it is saved for the next launch.
 pub type Resume = logic::queue::Resume<Origin>;
@@ -22,6 +29,16 @@ type Taken = Removed<Origin>;
 /// What an Undo on a queue toast puts back. The toast's handler holds the only strong
 /// reference, so the tracks are let go once the toast is, and taking them empties it.
 type Snapshot<T> = Rc<RefCell<Option<T>>>;
+
+/// Ownership shared by routing, playback and queue persistence. During a handoff, Soloist can
+/// own the audio before Sonora has installed the desktop queue.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PlaybackOwner {
+    /// The local Soloist daemon owns the active Spotify device.
+    pub(crate) native: bool,
+    /// The queue is projecting another device and must stay out of local persistence.
+    pub(crate) remote: bool,
+}
 
 /// A toast the queue posted with an Undo, and a weak handle on what that Undo puts back.
 struct Reported<T> {
@@ -49,8 +66,10 @@ impl<T> Reported<T> {
 /// Undo toasts. Reading goes straight through to the order.
 pub struct Queue {
     order: Order<Origin>,
+    owner: Rc<Cell<PlaybackOwner>>,
     /// The toast counting tracks removed one by one while it may still be up.
     removed: Option<Reported<Vec<Taken>>>,
+    undo_generation: u64,
     session: Entity<Session>,
     settings: Entity<AppSettings>,
 }
@@ -82,7 +101,9 @@ impl Queue {
 
         Self {
             order: Order::new(shuffle),
+            owner: Rc::default(),
             removed: None,
+            undo_generation: 0,
             session,
             settings,
         }
@@ -100,6 +121,9 @@ impl Queue {
     }
 
     fn remember(&mut self, cx: &mut Context<Self>) {
+        if self.owner.get().remote {
+            return;
+        }
         let resume = self
             .session
             .read(cx)
@@ -113,9 +137,49 @@ impl Queue {
         if self.order.shuffle() == on {
             return;
         }
-        self.settings
-            .update(cx, |settings, cx| settings.set_shuffle(on, cx));
+        if !self.owner.get().remote {
+            self.settings
+                .update(cx, |settings, cx| settings.set_shuffle(on, cx));
+        }
         self.edit(cx, |order| order.set_shuffle(on));
+    }
+
+    /// Applies the remote shuffle flag without editing its reported order.
+    pub(crate) fn report_shuffle(&mut self, on: bool) {
+        self.order.report_shuffle(on);
+    }
+
+    /// Keeps reports from another device out of the saved local session.
+    pub(crate) fn set_external(&mut self, external: bool) {
+        let owner = self.owner.get();
+        if owner.remote != external {
+            self.invalidate_undo();
+        }
+        self.owner.set(PlaybackOwner {
+            remote: external,
+            ..owner
+        });
+    }
+
+    /// Gives the other playback entities a read handle that works during queue updates.
+    pub(crate) fn owner(&self) -> Rc<Cell<PlaybackOwner>> {
+        self.owner.clone()
+    }
+
+    /// Clears the previous order while switching queues or restoring the saved local session.
+    pub(crate) fn clear_projection(&mut self, cx: &mut Context<Self>) {
+        self.order.clear();
+        if !self.owner.get().remote {
+            self.order.report_shuffle(self.settings.read(cx).shuffle());
+        }
+        self.removed = None;
+        cx.notify();
+    }
+
+    /// Drops Undo actions that belong to the previous playback owner.
+    pub(crate) fn invalidate_undo(&mut self) {
+        self.removed = None;
+        self.undo_generation = self.undo_generation.wrapping_add(1);
     }
 
     /// Restores a saved queue. A queue saved by an older version has one origin for all of it,
@@ -152,7 +216,7 @@ impl Queue {
             return;
         }
         let snapshot = Rc::new(RefCell::new(Some(removed)));
-        let toast = Self::undo_toast(
+        let toast = self.undo_toast(
             Toast::new(Outcome::Plain, "toast-queue-cleared"),
             snapshot,
             cx,
@@ -175,21 +239,32 @@ impl Queue {
         self.edit(cx, |order| order.start(tracks, index, origin))
     }
 
-    /// Applies a remote queue window while keeping the current entry and playback position.
-    /// `reach` says how much of this queue the window stands for, so what lies beyond it stays.
-    /// The suggestions are reported like any other song, so one the window no longer names is
-    /// gone like any other too.
-    pub(crate) fn replace_remote(
+    /// Applies a resolved device queue with one persistence and notification boundary.
+    pub(crate) fn install_device_queue(
         &mut self,
-        past: Vec<(Track, QueueKind)>,
-        current: QueueKind,
-        upcoming: Vec<(Track, QueueKind)>,
+        start: Option<QueueStart>,
+        origin: Option<Origin>,
+        window: Option<RemoteWindow>,
         reach: Reach,
+        retained: Vec<Track>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Option<Track> {
         self.edit(cx, |order| {
-            order.replace_remote(past, current, upcoming, reach)
-        });
+            let current = match start {
+                Some(QueueStart::Collection(tracks, index)) => order.start(tracks, index, origin),
+                Some(QueueStart::Reported(track, (past, kind, upcoming))) => {
+                    Some(order.start_reported(past, (*track, kind), upcoming, origin))
+                }
+                None => None,
+            };
+            if let Some((past, kind, upcoming)) = window {
+                order.replace_remote(past, kind, upcoming, reach);
+            }
+            if !retained.is_empty() {
+                order.insert(retained, None, QueuePlacement::Last);
+            }
+            current
+        })
     }
 
     /// Makes `tracks` what plays after the current track, as a Sonora Session shares it. Local
@@ -247,13 +322,13 @@ impl Queue {
                 if let Some(removed) = snapshot.borrow_mut().as_mut() {
                     removed.push(taken);
                 }
-                let toast = Self::removal_toast(snapshot, cx);
+                let toast = self.removal_toast(snapshot, cx);
                 Toasts::settle(id, toast, cx);
             }
             None => {
                 let snapshot = Rc::new(RefCell::new(Some(vec![taken])));
                 let undo = Rc::downgrade(&snapshot);
-                let toast = Self::removal_toast(snapshot, cx);
+                let toast = self.removal_toast(snapshot, cx);
                 let toast = Toasts::post(toast, cx);
                 self.removed = Some(Reported { toast, undo });
             }
@@ -262,7 +337,7 @@ impl Queue {
 
     /// The toast for tracks removed one by one, naming one and counting several. Its Undo hands
     /// `snapshot` back to the queue once.
-    fn removal_toast(snapshot: Snapshot<Vec<Taken>>, cx: &mut Context<Self>) -> Toast {
+    fn removal_toast(&self, snapshot: Snapshot<Vec<Taken>>, cx: &mut Context<Self>) -> Toast {
         let toast = match snapshot.borrow().as_deref() {
             Some([only]) => {
                 Toast::new(Outcome::Plain, "toast-queue-removed-track").name(only.name().to_owned())
@@ -270,18 +345,28 @@ impl Queue {
             removed => Toast::new(Outcome::Plain, "toast-queue-removed-tracks")
                 .count(removed.map_or(0, <[Taken]>::len)),
         };
-        Self::undo_toast(toast, snapshot, cx)
+        self.undo_toast(toast, snapshot, cx)
     }
 
     /// Builds the same one-shot Undo for clearing a queue and removing individual songs.
-    fn undo_toast(toast: Toast, snapshot: Snapshot<Vec<Taken>>, cx: &mut Context<Self>) -> Toast {
+    fn undo_toast(
+        &self,
+        toast: Toast,
+        snapshot: Snapshot<Vec<Taken>>,
+        cx: &mut Context<Self>,
+    ) -> Toast {
         let queue = cx.entity().downgrade();
+        let generation = self.undo_generation;
         toast.undo(move |cx| {
             let Some(removed) = snapshot.borrow_mut().take() else {
                 return;
             };
             queue
-                .update(cx, |queue, cx| queue.put_back(removed, cx))
+                .update(cx, |queue, cx| {
+                    if queue.undo_generation == generation {
+                        queue.put_back(removed, cx);
+                    }
+                })
                 .ok();
         })
     }

@@ -60,7 +60,7 @@ impl SpotifyProvider {
 
     async fn session(&self, client: LibrespotClient) -> Result<ProviderSession> {
         let profile = client.profile().await?;
-        let playback = Arc::new(Factory::new(client.session().clone()));
+        let playback = Arc::new(Factory::new(client.session().clone(), client.connect()));
         Ok(ProviderSession {
             profile,
             api: Arc::new(client),

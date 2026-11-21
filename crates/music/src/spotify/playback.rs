@@ -14,7 +14,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 
 use crate::audio::{Chain, Volume};
-
+use crate::connect::Connect;
 use crate::sink::Cue;
 use crate::soloist;
 use crate::spectrum::Spectrum;
@@ -214,37 +214,31 @@ impl PlaybackEvents for Events {
 /// librespot's otherwise.
 pub struct Factory {
     session: Session,
-    /// Whether Soloist may play. A session that never connects plays downloads through
-    /// librespot whatever is set up, since Soloist only streams.
-    soloist: bool,
+    /// A session without Connect plays downloads through librespot, since Soloist only streams.
+    connect: Option<Arc<Connect>>,
 }
 
 impl Factory {
-    pub fn new(session: Session) -> Self {
-        Self {
-            session,
-            soloist: true,
-        }
+    pub fn new(session: Session, connect: Option<Arc<Connect>>) -> Self {
+        Self { session, connect }
     }
 
     /// A factory for a session that never connects.
     pub fn offline(session: Session) -> Self {
-        Self {
-            session,
-            soloist: false,
-        }
+        Self::new(session, None)
     }
 
-    fn official(&self) -> bool {
-        self.soloist && soloist::ready()
+    fn official(&self) -> Option<&Connect> {
+        self.connect.as_deref().filter(|_| soloist::ready())
     }
 }
 
 impl PlaybackFactory for Factory {
     fn start(&self, config: PlaybackConfig) -> (Box<dyn MusicPlayer>, Box<dyn PlaybackEvents>) {
-        if self.official() {
+        if let Some(connect) = self.official() {
             let keeper = Keeper::new(&self.session, &config);
-            let (engine, events) = soloist::start(&config);
+            let (engine, events, daemon) = soloist::start(&config, connect.register_native());
+            self.session.spawn(daemon);
             return (Box::new(Official { engine, keeper }), Box::new(events));
         }
         let (engine, events) = Engine::start(self.session.clone(), config);
@@ -252,7 +246,7 @@ impl PlaybackFactory for Factory {
     }
 
     fn qualities(&self) -> Option<&'static [Offer]> {
-        self.official().then_some(soloist::QUALITIES)
+        self.official().map(|_| soloist::QUALITIES)
     }
 }
 
@@ -312,8 +306,7 @@ impl Keeper {
 }
 
 /// Soloist as the Spotify engine. It streams every track, a downloaded one too, so nothing
-/// plays without a network while it is in use. A track is only fetched ahead as the next in the
-/// queue, which Soloist then joins to the current one by itself.
+/// plays without a network while it is in use. Soloist handles transitions within its queue.
 struct Official {
     engine: soloist::Engine,
     keeper: Keeper,
@@ -348,32 +341,40 @@ impl MusicPlayer for Official {
         Ok(())
     }
 
-    fn preload(&self, track_id: &str, segue: bool) -> Result<()> {
-        track_uri(track_id)?;
-        if segue {
-            self.engine.line_up(track_id);
-        }
-        Ok(())
+    fn preload(&self, track_id: &str, _segue: bool) -> Result<()> {
+        track_uri(track_id).map(|_| ())
     }
 
-    fn unline(&self) {
-        self.engine.line_down();
+    fn set_repeat(&self, mode: crate::connect::Repeat) {
+        self.engine.ask(soloist::Command::Repeat(mode));
+    }
+
+    fn reports_queue(&self) -> bool {
+        true
+    }
+
+    fn skip(&self, forward: bool) {
+        self.engine.ask(soloist::Command::Skip(forward));
+    }
+
+    fn set_shuffle(&self, enabled: bool) {
+        self.engine.ask(soloist::Command::Shuffle(enabled));
     }
 
     fn play(&self) {
-        self.engine.play();
+        self.engine.ask(soloist::Command::Play);
     }
 
     fn pause(&self) {
-        self.engine.pause();
+        self.engine.ask(soloist::Command::Pause);
     }
 
     fn seek(&self, position: Duration) {
-        self.engine.seek(position);
+        self.engine.ask(soloist::Command::Seek(position));
     }
 
     fn set_gain(&self, gain: f32) {
-        self.engine.set_gain(gain);
+        self.engine.ask(soloist::Command::Gain(gain));
     }
 }
 
@@ -451,61 +452,10 @@ impl Engine {
             signals,
             gapless: config.gapless,
             normalisation: config.normalisation,
-            encoding: offered(config.quality),
+            encoding: config.quality.offered_encoding(QUALITIES),
             keeper,
         };
         (engine, events)
-    }
-
-    fn load(&self, track_id: &str, at: Duration, seamless: bool) -> Result<()> {
-        let uri = track_uri(track_id)?;
-        log::debug!("playback: spotify loads {track_id} at {at:?}, seamless {seamless}");
-
-        if !seamless || !self.gapless {
-            self.cue.clear();
-        }
-        self.learn(track_id);
-        self.player.load(uri, true, at.as_millis() as u32);
-        Ok(())
-    }
-
-    fn load_paused_at(&self, track_id: &str, at: Duration) -> Result<()> {
-        let uri = track_uri(track_id)?;
-
-        self.cue.clear();
-        self.learn(track_id);
-        self.player.load(uri, false, at.as_millis() as u32);
-        Ok(())
-    }
-
-    fn preload(&self, track_id: &str) -> Result<()> {
-        self.player.preload(track_uri(track_id)?);
-        Ok(())
-    }
-
-    fn play(&self) {
-        self.player.play();
-    }
-
-    fn pause(&self) {
-        self.player.pause();
-    }
-
-    /// Clears the queue before librespot hears of the seek. A seek in a file already on disk
-    /// lands at once, and a clear after its `Seeked` would refuse the new audio with nothing left
-    /// to let it through, while librespot decodes on unheard.
-    fn seek(&self, position: Duration) {
-        self.cue.clear();
-        log::debug!("playback: spotify seeks to {position:?}");
-        self.player.seek(position.as_millis() as u32);
-    }
-
-    fn set_gain(&self, gain: f32) {
-        self.volume.set(gain);
-    }
-
-    fn spectrum(&self) -> Spectrum {
-        self.spectrum.clone()
     }
 
     /// Reports what every Spotify track is: Ogg Vorbis at the offer asked for, decoded by
@@ -544,35 +494,54 @@ impl MusicPlayer for Engine {
     }
 
     fn load(&self, track_id: &str, at: Duration, seamless: bool) -> Result<()> {
-        self.load(track_id, at, seamless)
+        let uri = track_uri(track_id)?;
+        log::debug!("playback: spotify loads {track_id} at {at:?}, seamless {seamless}");
+
+        if !seamless || !self.gapless {
+            self.cue.clear();
+        }
+        self.learn(track_id);
+        self.player.load(uri, true, at.as_millis() as u32);
+        Ok(())
     }
 
     fn load_paused_at(&self, track_id: &str, at: Duration) -> Result<()> {
-        self.load_paused_at(track_id, at)
+        let uri = track_uri(track_id)?;
+
+        self.cue.clear();
+        self.learn(track_id);
+        self.player.load(uri, false, at.as_millis() as u32);
+        Ok(())
     }
 
     fn preload(&self, track_id: &str, _segue: bool) -> Result<()> {
-        self.preload(track_id)
+        self.player.preload(track_uri(track_id)?);
+        Ok(())
     }
 
     fn play(&self) {
-        self.play();
+        self.player.play();
     }
 
     fn pause(&self) {
-        self.pause();
+        self.player.pause();
     }
 
+    /// Clears the queue before librespot hears of the seek. A seek in a file already on disk
+    /// lands at once, and a clear after its `Seeked` would refuse the new audio with nothing left
+    /// to let it through, while librespot decodes on unheard.
     fn seek(&self, position: Duration) {
-        self.seek(position);
+        self.cue.clear();
+        log::debug!("playback: spotify seeks to {position:?}");
+        self.player.seek(position.as_millis() as u32);
     }
 
     fn set_gain(&self, gain: f32) {
-        self.set_gain(gain);
+        self.volume.set(gain);
     }
 
     fn spectrum(&self) -> Option<Spectrum> {
-        Some(self.spectrum())
+        Some(self.spectrum.clone())
     }
 }
 
@@ -694,13 +663,4 @@ fn bitrate(quality: Quality) -> Bitrate {
         Quality::Normal => Bitrate::Bitrate160,
         Quality::Low => Bitrate::Bitrate96,
     }
-}
-
-/// The encoding of the offer librespot is asked for at a level.
-fn offered(quality: Quality) -> Option<Encoding> {
-    let level = quality.within(QUALITIES);
-    QUALITIES
-        .iter()
-        .find(|offer| offer.quality == level)
-        .map(|offer| offer.encoding)
 }

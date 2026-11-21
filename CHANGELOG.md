@@ -10,12 +10,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - Removing songs, albums, artists or playlists from your library, songs from a playlist, or plays from your history happens at once without asking. Undo on the toast puts them back.
+- With Soloist, you can control playback on other Spotify Connect devices and skip or shuffle songs in the active Spotify queue.
+- Pausing in Sonora while hosting a Spotify Jam now shares the pause with the group.
 
 ### Fixed
 
 - With a light theme, the rest of the app no longer turns dark while the fullscreen player opens or closes.
 - Repeat All starts a playlist over even when its last songs are unavailable, instead of stopping at the end.
 - Spotify albums that span more than one disc number their songs by disc, as in 1.12 and 2.1, instead of counting straight through.
+- You can play any song in the desktop queue. Soloist keeps the Spotify Connect context when a single skip reaches the selected song.
+- Spotify Connect controllers can skip to a specific upcoming song on Sonora, and playback handoffs now include the queue for the receiving device.
 
 ## [0.50.3] - 2026-11-20
 

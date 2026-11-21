@@ -27,7 +27,7 @@ pub struct LibrespotClient {
 
 impl LibrespotClient {
     pub fn new(session: Session) -> Self {
-        let connect = Arc::new(crate::spotify::connect::open(session.clone()));
+        let connect = crate::spotify::connect::open(session.clone());
         Self { session, connect }
     }
 

@@ -7,7 +7,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash as _, Hasher as _};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
@@ -42,8 +42,8 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::Instant;
 
 use crate::connect::{
-    Collection, Command, Connect, Device, DeviceKind, Elsewhere, Event, Invite, Jam, JamMember,
-    Naming, QueuedTrack, Repeat, Request as Input, Roster, Snapshot, Start,
+    Collection, Command, Connect, Device, DeviceKind, Event, Invite, Jam, JamMember, Naming,
+    PREVIOUS, QueuedTrack, Repeat, Request as Input, Roster, Snapshot, Start, Transport, UPCOMING,
 };
 
 const DEVICE_NAME: &str = "Sonora";
@@ -59,8 +59,6 @@ const ACK_DELAY: Duration = Duration::from_millis(600);
 const CLAIM_GRACE: Duration = Duration::from_secs(3);
 /// How long the song playing is told as a pick of Spotify's after someone joins the Jam.
 const WELCOME: Duration = Duration::from_secs(5);
-/// How long a skip made for the Jam while paused may show as playing before its pause lands.
-const ADVANCING: Duration = Duration::from_secs(3);
 /// The most pages of a collection that are read for the uids of its tracks.
 const UID_PAGES: usize = 40;
 /// How many characters of the digest make the uid Spotify's apps give a track they find listed
@@ -69,14 +67,8 @@ const DERIVED_UID: usize = 20;
 /// How far this device may be from where a Jam says its song is before it is moved there. A
 /// seek is heard, and a transfer arrives for every change a listener makes.
 const JAM_SLACK: Duration = Duration::from_millis(1500);
-/// The most upcoming tracks a start carries over from the device that sent it.
-const CARRIED: usize = 80;
-/// The recent history window Spotify includes in its player state.
-const PREVIOUS: usize = 10;
 /// A fresh cluster snapshot carries the exact shuffled queue and previous-track order.
 const QUEUE_SNAPSHOT_AGE: Duration = Duration::from_secs(10);
-/// How many tracks of a queue a log line spells out.
-const OUTLINED: usize = 16;
 /// The metadata keys a queued track may name the person who queued it under.
 const ADDERS: [&str; 4] = ["added_by", "added_by_username", "adder", "queued_by"];
 /// How long a new name settles before it is put, so a name typed in is put once.
@@ -111,9 +103,10 @@ const JAM_INFO: &str = "/social-connect/v2/sessions/info";
 const JAM_END: &str = "/social-connect/v3/sessions";
 
 /// Starts one worker on the session runtime; it stays idle until device discovery is enabled.
-pub fn open(session: Session) -> Connect {
+pub fn open(session: Session) -> Arc<Connect> {
     let (connection, requests, events) = Connect::new(session.device_id().to_owned());
-    session.spawn(Worker::new(session.clone(), events).run(requests));
+    let connection = Arc::new(connection);
+    session.spawn(Worker::new(session.clone(), Arc::downgrade(&connection), events).run(requests));
     connection
 }
 
@@ -181,6 +174,7 @@ fn subscribe(session: &Session) -> Result<Subscriptions, Error> {
 
 struct Worker {
     session: Session,
+    connection: Weak<Connect>,
     out: UnboundedSender<Event>,
     info: DeviceInfo,
     streams: Subscriptions,
@@ -210,7 +204,6 @@ struct Worker {
     learned: UnboundedSender<(String, Option<Listed>)>,
     learning: UnboundedReceiver<(String, Option<Listed>)>,
     /// Whether this device hosts a Jam that others listen to, and how many are in it.
-    hosting: bool,
     members: usize,
     /// Until when the song playing is told as one Spotify picked rather than one queued by hand.
     /// An app that joins a Jam while a queued song plays cannot place it: it starts the next song
@@ -218,16 +211,6 @@ struct Worker {
     /// Told as a pick, the song is taken as it is, and telling it as queued again afterwards
     /// leaves everyone in step with the right songs to follow.
     welcome: Option<Instant>,
-    /// When the song the Jam hears ends while this device is paused apart from it, and until
-    /// when the skip that follows it there may be seen playing before its pause lands.
-    advance_at: Option<Instant>,
-    advancing: Option<Instant>,
-    /// What this device really plays while it is paused on its own in the Jam it hosts. A pause
-    /// in a Jam is the listener's own: the others' music goes on, and Spotify hands the lead to
-    /// whoever still plays once it hears of the pause, after which nothing this device does
-    /// reaches them. So the pause is kept from Spotify, `now` goes on saying what the Jam hears,
-    /// and resuming catches up with it.
-    apart: Option<Arc<Snapshot>>,
     active_since: Option<SystemTime>,
     claimed_at: Option<Instant>,
     /// The id and sender of the last command handled, which the next state echoes back.
@@ -239,21 +222,29 @@ struct Worker {
     /// The device that has playback on the account, as the last cluster said.
     active_device: String,
     /// Last queue published by another active device, retained across a transfer here.
-    remote_queue: Option<(Arc<Snapshot>, Instant)>,
+    transfer_queue: Option<(Arc<Snapshot>, Instant)>,
+    /// Preconditions for a queue edit sent to the native player.
+    queue_revision: String,
+    /// A rejected edit to retry if the same player reports a newer queue revision.
+    queue_edit: Option<Arc<Snapshot>>,
+
     /// The reason of a put that is due but held back, and when it may go out.
     pending: Option<PutStateReason>,
     flush_at: Option<Instant>,
     last_put: Option<Instant>,
+    /// The wire revision and app queue fingerprint from the last successful state update.
+    published_queue: Option<(String, u64)>,
     blocked_until: Option<Instant>,
     backoff: Duration,
 }
 
 impl Worker {
-    fn new(session: Session, out: UnboundedSender<Event>) -> Self {
+    fn new(session: Session, connection: Weak<Connect>, out: UnboundedSender<Event>) -> Self {
         let info = device_info(&session, &Naming::default());
         let (learned, learning) = unbounded_channel();
         Self {
             session,
+            connection,
             out,
             info,
             streams: Subscriptions::new(),
@@ -270,12 +261,8 @@ impl Worker {
             uids: Uids::default(),
             learned,
             learning,
-            hosting: false,
             members: 0,
             welcome: None,
-            advance_at: None,
-            advancing: None,
-            apart: None,
             active_since: None,
             claimed_at: None,
             last_command: (0, String::new()),
@@ -283,10 +270,13 @@ impl Worker {
             ack_at: None,
             rename_at: None,
             active_device: String::new(),
-            remote_queue: None,
+            transfer_queue: None,
+            queue_revision: String::new(),
+            queue_edit: None,
             pending: None,
             flush_at: None,
             last_put: None,
+            published_queue: None,
             blocked_until: None,
             backoff: Duration::ZERO,
         }
@@ -301,7 +291,7 @@ impl Worker {
                 }
                 message = self.streams.next(), if !self.streams.is_empty() => match message {
                     Some(Ok(Incoming::Connection(id))) => self.connection_id(id).await,
-                    Some(Ok(Incoming::Cluster(update))) => self.cluster(update),
+                    Some(Ok(Incoming::Cluster(update))) => self.cluster(update).await,
                     Some(Ok(Incoming::Volume(volume))) => self.volume(volume),
                     Some(Ok(Incoming::Command(request))) => self.request(*request),
                     Some(Ok(Incoming::Jam(update))) => self.jam_update(update),
@@ -318,7 +308,6 @@ impl Worker {
                         self.want_put(PutStateReason::PLAYER_STATE_CHANGED).await;
                     }
                 }
-                () = acknowledge(self.advance_at) => self.advance(),
                 () = acknowledge(self.rename_at) => {
                     self.rename_at = None;
                     if self.enabled && self.connected {
@@ -349,12 +338,19 @@ impl Worker {
 
     async fn input(&mut self, input: Input) {
         match input {
-            Input::Enable(on) => self.enable(on).await,
+            Input::Enable(on) => self.enable(on, false).await,
+            Input::Observe => self.enable(true, true).await,
             Input::Rename(naming) => {
                 self.info.name = device_name(&naming);
                 self.rename_at = Some(Instant::now() + RENAME_DELAY);
             }
-            Input::Publish(now) => self.publish(now).await,
+            Input::Publish(now) if self.info.can_play => self.publish(now).await,
+            Input::Publish(_) => {}
+            Input::PublishQueue(device, state) => {
+                if self.active_device == device {
+                    self.publish_queue(state).await;
+                }
+            }
             Input::Transfer(to) => self.transfer(to).await,
             Input::Join(link) => self.join(&link).await,
             Input::Peek(link) => self.peek(&link).await,
@@ -405,12 +401,7 @@ impl Worker {
 
     /// The group session the account is in now, if any.
     async fn current_jam(session: &Session) -> Result<Option<Jam>, Error> {
-        let jam = Self::current_session(session).await?.map(|read| read.jam);
-        match &jam {
-            Some(jam) => log::info!("connect: in a jam of {}", jam.members.len()),
-            None => log::info!("connect: not in a jam"),
-        }
-        Ok(jam)
+        Ok(Self::current_session(session).await?.map(|read| read.jam))
     }
 
     /// The group session the account is in. Spotify answers 404 when there is none, which is
@@ -496,20 +487,14 @@ impl Worker {
             return self.leave_failed().await;
         };
         let device = self.session.device_id();
-        let answer = match owner {
-            true => {
-                let endpoint = format!("{JAM_END}/{id}?local_device_id={device}");
-                jam_request(&self.session, &Method::DELETE, &endpoint).await
-            }
-            false => {
-                let endpoint = format!("{JAM_END}/{id}/leave?local_device_id={device}");
-                jam_request(&self.session, &Method::POST, &endpoint).await
-            }
+        let (method, action) = if owner {
+            (Method::DELETE, "")
+        } else {
+            (Method::POST, "/leave")
         };
-        match answer {
-            Ok(_) => {
-                self.tell_jam(None);
-            }
+        let endpoint = format!("{JAM_END}/{id}{action}?local_device_id={device}");
+        match jam_request(&self.session, &method, &endpoint).await {
+            Ok(_) => self.tell_jam(None),
             Err(error) => {
                 log::warn!("connect: cannot leave the jam: {error}");
                 self.leave_failed().await;
@@ -583,24 +568,11 @@ impl Worker {
     }
 
     /// Reports the Jam this device is in, and notes whether it hosts one that others listen to.
-    /// Once it no longer does, a pause it kept to itself is told like any other.
     fn tell_jam(&mut self, jam: Option<Jam>) {
         let members = jam.as_ref().map_or(0, |jam| jam.members.len());
         let joined = std::mem::replace(&mut self.members, members) < members;
-        self.hosting = jam.as_ref().is_some_and(|jam| jam.owner && members > 1);
-        // while still hosting, the pause stays this device's own
-        let paused = match self.hosting {
-            true => None,
-            false => self.apart.take(),
-        };
-        if let Some(paused) = paused {
-            self.now = Some(paused);
-            self.advance_at = None;
-            self.advancing = None;
-            self.hold(PutStateReason::PLAYER_STATE_CHANGED);
-            self.flush_at.get_or_insert_with(Instant::now);
-        }
-        if self.hosting && joined {
+        let hosting = jam.as_ref().is_some_and(|jam| jam.owner && members > 1);
+        if hosting && joined {
             self.welcome = Some(Instant::now() + WELCOME);
             self.hold(PutStateReason::PLAYER_STATE_CHANGED);
             self.flush_at.get_or_insert_with(Instant::now);
@@ -631,12 +603,6 @@ impl Worker {
         if put {
             self.put(PutStateReason::PLAYER_STATE_CHANGED).await;
         }
-        log::info!(
-            "connect: moving playback, from here {}, state put {put}, held back {blocked}, at {:?}s, playing {:?}",
-            from == mine,
-            self.now.as_ref().map(|now| now.live_position().as_secs()),
-            self.now.as_ref().map(|now| now.playing),
-        );
         // Spotify answers a move here only once this device has answered the command it sends
         // for it, which the loop can give only if it is not waiting on the move itself
         if to == mine {
@@ -661,11 +627,23 @@ impl Worker {
         }
     }
 
-    async fn enable(&mut self, on: bool) {
-        if self.enabled == on {
+    async fn enable(&mut self, on: bool, observe: bool) {
+        if self.enabled == on && !observe && !self.info.capabilities.hidden {
             return;
         }
         self.enabled = on;
+        self.info.can_play = !observe;
+        let capabilities = self
+            .info
+            .capabilities
+            .as_mut()
+            .expect("connect device capabilities");
+        capabilities.hidden = observe;
+        capabilities.can_be_player = !observe;
+        if observe {
+            self.now = None;
+            self.active_since = None;
+        }
         match (on, self.started) {
             (true, false) => self.start().await,
             (true, true) if self.connected => self.announce().await,
@@ -741,18 +719,11 @@ impl Worker {
         let Some(cluster) = self.put(PutStateReason::NEW_DEVICE).await else {
             return;
         };
-        self.active_device = cluster.active_device_id.clone();
-        let roster = self.roster(&cluster);
-        let elsewhere = match roster.elsewhere.is_some() {
-            true => "playback on another device",
-            false => "no playback elsewhere",
-        };
-        log::info!(
-            "connect: listed, other devices: {}, {elsewhere}",
-            roster.devices.len()
-        );
-        self.out.send(Event::Roster(roster)).ok();
+        self.report_cluster(&cluster).await;
         // the listener may have joined a jam from another app before this one was listed
+        if !self.info.can_play {
+            return;
+        }
         match Self::current_jam(&self.session).await {
             Ok(jam) => {
                 self.tell_jam(jam);
@@ -777,77 +748,56 @@ impl Worker {
     }
 
     async fn publish(&mut self, now: Option<Arc<Snapshot>>) {
-        let Some(now) = self.heard(now) else {
-            return;
-        };
         let before = std::mem::replace(&mut self.now, now);
         self.identify(before.as_deref());
         self.read_uids();
         self.sync(before).await;
     }
 
-    /// What to tell Spotify plays when the device is in the state `now`, or `None` when there
-    /// is nothing new to tell. It differs from `now` only while this device is paused on its own
-    /// in a Jam it hosts: the Jam then hears the song go on, and a resume first moves the device
-    /// to where the Jam has got to.
-    fn heard(&mut self, now: Option<Arc<Snapshot>>) -> Option<Option<Arc<Snapshot>>> {
-        let (Some(told), Some(real), true) = (self.now.clone(), now.clone(), self.hosting) else {
-            self.apart = None;
-            self.advance_at = None;
-            self.advancing = None;
-            return Some(now);
+    /// Shares the same history and upcoming window when a separate engine owns the device.
+    async fn publish_queue(&mut self, now: Arc<Snapshot>) {
+        self.queue_edit = None;
+        let Some(track) = &now.track else { return };
+        let device = &self.active_device;
+        if self.info.can_play
+            || self
+                .connection
+                .upgrade()
+                .and_then(|link| link.native_device())
+                .as_ref()
+                != Some(device)
+        {
+            return;
+        }
+        if self
+            .transfer_queue
+            .as_ref()
+            .and_then(|(state, _)| state.track_id())
+            != now.track_id()
+        {
+            self.queue_edit = Some(now);
+            return;
+        }
+        let context = shared(&now).map_or_else(
+            || format!("{TRACK_PREFIX}{}", track.id),
+            |context| collection_uri(context, &self.session.username()),
+        );
+        let row = |track: &QueuedTrack| {
+            let track = provided(track, &context, track.uid.clone());
+            serde_json::json!({
+                "uri": track.uri, "uid": track.uid, "provider": track.provider, "metadata": track.metadata,
+            })
         };
-        let same = told.track.as_ref().map(|track| &track.id)
-            == real.track.as_ref().map(|track| &track.id);
-        match (self.apart.is_some(), real.playing) {
-            // a pause of a song the Jam hears is kept from it
-            (false, false) if told.playing && same => {
-                log::debug!("connect: pausing apart from the jam");
-                self.apart = Some(real);
-                self.advance_at = ends(&told);
-                None
-            }
-            (false, _) => Some(now),
-            // whatever else changed while paused is told, with the song still going on
-            (true, false) => {
-                let mut heard = (*real).clone();
-                heard.playing = true;
-                match same {
-                    true => {
-                        heard.position = told.position;
-                        heard.stamp = told.stamp;
-                    }
-                    // another song starts for the Jam where it stands here
-                    false => {
-                        heard.stamp = Some(SystemTime::now());
-                        self.advancing = None;
-                    }
-                }
-                self.apart = Some(real);
-                self.advance_at = ends(&heard);
-                Some(Some(Arc::new(heard)))
-            }
-            // the song skipped to for the Jam plays for an instant before its pause lands
-            (true, true) if self.advancing.is_some_and(|until| Instant::now() < until) => None,
-            (true, true) => {
-                self.apart = None;
-                self.advance_at = None;
-                self.advancing = None;
-                if !same {
-                    return Some(now);
-                }
-                let at = told.live_position();
-                let over = !told.duration.is_zero() && at >= told.duration;
-                let command = match over {
-                    true => Command::Next,
-                    false if at.abs_diff(real.live_position()) > JAM_SLACK => Command::Seek(at),
-                    false => return Some(now),
-                };
-                log::debug!("connect: catching up with the jam at {at:?}");
-                // the song is told again once the device is where the Jam is
-                self.out.send(Event::Command(command)).ok();
-                None
-            }
+        let command = serde_json::json!({
+            "endpoint": "set_queue",
+            "queue_revision": self.queue_revision,
+            "prev_tracks": now.previous.iter().map(row).collect::<Vec<_>>(),
+            "next_tracks": now.upcoming.iter().map(row).collect::<Vec<_>>(),
+            "logging_params": {},
+        });
+        if let Err(error) = send_control(&self.session, device, "player/command", command).await {
+            log::warn!("connect: the local player declined its queue: {error}");
+            self.queue_edit = Some(now);
         }
     }
 
@@ -875,20 +825,6 @@ impl Worker {
         });
     }
 
-    /// Moves on to the next song without a sound, as the Jam does when the song it hears ends
-    /// while this device is paused apart from it. The skip starts the song and the pause that
-    /// follows stops it before anything is heard, and the Jam is told the song from its top.
-    fn advance(&mut self) {
-        self.advance_at = None;
-        if self.apart.is_none() {
-            return;
-        }
-        log::debug!("connect: moving on with the jam while paused");
-        self.advancing = Some(Instant::now() + ADVANCING);
-        self.out.send(Event::Command(Command::Next)).ok();
-        self.out.send(Event::Command(Command::Pause)).ok();
-    }
-
     /// Keeps the uids read for `context` and reports the queue again under them.
     async fn learn(&mut self, context: String, tracks: Option<Listed>) {
         if self.uids.context != context {
@@ -908,15 +844,16 @@ impl Worker {
     }
 
     /// Gives what plays now new ids where it is not what played `before`: the track's play for
-    /// another track, and the run as well for another collection, or for another track when
-    /// there is no collection and each track is its own.
+    /// another track, and the run when its collection changes.
     fn identify(&mut self, before: Option<&Snapshot>) {
         let Some(now) = self.now.as_deref() else {
             return;
         };
-        let moved = before.is_none_or(|before| before.track != now.track);
-        let started = before.is_none_or(|before| before.context != now.context)
-            || (moved && shared(now).is_none());
+        let moved = before.is_none_or(|before| {
+            before.track.as_ref().map(|track| (&track.id, &track.uid))
+                != now.track.as_ref().map(|track| (&track.id, &track.uid))
+        });
+        let started = before.is_none_or(|before| before.context != now.context);
         if started || self.run.is_empty() {
             self.run = play_id();
         }
@@ -947,12 +884,14 @@ impl Worker {
             self.active_since = Some(SystemTime::now());
             self.claimed_at = Some(Instant::now());
         }
-        let only_volume = before.is_some_and(|before| now.change(&before) == Some("volume"));
-        let reason = match only_volume {
-            true => PutStateReason::VOLUME_CHANGED,
-            false => PutStateReason::PLAYER_STATE_CHANGED,
-        };
-        self.want_put(reason).await;
+        let only_volume = before
+            .is_some_and(|before| now.volume != before.volume && !now.playback_changed(&before));
+        self.want_put(if only_volume {
+            PutStateReason::VOLUME_CHANGED
+        } else {
+            PutStateReason::PLAYER_STATE_CHANGED
+        })
+        .await;
     }
 
     /// Keeps `reason` as the pending put unless one that matters more is already held.
@@ -993,24 +932,12 @@ impl Worker {
 
     /// Puts the device's state and returns the account's devices as Spotify answers it.
     async fn put(&mut self, reason: PutStateReason) -> Option<Cluster> {
-        let request = self.request_for(reason);
+        let request = self
+            .request_for(reason)
+            .inspect_err(|error| log::warn!("connect: cannot encode transfer state: {error}"))
+            .ok()?;
         self.last_put = Some(Instant::now());
         let state = &request.device.player_state;
-        log::debug!(
-            "connect: putting {reason:?}, active {}, {} uid {:?} in {} at {:?}, run {}, play {}, {}ms, playing {}, paused {}, {} before, after: {}",
-            request.is_active,
-            state.track.uri,
-            state.track.uid,
-            state.context_uri,
-            state.index.as_ref().map(|index| index.track),
-            state.session_id,
-            state.playback_id,
-            state.position_as_of_timestamp,
-            state.is_playing,
-            state.is_paused,
-            state.prev_tracks.len(),
-            outline(&state.next_tracks),
-        );
         let answer = self
             .session
             .spclient()
@@ -1018,6 +945,10 @@ impl Worker {
             .await;
         match answer {
             Ok(bytes) => {
+                self.published_queue = self
+                    .now
+                    .as_ref()
+                    .map(|now| (state.queue_revision.clone(), now.queue_fingerprint()));
                 self.backoff = Duration::ZERO;
                 self.blocked_until = None;
                 Cluster::parse_from_bytes(&bytes).ok()
@@ -1041,27 +972,35 @@ impl Worker {
         }
     }
 
-    fn request_for(&self, reason: PutStateReason) -> PutStateRequest {
+    fn request_for(&self, reason: PutStateReason) -> protobuf::Result<PutStateRequest> {
         let stamp = unix_millis();
         let mut info = self.info.clone();
         if let Some(now) = &self.now {
             info.volume = volume_word(now.volume);
         }
-        PutStateRequest {
+        let state = self.player_state(stamp);
+        let active = self.active_since.is_some() && self.now.is_some();
+        let transfer_data = if active {
+            transfer_data(&state)?
+        } else {
+            Vec::new()
+        };
+        Ok(PutStateRequest {
             member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
             put_state_reason: EnumOrUnknown::new(reason),
-            is_active: self.active_since.is_some() && self.now.is_some(),
+            is_active: active,
             started_playing_at: self.active_since.map(millis).unwrap_or_default(),
             client_side_timestamp: stamp,
             last_command_message_id: self.last_command.0,
             last_command_sent_by_device_id: self.last_command.1.clone(),
             device: MessageField::some(WireDevice {
                 device_info: MessageField::some(info),
-                player_state: MessageField::some(self.player_state(stamp)),
+                player_state: MessageField::some(state),
+                transfer_data,
                 ..Default::default()
             }),
             ..Default::default()
-        }
+        })
     }
 
     fn player_state(&self, stamp: u64) -> PlayerState {
@@ -1100,16 +1039,14 @@ impl Worker {
             current.metadata.remove("is_queued");
         }
         state.track = MessageField::some(current);
-        state.prev_tracks = now
-            .previous
-            .iter()
-            .map(|track| provided(track, &uri, known.at(track, None)))
-            .collect();
-        state.next_tracks = now
-            .upcoming
-            .iter()
-            .map(|track| provided(track, &uri, known.at(track, None)))
-            .collect();
+        let rows = |tracks: &[QueuedTrack]| {
+            tracks
+                .iter()
+                .map(|track| provided(track, &uri, known.at(track, None)))
+                .collect()
+        };
+        state.prev_tracks = rows(&now.previous);
+        state.next_tracks = rows(&now.upcoming);
         state.context_url = format!("context://{uri}");
         state.context_uri = uri;
         if !self.run.is_empty() {
@@ -1123,15 +1060,16 @@ impl Worker {
         }));
         state.timestamp =
             (stamp as i64).saturating_add(self.session.time_delta().saturating_mul(1000));
-        state.position_as_of_timestamp = now.live_position().as_millis() as i64;
-        state.duration = now.duration.as_millis() as i64;
+        state.position_as_of_timestamp = now.transport.live_position().as_millis() as i64;
+        state.duration = now.transport.duration.as_millis() as i64;
         state.options = MessageField::some(ContextPlayerOptions {
-            shuffling_context: now.shuffle.unwrap_or_default(),
-            repeating_context: now.repeat == Some(Repeat::All),
-            repeating_track: now.repeat == Some(Repeat::One),
+            shuffling_context: now.transport.shuffle.unwrap_or_default(),
+            repeating_context: now.transport.repeat == Some(Repeat::All),
+            repeating_track: now.transport.repeat == Some(Repeat::One),
             ..Default::default()
         });
         let mut hasher = DefaultHasher::new();
+        now.queue_fingerprint().hash(&mut hasher);
         state
             .prev_tracks
             .iter()
@@ -1145,7 +1083,7 @@ impl Worker {
         state.queue_revision = hasher.finish().to_string();
 
         // desktop and mobile apps want every flag set while paused, or their play button greys out
-        match now.playing {
+        match now.transport.playing {
             true => {
                 state.is_playing = true;
                 state.is_paused = false;
@@ -1161,7 +1099,7 @@ impl Worker {
         state
     }
 
-    fn cluster(&mut self, update: ClusterUpdate) {
+    async fn cluster(&mut self, update: ClusterUpdate) {
         let Some(cluster) = update.cluster.as_ref() else {
             return;
         };
@@ -1170,13 +1108,41 @@ impl Worker {
         let fresh = self
             .claimed_at
             .is_none_or(|claimed| claimed.elapsed() > CLAIM_GRACE);
-        self.active_device = cluster.active_device_id.clone();
         if self.active_since.is_some() && elsewhere && fresh {
             self.active_since = None;
             self.out.send(Event::Command(Command::Released)).ok();
         }
+        self.report_cluster(cluster).await;
+    }
+
+    /// Reconsiders a rejected queue edit only when Spotify advances the revision it rejected.
+    async fn report_cluster(&mut self, cluster: &Cluster) {
+        if self.active_device != cluster.active_device_id {
+            self.queue_edit = None;
+        }
+        let revision = &cluster.player_state.queue_revision;
         let roster = self.roster(cluster);
+        let track = roster.playback.as_ref().and_then(|state| state.track_id());
+        let moved = self
+            .transfer_queue
+            .as_ref()
+            .and_then(|(state, _)| state.track_id())
+            != track;
+        let retry = self.queue_edit.take_if(|state| {
+            state.track_id() == track && (moved || &self.queue_revision != revision)
+        });
+        if moved {
+            self.queue_edit = None;
+        }
+        self.active_device.clone_from(&cluster.active_device_id);
+        self.queue_revision.clone_from(revision);
+        if let Some(state) = &roster.playback {
+            self.transfer_queue = Some((state.clone(), Instant::now()));
+        }
         self.out.send(Event::Roster(roster)).ok();
+        if let Some(state) = retry {
+            self.publish_queue(state).await;
+        }
     }
 
     /// Uses a matching fresh player report to preserve queue order that transfer contexts can omit.
@@ -1184,29 +1150,40 @@ impl Worker {
         let now =
             (unix_millis() as i64).saturating_add(self.session.time_delta().saturating_mul(1000));
         let start = started_by_transfer(state, now);
-        if let Some((queue, stamp)) = &self.remote_queue {
-            let matching_context = start
+        let Some((queue, _)) = self.transfer_queue.as_ref().filter(|(queue, stamp)| {
+            stamp.elapsed() <= QUEUE_SNAPSHOT_AGE
+                && queue.track_id() == start.state.track_id()
+                && start
+                    .state
+                    .context
+                    .as_ref()
+                    .is_none_or(|context| queue.context.as_ref() == Some(context))
+        }) else {
+            return start;
+        };
+        Start::window(Snapshot {
+            previous: queue.previous.clone(),
+            upcoming: queue.upcoming.clone(),
+            context: start
                 .state
                 .context
-                .as_ref()
-                .is_none_or(|context| queue.context.as_ref() == Some(context));
-            if stamp.elapsed() <= QUEUE_SNAPSHOT_AGE
-                && matching_context
-                && queue.track.as_ref().map(|track| &track.id)
-                    == start.state.track.as_ref().map(|track| &track.id)
-            {
-                return Start {
-                    state: queue.clone(),
-                    preserve_queue: true,
-                    restart: true,
-                };
-            }
-        }
-        start
+                .clone()
+                .or_else(|| queue.context.clone()),
+            index: start.state.index.or(queue.index),
+            ..Arc::unwrap_or_clone(start.state)
+        })
     }
 
-    fn roster(&mut self, cluster: &Cluster) -> Roster {
+    fn roster(&self, cluster: &Cluster) -> Roster {
         let mine = self.session.device_id();
+        let visible = |info: &DeviceInfo| info.can_play && !info.capabilities.hidden;
+        let local_device = if self.info.can_play {
+            None
+        } else {
+            self.connection
+                .upgrade()
+                .and_then(|connection| connection.native_device())
+        };
         let known = |id: &str, info: &DeviceInfo| Device {
             id: id.to_owned(),
             name: info.name.clone(),
@@ -1217,56 +1194,62 @@ impl Worker {
         let mut devices = cluster
             .device
             .iter()
-            .filter(|(id, info)| id.as_str() != mine && info.can_play && !info.capabilities.hidden)
+            .filter(|(id, info)| {
+                id.as_str() != mine && Some(*id) != local_device.as_ref() && visible(info)
+            })
             .map(|(id, info)| known(id, info))
             .collect::<Vec<_>>();
         devices.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
 
-        let elsewhere = cluster
+        let active = cluster
             .device
             .get(&cluster.active_device_id)
             .filter(|_| cluster.active_device_id != mine)
-            .map(|info| {
-                let state = &cluster.player_state;
-                let millis = |value: i64| Duration::from_millis(value.max(0) as u64);
-                Elsewhere {
-                    device: known(&cluster.active_device_id, info),
-                    state: Arc::new(Snapshot {
-                        track: state.track.as_ref().and_then(listed_track),
-                        playing: state.is_playing && !state.is_paused,
-                        position: millis(state.position_as_of_timestamp),
-                        stamp: Some(
-                            UNIX_EPOCH
-                                + millis(state.timestamp.saturating_sub(
-                                    self.session.time_delta().saturating_mul(1000),
-                                )),
-                        ),
-                        duration: millis(state.duration),
-                        shuffle: Some(state.options.shuffling_context),
-                        repeat: repeat_mode(
-                            Some(state.options.repeating_track),
-                            Some(state.options.repeating_context),
-                        ),
-                        volume: info.volume as f32 / u16::MAX as f32,
-                        context: collection(&state.context_uri),
-                        index: state.index.as_ref().map(|index| index.track as usize),
-                        previous: listed(&state.prev_tracks, state.prev_tracks.len()),
-                        upcoming: listed(&state.next_tracks, CARRIED),
-                    }),
-                }
-            });
-        if let Some(remote) = &elsewhere {
-            self.remote_queue = Some((remote.state.clone(), Instant::now()));
+            .map(|info| known(&cluster.active_device_id, info));
+        let playback = active.as_ref().map(|device| {
+            let state = &cluster.player_state;
+            let millis = |value: i64| Duration::from_millis(value.max(0) as u64);
+            let offset = self.session.time_delta().saturating_mul(1000);
+            Arc::new(Snapshot {
+                track: state.track.as_ref().and_then(listed_track),
+                volume: device.volume,
+                context: collection(&state.context_uri),
+                index: state.index.as_ref().map(|index| index.track as usize),
+                previous: listed(&state.prev_tracks, state.prev_tracks.len()),
+                upcoming: listed(&state.next_tracks, UPCOMING),
+                transport: Transport {
+                    playing: state.is_playing && !state.is_paused,
+                    position: millis(state.position_as_of_timestamp),
+                    stamp: Some(UNIX_EPOCH + millis(state.timestamp.saturating_sub(offset))),
+                    duration: millis(state.duration),
+                    shuffle: Some(state.options.shuffling_context),
+                    repeat: repeat_mode(
+                        Some(state.options.repeating_track),
+                        Some(state.options.repeating_context),
+                    ),
+                },
+            })
+        });
+        Roster {
+            devices,
+            active,
+            playback,
         }
-        Roster { devices, elsewhere }
     }
 
     fn volume(&mut self, command: SetVolumeCommand) {
+        if !self.info.can_play {
+            return;
+        }
         let level = command.volume.clamp(0, u16::MAX as i32) as f32 / u16::MAX as f32;
         self.out.send(Event::Command(Command::Volume(level))).ok();
     }
 
     fn request(&mut self, (request, reply): RequestReply) {
+        if !self.info.can_play {
+            reply.send(Reply::Failure).ok();
+            return;
+        }
         self.last_command = (request.message_id, request.sent_by_device_id.clone());
         self.asked_at = Some(Instant::now());
         log::debug!("connect: asked, {}", request.command);
@@ -1318,53 +1301,50 @@ impl Worker {
     /// What a command from Spotify asks of the app, or `None` for one this device does not
     /// know.
     fn translate(&mut self, command: Wire) -> Option<Vec<Command>> {
-        Some(match command {
-            Wire::Transfer(transfer) => vec![Command::Start(self.transferred(transfer.data?))],
-            Wire::Play(play) => vec![Command::Start(started_by_play(&play))],
-            Wire::Pause(_) => vec![Command::Pause],
-            Wire::Resume(_) => vec![Command::Play],
-            Wire::SkipNext(_) => vec![Command::Next],
-            Wire::SkipPrev(_) => vec![Command::Previous],
-            Wire::SeekTo(seek) => vec![Command::Seek(Duration::from_millis(seek.value.into()))],
-            Wire::SetShufflingContext(set) => vec![Command::Shuffle(set.value)],
-            Wire::SetRepeatingContext(set) => {
-                vec![Command::Repeat(self.repeat(Some(set.value), None))]
-            }
-            Wire::SetRepeatingTrack(set) => {
-                vec![Command::Repeat(self.repeat(None, Some(set.value)))]
-            }
+        let command = match command {
+            Wire::Transfer(transfer) => Command::Start(self.transferred(transfer.data?)),
+            Wire::Play(play) => Command::Start(started_by_play(&play)),
+            Wire::Pause(_) => Command::Pause,
+            Wire::Resume(_) => Command::Play,
+            Wire::SkipNext(skip) => match skip.track {
+                Some(track) => self.forward_pick(&track)?,
+                None => Command::Next,
+            },
+            Wire::SkipPrev(_) => Command::Previous,
+            Wire::SeekTo(seek) => Command::Seek(Duration::from_millis(seek.value.into())),
+            Wire::SetShufflingContext(set) => Command::Shuffle(set.value),
+            Wire::SetRepeatingContext(set) => Command::Repeat(self.repeat(Some(set.value), None)),
+            Wire::SetRepeatingTrack(set) => Command::Repeat(self.repeat(None, Some(set.value))),
             Wire::SetOptions(options) => {
-                let mut commands = Vec::new();
-                if let Some(on) = options.shuffling_context {
-                    commands.push(Command::Shuffle(on));
-                }
-                if options.repeating_context.is_some() || options.repeating_track.is_some() {
-                    commands.push(Command::Repeat(
-                        self.repeat(options.repeating_context, options.repeating_track),
-                    ));
-                }
-                commands
+                let shuffle = options.shuffling_context.map(Command::Shuffle);
+                let repeat = (options.repeating_context.is_some()
+                    || options.repeating_track.is_some())
+                .then(|| {
+                    Command::Repeat(self.repeat(options.repeating_context, options.repeating_track))
+                });
+                return Some(shuffle.into_iter().chain(repeat).collect());
             }
             Wire::AddToQueue(add) => {
-                log::debug!(
-                    "connect: a track was queued, it carries {:?}",
-                    keys(&add.track)
-                );
-                track_id(&add.track.uri)
-                    .map(|id| Command::Enqueue {
-                        id,
-                        added_by: adder(&add.track),
-                    })
-                    .into_iter()
-                    .collect()
+                let Some(id) = track_id(&add.track.uri) else {
+                    return Some(Vec::new());
+                };
+                Command::Enqueue {
+                    id,
+                    added_by: adder(&add.track),
+                }
             }
             Wire::SetQueue(queue) => {
-                log::debug!(
-                    "connect: queue edit, {} before, after: {}",
-                    queue.prev_tracks.len(),
-                    outline(&queue.next_tracks),
-                );
-                // an edit that added songs runs past the window it was shown, and all of it counts
+                let (revision, base) = self.published_queue.as_ref()?;
+                if queue.queue_revision != *revision
+                    || self
+                        .now
+                        .as_ref()
+                        .is_none_or(|now| now.queue_fingerprint() != *base)
+                {
+                    log::debug!("connect: rejecting a queue edit based on an older revision");
+                    return None;
+                }
+                let base = *base;
                 let mut upcoming = listed(&queue.next_tracks, queue.next_tracks.len());
                 if let Some(now) = self.now.as_deref().filter(|now| shared(now).is_none()) {
                     keep_kinds(&mut upcoming, &now.upcoming);
@@ -1375,22 +1355,36 @@ impl Worker {
                 if let Some(now) = self.now.as_mut() {
                     Arc::make_mut(now).upcoming = upcoming.clone();
                 }
-                vec![Command::SetQueue { upcoming }]
+                Command::SetQueue { base, upcoming }
             }
-            Wire::UpdateContext(_) => Vec::new(),
+            Wire::UpdateContext(_) => return Some(Vec::new()),
             Wire::Unknown(value) => {
                 if let Some(state) = jam_transfer(&value) {
                     log::debug!("connect: a jam brings this device back in step");
                     return Some(self.in_step(self.transferred(state)));
                 }
-                // the field names only, since a transfer carries the listener's whole state
-                let fields = value
-                    .as_object()
-                    .map(|object| object.keys().collect::<Vec<_>>());
-                log::debug!("connect: unsupported player command, it carries {fields:?}");
                 return None;
             }
-        })
+        };
+        Some(vec![command])
+    }
+
+    /// Resolves a controller's wire occurrence to the stable ID in Sonora's queue.
+    fn forward_pick(&self, target: &ProvidedTrack) -> Option<Command> {
+        let now = self.now.as_ref()?;
+        let state = self.player_state(unix_millis());
+        let mut matches = state
+            .next_tracks
+            .iter()
+            .zip(&now.upcoming)
+            .filter(|(track, _)| {
+                track.uri == target.uri && (target.uid.is_empty() || track.uid == target.uid)
+            });
+        let (_, row) = matches.next()?;
+        matches
+            .next()
+            .is_none()
+            .then(|| Command::Pick(row.uid.clone()))
     }
 
     /// What it takes to play as `start` says. A song that already plays here is not loaded again,
@@ -1400,36 +1394,39 @@ impl Worker {
     fn in_step(&mut self, start: Start) -> Vec<Command> {
         let wanted = &start.state;
         let Some(now) = self.now.as_ref().filter(|now| {
-            now.track.as_ref().map(|track| &track.id)
-                == wanted.track.as_ref().map(|track| &track.id)
-                && now.playing == wanted.playing
+            now.track_id() == wanted.track_id()
+                && now.transport.playing == wanted.transport.playing
                 && wanted
+                    .transport
                     .shuffle
-                    .is_none_or(|shuffle| now.shuffle == Some(shuffle))
+                    .is_none_or(|shuffle| now.transport.shuffle == Some(shuffle))
         }) else {
             return vec![Command::Start(start)];
         };
         let mut commands = Vec::new();
-        if let Some(repeat) = wanted.repeat.filter(|repeat| now.repeat != Some(*repeat)) {
+        if let Some(repeat) = wanted
+            .transport
+            .repeat
+            .filter(|repeat| now.transport.repeat != Some(*repeat))
+        {
             commands.push(Command::Repeat(repeat));
         }
         let mut upcoming = wanted.upcoming.clone();
         if shared(now).is_none() {
             keep_kinds(&mut upcoming, &now.upcoming);
         }
-        let listed = |tracks: &[QueuedTrack]| -> Vec<(String, bool)> {
-            tracks
-                .iter()
-                .map(|track| (track.id.clone(), track.queued))
-                .collect()
-        };
-        if listed(&upcoming) != listed(&now.upcoming) {
+        if !upcoming
+            .iter()
+            .map(|row| (&row.id, row.queued))
+            .eq(now.upcoming.iter().map(|row| (&row.id, row.queued)))
+        {
             commands.push(Command::SetQueue {
+                base: now.queue_fingerprint(),
                 upcoming: upcoming.clone(),
             });
         }
-        let at = wanted.live_position();
-        if at.abs_diff(now.live_position()) > JAM_SLACK {
+        let at = wanted.transport.live_position();
+        if at.abs_diff(now.transport.live_position()) > JAM_SLACK {
             commands.push(Command::Seek(at));
         }
         if let Some(now) = self.now.as_mut() {
@@ -1444,7 +1441,7 @@ impl Worker {
         let current = self
             .now
             .as_ref()
-            .and_then(|now| now.repeat)
+            .and_then(|now| now.transport.repeat)
             .unwrap_or_default();
         match (context, track) {
             (_, Some(true)) => Repeat::One,
@@ -1475,41 +1472,52 @@ async fn move_playback(session: &Session, from: &str, to: &str) -> Result<(), Er
 /// the request failed, so a caller can play the pick here instead; `true` when it was sent or
 /// there was nothing to send.
 async fn control(session: Session, device: &str, command: Command) -> bool {
-    let mine = session.device_id();
     let what = format!("{command:?}");
-    let (method, endpoint, body) = match command {
-        Command::Volume(level) => (
-            Method::PUT,
-            format!("/connect-state/v1/connect/volume/from/{mine}/to/{device}"),
-            serde_json::json!({ "volume": volume_word(level) }),
-        ),
-        command => {
-            let Some(command) = wire_command(&command, &session.username()) else {
-                log::warn!("connect: nothing to send for {what}");
-                return true;
-            };
-            (
-                Method::POST,
-                format!("/connect-state/v1/player/command/from/{mine}/to/{device}"),
-                serde_json::json!({ "command": command }),
-            )
-        }
+    let answer = if let Command::Volume(level) = command {
+        send_control(
+            &session,
+            device,
+            "connect/volume",
+            serde_json::json!({
+                "volume": volume_word(level),
+            }),
+        )
+        .await
+    } else if let Some(command) = wire_command(&command, &session.username()) {
+        send_control(&session, device, "player/command", command).await
+    } else {
+        log::warn!("connect: nothing to send for {what}");
+        return true;
     };
+    answer
+        .inspect_err(|error| log::warn!("connect: cannot send {what} to {device}: {error}"))
+        .is_ok()
+}
 
+/// Sends a command or volume update through the Spotify session.
+async fn send_control(
+    session: &Session,
+    device: &str,
+    route: &str,
+    body: serde_json::Value,
+) -> librespot_core::spclient::SpClientResult {
+    let (method, body) = match route {
+        "connect/volume" => (Method::PUT, body),
+        _ => (Method::POST, serde_json::json!({ "command": body })),
+    };
+    let mine = session.device_id();
+    let endpoint = format!("/connect-state/v1/{route}/from/{mine}/to/{device}");
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    let body = body.to_string();
-    let answer = session
+    session
         .spclient()
-        .request(&method, &endpoint, Some(headers), Some(body.as_bytes()))
-        .await;
-    match answer {
-        Ok(_) => true,
-        Err(error) => {
-            log::warn!("connect: cannot send {what} to {device}: {error}");
-            false
-        }
-    }
+        .request(
+            &method,
+            &endpoint,
+            Some(headers),
+            Some(body.to_string().as_bytes()),
+        )
+        .await
 }
 
 /// The token of a group session in a shared link. Only an https `spotify.link` short link is
@@ -1789,14 +1797,26 @@ fn play_command(start: &Start, username: &str) -> Option<serde_json::Value> {
         Some(collection) => collection_uri(collection, username),
         None => track.clone()?,
     };
+    let mut payload = serde_json::json!({
+        "uri": context, "url": format!("context://{context}"), "metadata": {},
+    });
+    if start.context.is_none() && !start.upcoming.is_empty() {
+        let tracks: Vec<_> = start
+            .track
+            .iter()
+            .chain(&start.upcoming)
+            .map(|track| serde_json::json!({ "uri": format!("{TRACK_PREFIX}{}", track.id) }))
+            .collect();
+        payload["pages"] = serde_json::json!([{ "tracks": tracks }]);
+    }
     Some(serde_json::json!({
         "endpoint": "play",
-        "context": { "uri": context, "url": format!("context://{context}"), "metadata": {} },
+        "context": payload,
         "play_origin": { "feature_identifier": "sonora", "feature_version": SEMVER },
         "options": {
             "skip_to": track.map(|uri| serde_json::json!({ "track_uri": uri })),
-            "seek_to": start.position.as_millis() as u64,
-            "initially_paused": !start.playing,
+            "seek_to": start.transport.position.as_millis() as u64,
+            "initially_paused": !start.transport.playing,
         },
         "logging_params": {},
     }))
@@ -1977,12 +1997,6 @@ async fn listed_uids(session: &Session, uri: &str) -> Result<Listed, Error> {
     Ok(tracks)
 }
 
-/// When the song `told` to the Jam plays out, when its length is known.
-fn ends(told: &Snapshot) -> Option<Instant> {
-    let left = told.duration.checked_sub(told.live_position())?;
-    (!told.duration.is_zero()).then(|| Instant::now() + left)
-}
-
 /// The state of a transfer librespot could not read. A Jam brings a listener who paused back in
 /// step with a transfer that leaves out the logging details librespot insists on, so the command
 /// arrives as one it does not know.
@@ -2054,15 +2068,7 @@ fn track_id(uri: &str) -> Option<String> {
 
 /// The first tracks of a player state's queue, with who queued each when the state says.
 fn listed(tracks: &[ProvidedTrack], limit: usize) -> Vec<QueuedTrack> {
-    let listed = tracks
-        .iter()
-        .filter_map(listed_track)
-        .take(limit)
-        .collect::<Vec<_>>();
-    if let Some(track) = tracks.iter().find(|track| track.provider == "queue") {
-        log::debug!("connect: a queued track carries {:?}", keys(track));
-    }
-    listed
+    tracks.iter().filter_map(listed_track).take(limit).collect()
 }
 
 /// Reads the same occurrence provenance for current, previous and upcoming tracks.
@@ -2095,29 +2101,6 @@ fn is_queued(track: &ProvidedTrack) -> bool {
             .is_some_and(|value| value == "true")
 }
 
-/// How many tracks a queue holds and the first of them, each as where it comes from, the start
-/// of its id and its uid, so a log shows what an edit moved without listing a whole playlist.
-fn outline(tracks: &[ProvidedTrack]) -> String {
-    let shown = tracks
-        .iter()
-        .take(OUTLINED)
-        .map(|track| {
-            let id = track.uri.rsplit(':').next().unwrap_or_default();
-            let id = id.get(..6).unwrap_or(id);
-            format!("{}/{id}/{}", track.provider, track.uid)
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!("{} [{shown}]", tracks.len())
-}
-
-/// The metadata keys a track carries, sorted, so a log shows what Spotify sends without the values.
-fn keys(track: &ProvidedTrack) -> Vec<&String> {
-    let mut keys = track.metadata.keys().collect::<Vec<_>>();
-    keys.sort();
-    keys
-}
-
 /// The id of a track another device lists, read from its uri or, since Spotify's apps often send
 /// only that, from its raw id.
 fn listed_id(track: &ContextTrack) -> Option<String> {
@@ -2130,7 +2113,7 @@ fn listed_id(track: &ContextTrack) -> Option<String> {
 
 /// The album, playlist or saved tracks a context uri names. Anything else, such as an artist or
 /// a radio, has no collection to read back.
-fn collection(uri: &str) -> Option<Collection> {
+pub(crate) fn collection(uri: &str) -> Option<Collection> {
     let parts = uri.split(':').collect::<Vec<_>>();
     match parts.as_slice() {
         ["spotify", "album", id] => Some(Collection::Album((*id).to_owned())),
@@ -2147,6 +2130,93 @@ fn occurrences(ids: impl IntoIterator<Item = String>, queued: bool) -> Vec<Queue
     ids.into_iter()
         .map(|id| QueuedTrack::new(id, queued))
         .collect()
+}
+
+/// Encodes the handoff from the same playhead and queue used for the visible Connect report.
+fn transfer_data(state: &PlayerState) -> protobuf::Result<Vec<u8>> {
+    use librespot_protocol::{context_page::ContextPage, play_history::play_history::Item};
+
+    let Some(current) = state.track.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let convert = |track: &ProvidedTrack| ContextTrack {
+        uri: Some(track.uri.clone()),
+        uid: (!track.uid.is_empty()).then(|| track.uid.clone()),
+        metadata: track.metadata.clone(),
+        ..Default::default()
+    };
+    let standalone = state.context_uri.starts_with(TRACK_PREFIX);
+    let queued = is_queued(current);
+    let anchor = if queued && !standalone {
+        state
+            .prev_tracks
+            .iter()
+            .rev()
+            .find(|track| !is_queued(track))
+            .unwrap_or(current)
+    } else {
+        current
+    };
+
+    let mut transfer = TransferState::new();
+    let playback = transfer.playback.mut_or_insert_default();
+    playback.current_track = Some(convert(anchor)).into();
+    playback.position_as_of_timestamp =
+        Some(state.position_as_of_timestamp.clamp(0, i32::MAX as i64) as i32);
+    playback.timestamp = Some(state.timestamp);
+    playback.is_paused = Some(state.is_paused);
+    playback.playback_speed = Some(state.playback_speed);
+    let session = transfer.current_session.mut_or_insert_default();
+    session.original_session_id = Some(state.session_id.clone());
+    session.current_uid = playback.current_track.uid.clone();
+    let context = session.context.mut_or_insert_default();
+    context.uri = Some(state.context_uri.clone());
+    context.url = Some(state.context_url.clone());
+    // History stays resolvable by UID even for a song that was manually queued.
+    // With no collection to reopen, the queue itself must carry every upcoming song.
+    // The receiver drains its explicit queue before resuming the context. Keep any
+    // context songs ahead of a manual addition in that prefix too.
+    let count = if standalone {
+        state.next_tracks.len()
+    } else {
+        state
+            .next_tracks
+            .iter()
+            .rposition(is_queued)
+            .map_or(0, |last| last + 1)
+    };
+    let (explicit, following) = state.next_tracks.split_at(count);
+    let context_tracks = state
+        .prev_tracks
+        .iter()
+        .chain((!queued || std::ptr::eq(current, anchor)).then_some(current))
+        .chain(following)
+        .map(convert)
+        .collect::<Vec<_>>();
+    context.pages.push(ContextPage::from(context_tracks));
+    let queue = transfer.queue.mut_or_insert_default();
+    queue.is_playing_queue = Some(queued);
+    queue.tracks = queued
+        .then_some(current)
+        .into_iter()
+        .chain(explicit)
+        .map(convert)
+        .collect();
+    let history = transfer.play_history.mut_or_insert_default();
+    let history_item = |track: &ProvidedTrack| {
+        (!track.uid.is_empty()).then(|| Item {
+            uid: Some(track.uid.clone()),
+            context_id: context.uri.clone(),
+            ..Default::default()
+        })
+    };
+    history.backward_items = state.prev_tracks.iter().filter_map(history_item).collect();
+    history.forward_items = following.iter().filter_map(history_item).collect();
+    let options = transfer.options.mut_or_insert_default();
+    options.shuffling_context = Some(state.options.shuffling_context);
+    options.repeating_context = Some(state.options.repeating_context);
+    options.repeating_track = Some(state.options.repeating_track);
+    transfer.write_to_bytes()
 }
 
 /// Where a transfer from another device leaves off: its track, how far in, and what follows.
@@ -2210,27 +2280,26 @@ fn started_by_transfer(state: TransferState, now: i64) -> Start {
         state.options.repeating_track,
         state.options.repeating_context,
     );
-    Start {
-        state: Arc::new(Snapshot {
-            context: context.uri.as_deref().and_then(collection),
-            upcoming: occurrences(queued, true)
-                .into_iter()
-                .chain(occurrences(following, false))
-                .take(CARRIED)
-                .collect(),
-            previous: occurrences(previous, false),
+    Start::window(Snapshot {
+        context: context.uri.as_deref().and_then(collection),
+        upcoming: occurrences(queued, true)
+            .into_iter()
+            .chain(occurrences(following, false))
+            .take(UPCOMING)
+            .collect(),
+        previous: occurrences(previous, false),
+        track: track.map(|id| QueuedTrack::new(id, from_queue)),
+        index: place,
+        transport: Transport {
             shuffle: state.options.shuffling_context,
             repeat,
-            track: track.map(|id| QueuedTrack::new(id, from_queue)),
-            index: place,
             position: Duration::from_millis(position),
             playing: !paused,
             stamp: Some(SystemTime::now()),
             ..Default::default()
-        }),
-        preserve_queue: true,
-        restart: true,
-    }
+        },
+        ..Default::default()
+    })
 }
 
 /// Whether a play command names a context that Sonora has no collection to read back, such as a
@@ -2250,16 +2319,9 @@ fn started_by_play(play: &PlayCommand) -> Start {
         .iter()
         .flat_map(|page| &page.tracks)
         .collect();
-    let listed: Vec<_> = tracks.iter().filter_map(|track| listed_id(track)).collect();
 
     // the same order librespot resolves a skip in: uri, then uid, then place
     let skip = play.options.skip_to.as_ref();
-    log::debug!(
-        "connect: play in {:?}, skip to {skip:?}, {} pages with {} tracks",
-        play.context.uri.as_deref(),
-        play.context.pages.len(),
-        listed.len(),
-    );
     let track = skip
         .and_then(|skip| skip.track_uri.as_deref())
         .and_then(track_id)
@@ -2279,11 +2341,12 @@ fn started_by_play(play: &PlayCommand) -> Start {
         .and_then(|skip| skip.track_index)
         .map(|index| index as usize);
     let upcoming = occurrences(
-        listed
-            .into_iter()
+        tracks
+            .iter()
+            .filter_map(|track| listed_id(track))
             .skip_while(|id| Some(id) != track.as_ref())
             .skip(1)
-            .take(CARRIED),
+            .take(UPCOMING),
         false,
     );
 
@@ -2293,17 +2356,19 @@ fn started_by_play(play: &PlayCommand) -> Start {
             track: track.map(|id| QueuedTrack::new(id, false)),
             index,
             upcoming,
-            position: Duration::from_millis(play.options.seek_to.unwrap_or_default().into()),
-            playing: !play.options.initially_paused.unwrap_or_default(),
-            shuffle: play
-                .options
-                .player_options_override
-                .as_ref()
-                .and_then(|options| options.shuffling_context),
+            transport: Transport {
+                position: Duration::from_millis(play.options.seek_to.unwrap_or_default().into()),
+                playing: !play.options.initially_paused.unwrap_or_default(),
+                shuffle: play
+                    .options
+                    .player_options_override
+                    .as_ref()
+                    .and_then(|options| options.shuffling_context),
+                ..Default::default()
+            },
             ..Default::default()
         }),
         preserve_queue: false,
-        restart: true,
     }
 }
 

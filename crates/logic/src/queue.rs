@@ -464,6 +464,11 @@ impl<O: Clone + PartialEq> Order<O> {
         self.shuffle
     }
 
+    /// Records a provider's mode without reordering the queue it supplied.
+    pub fn report_shuffle(&mut self, on: bool) {
+        self.shuffle = on;
+    }
+
     pub fn set_shuffle(&mut self, on: bool) {
         if self.shuffle == on {
             return;
@@ -600,7 +605,17 @@ impl<O: Clone + PartialEq> Order<O> {
         self.revision
     }
 
-    pub fn past(&self) -> impl ExactSizeIterator<Item = &Track> {
+    /// Empties the order without reusing a revision or a suggestion generation.
+    pub fn clear(&mut self) {
+        self.past.clear();
+        self.current = None;
+        self.upcoming.clear();
+        self.source.clear();
+        self.suggested = self.suggested.wrapping_add(1);
+        self.changed();
+    }
+
+    pub fn past(&self) -> impl ExactSizeIterator<Item = &Track> + DoubleEndedIterator {
         self.past.iter().map(|entry| entry.track.as_ref())
     }
 
@@ -630,8 +645,15 @@ impl<O: Clone + PartialEq> Order<O> {
 
     /// The upcoming play order reported to other clients, the suggestions with it, so another
     /// device shows what plays on here once the collection runs out. Local files stay out.
-    pub fn connect_upcoming(&self) -> impl Iterator<Item = QueuedTrack> + '_ {
-        self.upcoming.iter().filter_map(connect_entry)
+    pub fn connect_upcoming(&self, stop_at_local: bool) -> impl Iterator<Item = QueuedTrack> + '_ {
+        self.upcoming
+            .iter()
+            .take_while(move |entry| {
+                !(stop_at_local
+                    && entry.track.playable
+                    && entry.id().is_some_and(music::is_local_id))
+            })
+            .filter_map(connect_entry)
     }
 
     /// Every track the queue holds, for reading a remote queue without asking the provider
@@ -677,6 +699,11 @@ impl<O: Clone + PartialEq> Order<O> {
             .iter()
             .filter(|entry| entry.kind == QueueKind::Suggested)
             .map(|entry| entry.track.as_ref())
+    }
+
+    /// Looks up a track at its position in the active play order.
+    pub fn track_at(&self, position: QueuePosition) -> Option<&Track> {
+        self.entry(position).map(|entry| entry.track.as_ref())
     }
 
     pub fn kind(&self, position: QueuePosition) -> Option<QueueKind> {
@@ -833,6 +860,36 @@ impl<O: Clone + PartialEq> Order<O> {
     /// Makes `tracks` the queue, all of them queued from `origin`, and plays the one at `index`.
     pub fn start(&mut self, tracks: Vec<Track>, index: usize, origin: Option<O>) -> Option<Track> {
         self.fill(tagged(tracks, origin, QueueKind::Context).collect(), index)
+    }
+
+    /// Installs an authoritative order directly, keeping the reported provenance and shuffle flag.
+    pub fn start_reported(
+        &mut self,
+        past: Vec<(Track, QueueKind)>,
+        current: (Track, QueueKind),
+        upcoming: Vec<(Track, QueueKind)>,
+        origin: Option<O>,
+    ) -> Track {
+        let entry = |(track, kind)| {
+            let from = (kind != QueueKind::Queued)
+                .then(|| origin.clone())
+                .flatten();
+            Entry::new(track, from, kind)
+        };
+        let (track, kind) = current;
+        self.past = past.into_iter().map(entry).collect();
+        self.upcoming = upcoming.into_iter().map(entry).collect();
+        self.current = Some(Entry::new(track.clone(), origin, kind));
+        self.source = source_of(
+            self.past
+                .iter()
+                .chain(&self.current)
+                .chain(&self.upcoming)
+                .cloned(),
+        );
+        self.suggested += 1;
+        self.changed();
+        track
     }
 
     /// Rebuilds play order while retaining only collection entries for reset and unshuffle.
@@ -1155,8 +1212,39 @@ impl<O: Clone + PartialEq> Order<O> {
     }
 
     pub fn previous(&mut self) -> Option<Track> {
-        let index = self.past.iter().rposition(|entry| entry.track.playable)?;
-        self.select(QueuePosition::Past(index))
+        self.select(self.playable_neighbour(false)?)
+    }
+
+    /// The first playable row in either direction from the current track.
+    pub fn playable_neighbour(&self, forward: bool) -> Option<QueuePosition> {
+        match forward {
+            true => self
+                .upcoming()
+                .position(|track| track.playable)
+                .map(QueuePosition::Upcoming),
+            false => self
+                .past()
+                .rposition(|track| track.playable)
+                .map(QueuePosition::Past),
+        }
+    }
+
+    /// Finds the occurrence a player advanced to without replacing the reported queue window.
+    /// If both neighbours match, the caller needs the full window to disambiguate them.
+    pub fn reported_position(&self, id: &str) -> Option<QueuePosition> {
+        // A playable local file is a boundary, so find playable neighbours before matching IDs.
+        let matching = |forward| {
+            self.playable_neighbour(forward).filter(|&position| {
+                self.track_at(position)
+                    .and_then(|track| track.id.as_deref())
+                    == Some(id)
+            })
+        };
+        let (next, past) = (matching(true), matching(false));
+        match (next, past) {
+            (Some(position), None) | (None, Some(position)) => Some(position),
+            _ => None,
+        }
     }
 
     /// Selects a song in play order. Replaying history queues the interrupted songs first;
