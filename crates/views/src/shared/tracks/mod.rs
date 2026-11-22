@@ -618,7 +618,7 @@ impl TableSource for TrackSource {
         match field {
             TrackField::Artists => tracks.iter().any(|track| !track.artists.is_empty()),
             TrackField::Album => tracks.iter().any(|track| !track.album.is_empty()),
-            TrackField::Genre => tracks.iter().any(|track| !track.tags.is_empty()),
+            TrackField::Genre => tracks.iter().any(|track| !track.genres.is_empty()),
             TrackField::AddedAt | TrackField::PlayedAt => {
                 tracks.iter().any(|track| track.added_at.is_some())
             }
@@ -804,7 +804,7 @@ impl TableSource for TrackSource {
             TrackField::Title => self.title_cell(&cell, track, title, cx),
             TrackField::Artists => self.artist_cell(&cell, track, detail),
             TrackField::Album => self.album_cell(&cell, track, detail),
-            TrackField::Genre => cells::dim(&cell, track.tags.join(", "), detail),
+            TrackField::Genre => cells::dim(&cell, track.genres.join(", "), detail),
             TrackField::AddedAt => cells::credited(
                 &cell,
                 track.added_by.as_deref(),
