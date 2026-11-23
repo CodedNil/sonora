@@ -12,8 +12,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - In a Jam or a Session, the player shows the face of whoever queued the song playing now, and the Members panel rings them.
 - The Albums tab filters by track count, so you can leave out singles and EPs or keep only long albums.
 - The AUR, Nix and Homebrew packages install tab completion for the `sonora` command in bash, zsh and fish, and Homebrew puts `sonora` on your PATH.
-- Song details show track genres, tags, moods and tempo where available, and can show a release date from the song’s own metadata.
-- Spotify shows track ISRCs and artist follower counts, adds Appears On to artist discographies, and shows related albums and artists on album pages where available.
+- Song details can show a track’s own release date, tempo, moods and ISRC where available. Song details and track tables distinguish genres from tags.
+- Spotify artist pages can show follower counts and Appears On releases. Spotify album pages can show related albums and artists.
 
 ### Changed
 
@@ -24,9 +24,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Last.fm, Libre.fm, ListenBrainz and Maloja sign-ins are kept with your other account sign-ins instead of in settings.json, so the settings file is safe to share. Linked accounts move over on their own.
 - Starting a song from Liked Songs or another big collection in a Sonora Session shows the others only the next 20 songs of it, and more as they play, along with everything you queued yourself.
 - Switching to another service from the account menu opens your startup page instead of leaving you on a page of the previous service.
-- Spotify renews sign-ins in the background. Sign in again once if you’re upgrading from the previous Spotify player.
-- Spotify playback without Soloist follows Sonora’s playback cache settings immediately.
-- Set up and switch Soloist on the Spotify provider row. Pairing shows the network ports as soon as they are known.
+- Sign in to Spotify once after upgrading from the previous player. Sonora renews the new sign-in in the background.
+- Spotify Browse focuses on music, with a category grid and links to more categories.
+- Spotify Home can show its main shelves before Made For You. Large playlists, artist discographies and Browse pages can show results while the rest loads, and wide Search can show each result column as it arrives.
+- Reopening a playlist or Browse category reads its latest contents.
+- Set up and toggle Soloist on the Spotify provider row. The pairing dialog shows copyable network ports, and signing out keeps the pairing for the same account.
+- Built-in Spotify playback uses Sonora’s audio cache. A complete cached track at the requested quality can be saved offline without downloading it again.
+- Spotify adjusts the pace of downloads as requests succeed or Spotify asks it to slow down.
+- Older Spotify playlist links that include the owner need to be replaced with a current playlist link.
 
 ### Fixed
 
@@ -45,15 +50,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - In a Sonora Session, songs you queue by hand stay in the queue as yours when others skip or change the queue, instead of turning into part of the playlist.
 - Moving the pointer over the fullscreen player brings its controls back even when the window is not focused.
 - The − and + buttons beside sample rate, buffer, font size and lyrics size stay in place while you step through values.
-- Spotify Connect reconnects after a dropped connection, shows Soloist in the device picker, and follows seeks, track changes, shuffle and repeat from other devices.
-- You can jump to another song in the queue from Sonora while Spotify plays on another device, including when the same song appears more than once.
-- Spotify Jams stay visible when ending or leaving fails, sidebar pins include items outside the main library view, and deleting a playlist no longer reports a false failure.
-- Album pages keep the current cover visible while a higher-resolution image loads.
-- Spotify’s Liked Songs card on Home shows the signed-in account’s display name.
-- Switching between built-in Spotify playback and Soloist keeps Sonora’s queue and the current song’s position.
-- Signing out of Spotify keeps your Soloist pairing for the next time you sign in to the same account.
-- Shuffled album and playlist tracks keep their collection context when Sonora plays them through Soloist.
-- Home’s play buttons follow the active Spotify Connect playlist, including playback through Soloist.
+- Seek ahead in a Spotify track while it is still downloading with Soloist off.
+- Jump directly to songs in the history or upcoming queue on another Spotify device, including duplicate tracks.
+- Sonora follows Spotify Connect playback and queue changes through Soloist. Switching players keeps the current position, and shuffled albums and playlists retain their context.
+- Spotify Home shows the account name on Liked Songs and marks the playlist playing on the active device.
+- Spotify sidebar pins can include items outside the main library list, and removing a playlist no longer reports a false failure.
+- A Spotify Jam stays visible if ending or leaving it fails.
+- Album pages keep their cover visible while higher-resolution artwork loads.
+- Sonora cleans up its instance socket on a normal exit on Unix.
 
 ## [0.50.3] - 2026-11-20
 
