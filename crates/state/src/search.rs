@@ -1,6 +1,7 @@
 use music::SearchPart;
 use std::collections::HashMap;
 use std::time::Duration;
+use tracing::warn;
 
 use anyhow::Result;
 use gpui::{App, Context, Entity, Task};
@@ -47,30 +48,11 @@ pub struct ArtistHit {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AlbumHit {
-    pub id: String,
-    pub name: String,
-    pub artists: String,
-    pub artist_refs: Vec<ArtistRef>,
-    pub cover: Option<String>,
-    pub year: i32,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PlaylistHit {
-    pub id: String,
-    pub name: String,
-    pub owner: String,
-    pub cover: Option<String>,
-}
-
-/// One result of a search. The search history keeps these too, so it serializes.
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Hit {
     Song(Box<Track>),
     Artist(ArtistHit),
-    Album(AlbumHit),
-    Playlist(PlaylistHit),
+    Album(Box<Album>),
+    Playlist(Box<Playlist>),
 }
 
 impl Hit {
@@ -182,7 +164,7 @@ impl Query {
 
 struct Scored {
     score: u32,
-    popularity: u32,
+    popularity: Option<u8>,
     hit: Hit,
 }
 
@@ -580,26 +562,10 @@ async fn linked_hit(client: &dyn MusicApi, linked: Linked) -> Result<Hit> {
                 saved: 0,
             }))
         }
-        Linked::Album(id) => {
-            let album = client.album(&id).await?.album;
-            Ok(Hit::Album(AlbumHit {
-                id: album.id,
-                name: album.name,
-                artists: album.artists,
-                artist_refs: album.artist_refs,
-                cover: album.cover,
-                year: album.year,
-            }))
-        }
-        Linked::Playlist(id) => {
-            let playlist = client.playlist(&id).await?.playlist;
-            Ok(Hit::Playlist(PlaylistHit {
-                id: playlist.id,
-                name: playlist.name,
-                owner: playlist.owner,
-                cover: playlist.cover,
-            }))
-        }
+        Linked::Album(id) => Ok(Hit::Album(Box::new(client.album(&id).await?.album))),
+        Linked::Playlist(id) => Ok(Hit::Playlist(Box::new(
+            client.playlist(&id).await?.playlist,
+        ))),
         _ => anyhow::bail!("link has no searchable metadata"),
     }
 }
@@ -702,29 +668,16 @@ fn songs(library: &[Track], catalog: &[Track], query: &Query) -> Vec<Scored> {
 }
 
 fn albums_of(albums: &[Album], library: &[Track], catalog: &Catalog, query: &Query) -> Vec<Scored> {
-    let saved = albums.iter().map(|album| {
+    let releases = sources(albums, &catalog.albums).map(|(album, rank)| {
         (
             &album.id,
             &album.name,
             &album.artists,
             &album.artist_refs,
             &album.cover,
+            rank,
             None,
-            0,
-            album.year,
-        )
-    });
-    let total = catalog.albums.len();
-    let found = catalog.albums.iter().enumerate().map(move |(at, album)| {
-        (
-            &album.id,
-            &album.name,
-            &album.artists,
-            &album.artist_refs,
-            &album.cover,
-            Some(placed(at, total)),
-            0,
-            album.year,
+            album.release_date,
         )
     });
     let derived = sources(library, &catalog.tracks).filter_map(|(track, rank)| {
@@ -737,14 +690,14 @@ fn albums_of(albums: &[Album], library: &[Track], catalog: &Catalog, query: &Que
             &track.cover,
             rank,
             track.popularity,
-            0,
+            track.release_date,
         ))
     });
 
     let mut scored: Vec<Scored> = Vec::new();
     let mut seen: Vec<&String> = Vec::new();
-    for (id, name, artists, artist_refs, cover, rank, popularity, year) in
-        saved.chain(found).chain(derived)
+    for (id, name, artists, artist_refs, cover, rank, popularity, release_date) in
+        releases.chain(derived)
     {
         let fields = [(TITLE, name.as_str()), (ARTIST, artists.as_str())];
         let Some(score) = favored(fit(&fields, query), rank).max(inherited(rank)) else {
@@ -758,14 +711,15 @@ fn albums_of(albums: &[Album], library: &[Track], catalog: &Catalog, query: &Que
         scored.push(Scored {
             score,
             popularity,
-            hit: Hit::Album(AlbumHit {
+            hit: Hit::Album(Box::new(Album {
                 id: id.clone(),
                 name: name.clone(),
                 artists: artists.clone(),
                 artist_refs: artist_refs.clone(),
                 cover: cover.clone(),
-                year,
-            }),
+                release_date,
+                ..Default::default()
+            })),
         });
     }
 
@@ -773,16 +727,9 @@ fn albums_of(albums: &[Album], library: &[Track], catalog: &Catalog, query: &Que
 }
 
 fn playlists_of(playlists: &[Playlist], catalog: &[Playlist], query: &Query) -> Vec<Scored> {
-    let total = catalog.len();
-    let saved = playlists.iter().map(|playlist| (playlist, None));
-    let found = catalog
-        .iter()
-        .enumerate()
-        .map(move |(at, playlist)| (playlist, Some(placed(at, total))));
-
     let mut scored: Vec<Scored> = Vec::new();
     let mut seen: Vec<&String> = Vec::new();
-    for (playlist, rank) in saved.chain(found) {
+    for (playlist, rank) in sources(playlists, catalog) {
         let fields = [
             (TITLE, playlist.name.as_str()),
             (ARTIST, playlist.owner.as_str()),
@@ -797,13 +744,8 @@ fn playlists_of(playlists: &[Playlist], catalog: &[Playlist], query: &Query) -> 
 
         scored.push(Scored {
             score,
-            popularity: 0,
-            hit: Hit::Playlist(PlaylistHit {
-                id: playlist.id.clone(),
-                name: playlist.name.clone(),
-                owner: playlist.owner.clone(),
-                cover: playlist.cover.clone(),
-            }),
+            popularity: None,
+            hit: Hit::Playlist(Box::new(playlist.clone())),
         });
     }
 
@@ -821,7 +763,7 @@ fn artists(
     portraits: &HashMap<String, String>,
     query: &Query,
 ) -> Vec<Scored> {
-    let mut tallies: Vec<(u32, u32, ArtistHit)> = Vec::new();
+    let mut tallies: Vec<(u32, Option<u8>, ArtistHit)> = Vec::new();
 
     let mut record = |artist: &ArtistRef, face: Option<&String>, score, popularity, mine| {
         let name = &artist.name;
@@ -867,7 +809,7 @@ fn artists(
             id: Some(found.id.clone()),
             channel: false,
         };
-        record(&artist, found.cover.as_ref(), score, 0, 0);
+        record(&artist, found.cover.as_ref(), score, None, 0);
     }
     for (track, rank) in sources(library, &catalog.tracks) {
         for artist in track.artist_refs.iter().filter(|artist| !artist.channel) {
@@ -883,7 +825,7 @@ fn artists(
             let Some(score) = favored(named(&artist.name, query), None) else {
                 continue;
             };
-            record(artist, None, score, 0, 0);
+            record(artist, None, score, None, 0);
         }
     }
 
@@ -899,10 +841,10 @@ fn artists(
     )
 }
 
-fn sources<'a>(
-    library: &'a [Track],
-    catalog: &'a [Track],
-) -> impl Iterator<Item = (&'a Track, Option<u32>)> {
+fn sources<'a, T>(
+    library: &'a [T],
+    catalog: &'a [T],
+) -> impl Iterator<Item = (&'a T, Option<u32>)> {
     let total = catalog.len();
 
     library.iter().map(|track| (track, None)).chain(
@@ -953,7 +895,7 @@ fn salvaged<T>(found: Result<Vec<T>>, kept: Vec<T>, trouble: &mut Vec<String>) -
     match found {
         Ok(found) => found,
         Err(error) => {
-            log::warn!("search: {error:#}");
+            warn!("search: {error:#}");
             trouble.push(format!("{error:#}"));
             kept
         }
@@ -1040,9 +982,9 @@ mod tests {
         }
     }
 
-    fn liked(name: &str, artists: &str, album: &str, popularity: u32) -> Track {
+    fn liked(name: &str, artists: &str, album: &str, popularity: u8) -> Track {
         Track {
-            popularity,
+            popularity: Some(popularity),
             ..track(name, artists, album)
         }
     }

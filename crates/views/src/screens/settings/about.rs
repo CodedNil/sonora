@@ -1,14 +1,16 @@
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
+use tracing::warn;
+use ui::Switch;
 
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, FontWeight, SharedString, div, img};
 use i18n::t;
 use state::Channel;
-use ui::{ActiveTheme as _, Avatar, Glowing as _, Switch, Text};
+use ui::{ActiveTheme as _, Avatar, Glowing as _, Text};
 
-use super::rows::{outward, segmented};
+use super::rows::outward;
 use super::{Group, SettingsView, Slot, group_heading};
 
 /// How large the app icon stands, in covers.
@@ -94,56 +96,18 @@ impl SettingsView {
         )
     }
 
-    pub(super) fn updates_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).check_updates();
-
-        self.row(
-            t!("settings-check-updates"),
-            Switch::new("check-updates", on)
-                .name(t!("settings-check-updates"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_check_updates(!on, cx));
-                }))
-                .into_any_element(),
-        )
-    }
-
-    pub(super) fn auto_update_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).auto_update();
-
-        self.row(
-            t!("settings-auto-update"),
-            Switch::new("auto-update", on)
-                .name(t!("settings-auto-update"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_auto_update(!on, cx));
-                }))
-                .into_any_element(),
-        )
-    }
-
     pub(super) fn channel_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let current = self.settings.read(cx).update_channel();
-
-        let choices = segmented(
+        self.segmented_setting(
             "update-channel",
+            "settings-update-channel",
             Channel::ALL.map(|channel| (channel, channel.label())),
-            current,
-            cx.listener(|this, channel: &Channel, _, cx| {
-                let channel = *channel;
-                this.settings
-                    .update(cx, |settings, cx| settings.set_update_channel(channel, cx));
-            }),
-        );
-
-        self.row(
-            t!("settings-update-channel"),
-            choices
-                .name(t!("settings-update-channel"))
-                .into_any_element(),
+            (
+                state::AppSettings::update_channel,
+                state::AppSettings::set_update_channel,
+            ),
+            cx,
         )
+        .into_any_element()
     }
 
     /// The row that opens a copy of the current log file in whatever the system reads text
@@ -156,7 +120,7 @@ impl SettingsView {
             .on_click(move |_, _, _| {
                 let Some(path) = &path else { return };
                 if let Err(error) = snapshot(path).and_then(open::that_detached) {
-                    log::warn!(
+                    warn!(
                         "settings: cannot open a copy of {}: {error}",
                         path.display()
                     );
@@ -198,10 +162,10 @@ impl SettingsView {
                     .id("settings-about-name")
                     .role(gpui::accesskit::Role::Heading)
                     .aria_level(2)
-                    .aria_label(t!("common-sonora"))
+                    .aria_label(t!("common-app-name"))
                     .text_size(theme.text(Text::Title))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(t!("common-sonora")),
+                    .child(t!("common-app-name")),
             )
     }
 
@@ -275,4 +239,21 @@ fn snapshot(log: &Path) -> io::Result<PathBuf> {
     let copy = log.with_file_name("sonora.copy.log");
     io::copy(&mut File::open(log)?, &mut File::create(&copy)?)?;
     Ok(copy)
+}
+
+impl SettingsView {
+    pub(super) fn auto_update_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.settings.read(cx).auto_update();
+
+        self.row(
+            t!("settings-auto-update"),
+            Switch::new("auto-update", on)
+                .name(t!("settings-auto-update"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.settings
+                        .update(cx, |settings, cx| settings.set_auto_update(!on, cx));
+                }))
+                .into_any_element(),
+        )
+    }
 }

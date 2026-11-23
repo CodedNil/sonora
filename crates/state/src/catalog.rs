@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
+use tracing::warn;
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -36,6 +37,9 @@ trait CatalogBackend: Send + Sync {
     async fn artist_profile(&self, id: &str) -> Result<ArtistProfile>;
     async fn artist_images(&self, ids: Vec<String>) -> Result<HashMap<String, String>>;
     async fn track(&self, id: &str) -> Result<Track>;
+    async fn track_playcount(&self, _id: &str) -> Result<Option<u64>> {
+        Ok(None)
+    }
     async fn album(&self, id: &str) -> Result<AlbumDetail>;
     async fn song_album(&self, _id: &str) -> Result<Option<Album>> {
         Ok(None)
@@ -96,6 +100,9 @@ impl CatalogBackend for ApiBackend {
     }
     async fn track(&self, id: &str) -> Result<Track> {
         self.0.track(id).await
+    }
+    async fn track_playcount(&self, id: &str) -> Result<Option<u64>> {
+        self.0.track_playcount(id).await
     }
     async fn album(&self, id: &str) -> Result<AlbumDetail> {
         self.0.album(id).await
@@ -369,7 +376,7 @@ impl CatalogSource {
     pub(crate) async fn song(&self, id: &str) -> Result<Arc<SongPage>> {
         self.songs
             .load(id, async {
-                let mut track = self.backend.track(id).await?;
+                let track = self.backend.track(id).await?;
                 let album_id = track.album_id.clone();
                 let artist_id = track
                     .artist_refs
@@ -429,29 +436,17 @@ impl CatalogSource {
                         .iter()
                         .find(|album_track| album_track.id == track.id)
                 });
-                let playcount = album_track
-                    .and_then(|track| track.playcount)
-                    .or(track.playcount);
-                if let Some(album_track) = album_track {
-                    if track.genres.is_empty() {
-                        track.genres.clone_from(&album_track.genres);
-                    }
-                    if track.tags.is_empty() {
-                        track.tags.clone_from(&album_track.tags);
-                    }
-                    if track.moods.is_empty() {
-                        track.moods.clone_from(&album_track.moods);
-                    }
-                    if track.album_artist.is_empty() {
-                        track.album_artist.clone_from(&album_track.album_artist);
-                    }
-                    track.bpm = track.bpm.or(album_track.bpm);
-                }
-                if track.album_artist.is_empty()
-                    && let Some(album) = &album
-                {
-                    track.album_artist.clone_from(&album.album.artists);
-                }
+                let playcount = match (album_track, track.id.as_deref()) {
+                    (Some(album_track), _) => album_track.playcount,
+                    (None, Some(track_id)) => match self.backend.track_playcount(track_id).await {
+                        Ok(playcount) => playcount,
+                        Err(error) => {
+                            warn!("song: cannot read track play count: {error:#}");
+                            None
+                        }
+                    },
+                    (None, None) => None,
+                };
                 Ok(SongPage {
                     track,
                     album,
@@ -534,6 +529,7 @@ mod tests {
                 }],
                 album: "Album".to_owned(),
                 album_id: Some("album".to_owned()),
+
                 track_number: 1,
                 disc_number: 1,
                 ..Default::default()

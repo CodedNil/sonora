@@ -1,6 +1,7 @@
 use std::ffi::c_void;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Duration;
+use tracing::warn;
 
 use anyhow::Result;
 use futures::future;
@@ -45,13 +46,13 @@ impl Controls {
             let player = match build(commands).await {
                 Ok(player) => player,
                 Err(error) => {
-                    return log::warn!("remote: cannot register the mpris player: {error}");
+                    return warn!("remote: cannot register the mpris player: {error}");
                 }
             };
             let apply = async {
                 while let Some(update) = receiver.recv().await {
                     if let Err(error) = apply(&player, update).await {
-                        log::warn!("remote: cannot publish to mpris: {error}");
+                        warn!("remote: cannot publish to mpris: {error}");
                     }
                 }
             };
@@ -214,8 +215,8 @@ fn metadata(track: &Track, cover: Option<&str>, cx: &App) -> Metadata {
         .title(track.name.clone())
         .artist(artists)
         .album(track.album.clone())
-        .length(time(track.duration))
         .build();
+    metadata.set_length(track.duration.map(time));
     metadata.set_art_url(cover);
     if let Some(id) = &track.id {
         let url = Sonora::global(cx)

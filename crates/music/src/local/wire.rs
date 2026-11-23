@@ -4,6 +4,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::ffi::OsStr;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use tracing::warn;
 
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::picture::{MimeType, Picture, PictureType};
@@ -104,7 +105,7 @@ pub fn id3v2_end(path: &Path) -> u64 {
     let footer = header[5] & 0x10 != 0;
 
     let skip = u64::from(size) + 10 + if footer { 10 } else { 0 };
-    log::warn!(
+    warn!(
         "[local_music] file {} id3v2 bytes skiped: {}",
         path.display(),
         skip
@@ -261,12 +262,9 @@ pub struct Tagged {
     pub album_artist: Option<String>,
     /// The individual album artists, empty when no album artist is tagged.
     pub album_artists: Vec<ArtistRef>,
-    pub year: Option<i32>,
     /// The release type the tags name, `None` when they name neither a type nor a compilation.
     pub release: Option<ReleaseType>,
-    /// The record label the tags name, empty when they name none. Not an `Option`: serde would
-    /// read a row stored without this field as `None` instead of rejecting it, so the file would
-    /// never be read again for its label.
+    /// The record label the tags name, empty when they name none.
     pub label: String,
 }
 
@@ -291,12 +289,11 @@ struct FallbackProbe {
     album_artist: Option<String>,
     track_number: u32,
     disc_number: u32,
-    release_date: Option<String>,
+    release_date: Option<crate::ReleaseDate>,
     release: Vec<String>,
     genres: Vec<String>,
-    tags: Vec<String>,
     moods: Vec<String>,
-    bpm: Option<f32>,
+    bpm: Option<u16>,
     composers: Vec<String>,
     languages: Vec<String>,
     label: Option<String>,
@@ -370,7 +367,6 @@ fn probe_symphonia_at(path: &Path, skip: u64) -> Option<FallbackProbe> {
     let mut release_date = None;
     let mut release = Vec::new();
     let mut genres = Vec::new();
-    let mut tags = Vec::new();
     let mut moods = Vec::new();
     let mut bpm = None;
     let mut composers = Vec::new();
@@ -419,14 +415,14 @@ fn probe_symphonia_at(path: &Path, skip: u64) -> Option<FallbackProbe> {
                 Some(StandardTagKey::Genre) => {
                     genres.extend(clean_val(&tag.value));
                 }
-                Some(StandardTagKey::PodcastKeywords) => {
-                    tags.extend(clean_val(&tag.value));
-                }
-                Some(StandardTagKey::Mood) => {
-                    moods.extend(clean_val(&tag.value));
-                }
-                Some(StandardTagKey::Bpm) if bpm.is_none() => {
-                    bpm = parse_bpm(&tag.value.to_string());
+                Some(StandardTagKey::Mood) => moods.extend(clean_val(&tag.value)),
+                Some(StandardTagKey::Bpm) => {
+                    bpm = tag
+                        .value
+                        .to_string()
+                        .parse()
+                        .ok()
+                        .and_then(crate::rounded_bpm);
                 }
                 Some(StandardTagKey::Composer) => {
                     composers.extend(clean_val(&tag.value));
@@ -441,7 +437,7 @@ fn probe_symphonia_at(path: &Path, skip: u64) -> Option<FallbackProbe> {
                     compilation |= flagged(&tag.value.to_string());
                 }
                 Some(StandardTagKey::Date) if release_date.is_none() => {
-                    release_date = crate::calendar::parse_release_date(&tag.value.to_string());
+                    release_date = crate::ReleaseDate::parse(&tag.value.to_string());
                 }
                 _ => {}
             }
@@ -471,7 +467,6 @@ fn probe_symphonia_at(path: &Path, skip: u64) -> Option<FallbackProbe> {
         release_date,
         release,
         genres,
-        tags,
         moods,
         bpm,
         composers,
@@ -484,14 +479,13 @@ fn probe_symphonia_at(path: &Path, skip: u64) -> Option<FallbackProbe> {
 
 /// When a file last changed, in whole seconds since the epoch. `None` when the
 /// filesystem does not keep the time or it sits outside what an `i64` of seconds holds.
-pub fn modified_at(path: &Path) -> Option<i64> {
-    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    match modified.duration_since(std::time::UNIX_EPOCH) {
-        Ok(since) => i64::try_from(since.as_secs()).ok(),
-        Err(before) => i64::try_from(before.duration().as_secs())
-            .ok()
-            .map(|seconds| -seconds),
-    }
+pub fn modified_at(path: &Path) -> Option<crate::Timestamp> {
+    std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .try_into()
+        .ok()
 }
 
 /// Reads one file into a track, with the album artist, year, release type and label its tags claim.
@@ -612,17 +606,19 @@ pub fn track_from_file(
     let release_date = tag
         .and_then(|tag| tag.date())
         .and_then(|date| {
-            crate::calendar::release_date(
-                i32::from(date.year),
-                i32::from(date.month.unwrap_or_default()),
-                i32::from(date.day.unwrap_or_default()),
+            crate::ReleaseDate::from_parts(
+                date.year as i32,
+                date.month.map(u32::from),
+                date.day.map(u32::from),
             )
         })
-        .or_else(|| fallback.as_ref()?.release_date.clone())
-        .or_else(|| crate::calendar::release_date(lenient.as_ref()?.year?, 0, 0));
-    let year = release_date
-        .as_deref()
-        .and_then(|date| date.get(..4)?.parse().ok());
+        .or_else(|| fallback.as_ref().and_then(|fb| fb.release_date))
+        .or_else(|| {
+            lenient
+                .as_ref()
+                .and_then(|l| l.year)
+                .and_then(crate::ReleaseDate::from_year)
+        });
 
     let release = match tag {
         Some(tag) => release_type(
@@ -635,16 +631,16 @@ pub fn track_from_file(
             .and_then(|fb| release_type(fb.release.iter().map(String::as_str), fb.compilation)),
     };
 
-    let (genres, tags, moods, bpm, composers, languages, label) = match (tag, fallback) {
+    let (genres, moods, bpm, composers, languages, label) = match (tag, fallback) {
         (Some(tag), _) => {
             let listed = |key| clean_multiple(tag.get_strings(key));
             (
                 listed(ItemKey::Genre),
-                listed(ItemKey::PodcastKeywords),
                 listed(ItemKey::Mood),
-                [ItemKey::Bpm, ItemKey::IntegerBpm]
-                    .into_iter()
-                    .find_map(|key| parse_bpm(tag.get_string(key)?)),
+                tag.get_string(ItemKey::Bpm)
+                    .or_else(|| tag.get_string(ItemKey::IntegerBpm))
+                    .and_then(|value| value.parse().ok())
+                    .and_then(crate::rounded_bpm),
                 listed(ItemKey::Composer),
                 listed(ItemKey::Language),
                 listed(ItemKey::Label)
@@ -656,7 +652,6 @@ pub fn track_from_file(
         }
         (None, Some(fb)) => (
             fb.genres,
-            fb.tags,
             fb.moods,
             fb.bpm,
             fb.composers,
@@ -695,37 +690,23 @@ pub fn track_from_file(
             album_artist: album_artist.clone().unwrap_or_default(),
             album_id,
             cover,
-            duration,
+            duration: (!duration.is_zero()).then_some(duration),
             added_at: modified_at(path),
-            added_by: None,
-            playcount: None,
-            popularity: 0,
-            explicit: false,
+            release_date,
             track_number,
             disc_number,
-            isrc: None,
-            release_date,
             genres,
-            tags,
             moods,
             bpm,
             languages: languages.iter().map(|code| language_code(code)).collect(),
             credits,
+            ..Default::default()
         },
         album_artist,
         album_artists,
-        year,
         release,
         label,
     })
-}
-
-fn parse_bpm(value: &str) -> Option<f32> {
-    value
-        .trim()
-        .parse::<f32>()
-        .ok()
-        .filter(|bpm| bpm.is_finite() && *bpm > 0.)
 }
 
 /// Builds the album `tracks` were grouped under. `id` is the one the tracks carry, since it is
@@ -736,15 +717,11 @@ pub fn album_from_tracks(
     name: &str,
     artist_refs: &[ArtistRef],
     tracks: &[Track],
-    year: i32,
+    release_date: Option<crate::ReleaseDate>,
     release: ReleaseType,
     label: String,
 ) -> Album {
-    let artists = artist_refs
-        .iter()
-        .map(|artist| artist.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let artists = ArtistRef::names(artist_refs);
     let cover = tracks.iter().find_map(|track| track.cover.clone());
     Album {
         id: id.to_owned(),
@@ -754,12 +731,8 @@ pub fn album_from_tracks(
         cover: cover.clone(),
         cover_large: cover,
         release_type: release,
-        year,
-        track_count: tracks.len() as u32,
-        release_date: match year > 0 {
-            true => year.to_string(),
-            false => String::new(),
-        },
+        track_count: Some(tracks.len() as u32),
+        release_date,
         label,
         copyrights: Vec::new(),
         added_at: tracks.iter().filter_map(|track| track.added_at).max(),
@@ -1134,7 +1107,7 @@ mod tests {
         assert!(track.playable);
         assert_eq!(track.name, "Chann Vi Gawah");
         assert_eq!(track.artists, "Madhav Mahajan");
-        assert_eq!(track.duration.as_secs(), 252);
+        assert_eq!(track.duration.unwrap().as_secs(), 252);
         let _ = std::fs::remove_dir_all(&temp);
     }
 
@@ -1177,20 +1150,20 @@ mod tests {
             .expect("a track")
             .track;
         let mut newer = older.clone();
-        older.added_at = Some(1_000);
-        newer.added_at = Some(2_000);
+        older.added_at = crate::Timestamp::from_second(1_000).ok();
+        newer.added_at = crate::Timestamp::from_second(2_000).ok();
 
         let album = album_from_tracks(
             "id",
             "Album",
             &[artist_ref("Artist")],
             &[older, newer],
-            2026,
+            crate::ReleaseDate::from_year(2026),
             ReleaseType::Album,
             String::new(),
         );
 
-        assert_eq!(album.added_at, Some(2_000));
+        assert_eq!(album.added_at.map(|stamp| stamp.as_second()), Some(2_000));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1206,7 +1179,6 @@ mod tests {
     fn a_tagged_file_whose_name_is_not_unicode_still_scans() {
         use std::os::windows::ffi::OsStringExt;
 
-        log::set_max_level(log::LevelFilter::Warn);
         let dir = scratch("sonora-wire-test-not-unicode");
         let name = std::ffi::OsString::from_wide(&[0xd800, 0x2e, 0x6d, 0x70, 0x33]);
         let path = dir.join(name);

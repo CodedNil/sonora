@@ -27,6 +27,7 @@ use crate::screens::search::SearchView;
 use crate::screens::settings::SettingsHeader;
 use crate::shared::ambient::{self, Ambient};
 use crate::shared::confirm::Confirm;
+use crate::shared::menus::CardMenu;
 use crate::shared::playlist_editor::PlaylistEditor;
 use crate::shared::powerbar::{Powerbar, PowerbarEvent};
 use crate::shared::smart_playlist::SmartPlaylistEditor;
@@ -55,6 +56,7 @@ struct Screens {
     home: Entity<HomeView>,
     history: Entity<HistoryView>,
     library: Entity<LibraryView>,
+    local: Entity<LibraryView>,
     artist: Option<Entity<ArtistView>>,
     artist_detail: Option<Entity<ArtistDetail>>,
     album: Option<Entity<DetailView>>,
@@ -177,6 +179,7 @@ pub struct Root {
     /// The quick search, drawn over whichever shell is up so it opens in fullscreen too.
     powerbar: Entity<Powerbar>,
     dialogs: Dialogs,
+    card_menu: Entity<CardMenu>,
     /// The toasts, hung above the player bar or the fullscreen dock, whichever shell is up.
     toasts: Entity<ToastStack>,
     shells: Shells,
@@ -265,8 +268,24 @@ impl Root {
         })
         .detach();
 
-        let library_view =
-            cx.new(|cx| LibraryView::new(library.clone(), playback.clone(), window, cx));
+        let library_view = cx.new(|cx| {
+            LibraryView::new(
+                state::Shelf::Streaming,
+                library.clone(),
+                playback.clone(),
+                window,
+                cx,
+            )
+        });
+        let local = cx.new(|cx| {
+            LibraryView::new(
+                state::Shelf::Local,
+                library.clone(),
+                playback.clone(),
+                window,
+                cx,
+            )
+        });
 
         let io = Io::global(cx);
         let home_state = cx.new(|cx| Home::new(library.clone(), session.clone(), io.clone(), cx));
@@ -287,8 +306,10 @@ impl Root {
         })
         .detach();
         let genres = cx.new(|cx| Genres::new(session.clone(), io.clone(), cx));
+        let field = SearchView::field(cx);
         let search = cx.new(|cx| {
             SearchView::new(
+                field.clone(),
                 queries,
                 suggestions,
                 genres.clone(),
@@ -310,29 +331,42 @@ impl Root {
         let user_profile = cx.new(|cx| Profile::new(session.clone(), io.clone(), cx));
         let user = cx.new(|cx| UserView::new(user_profile.clone(), playback.clone(), cx));
 
+        let title_bar = cx.new(|cx| TitleBar::new(field, cx));
         let start = navigation.read(cx).current();
         let workspace = cx.new(|cx| {
             Workspace::new(
                 playback.clone(),
                 queue.clone(),
                 library_view.clone().into(),
+                title_bar.clone(),
                 cx,
             )
         });
+        // Native window buttons must follow the sidebar’s animated width too.
+        #[cfg(target_os = "macos")]
+        cx.observe(&workspace, |_, _, cx| cx.notify()).detach();
         let fullscreen = cx.new(|cx| FullscreenView::new(playback.clone(), queue.clone(), cx));
         let ambient = cx.new(Ambient::new);
 
-        let title_bar = cx.new(TitleBar::new);
-        cx.subscribe(&title_bar, |this, _, event, cx| match event {
-            TitleBarEvent::ToggleSidebar => this
-                .shells
-                .workspace
-                .update(cx, |workspace, cx| workspace.toggle_sidebar(cx)),
-            TitleBarEvent::ToggleSidebarRight => this
-                .shells
-                .workspace
-                .update(cx, |workspace, cx| workspace.toggle_sidebar_right(cx)),
-        })
+        cx.subscribe_in(
+            &title_bar,
+            window,
+            |this, _, event, window, cx| match event {
+                TitleBarEvent::ToggleSidebar => this
+                    .shells
+                    .workspace
+                    .update(cx, |workspace, cx| workspace.toggle_sidebar(cx)),
+                TitleBarEvent::ToggleSidebarRight => this
+                    .shells
+                    .workspace
+                    .update(cx, |workspace, cx| workspace.toggle_sidebar_right(cx)),
+                TitleBarEvent::Search => this.open_search(cx),
+                TitleBarEvent::EnterResults => this
+                    .screens
+                    .search
+                    .update(cx, |search, cx| search.enter_results(window, cx)),
+            },
+        )
         .detach();
 
         // Re-read the system preference when the window becomes active instead of keeping a
@@ -417,6 +451,7 @@ impl Root {
                 home,
                 history,
                 library: library_view,
+                local,
                 artist: None,
                 artist_detail: None,
                 album: None,
@@ -442,6 +477,7 @@ impl Root {
             theme_invite: cx.new(ThemeInvite::new),
             powerbar,
             dialogs: Dialogs::new(cx),
+            card_menu: CardMenu::entity(cx),
             toasts: cx.new(ToastStack::new),
             background: None,
             font: None,
@@ -677,11 +713,9 @@ impl Root {
     }
 
     fn options(&self, cx: &Context<Self>) -> TitleBarOptions {
-        let content = self.toolbar.clone().map(Into::into);
-
         match self.view {
-            RootView::Workspace => self.shells.workspace.read(cx).title_bar(content, cx),
-            RootView::Fullscreen => self.shells.fullscreen.read(cx).title_bar(content, cx),
+            RootView::Workspace => self.shells.workspace.read(cx).title_bar(cx),
+            RootView::Fullscreen => self.shells.fullscreen.read(cx).title_bar(cx),
         }
     }
 
@@ -725,6 +759,7 @@ impl Root {
                 let history = Sonora::global(cx).history.clone();
                 Box::new(move |cx| matches!(history.read(cx).state(), HistoryState::Loading))
             }
+            Destination::Local(_) => shelf(Shelf::Local),
             Destination::Library(_) => {
                 let session = Sonora::global(cx).session.clone();
                 let streaming = shelf(Shelf::Streaming);
@@ -771,7 +806,7 @@ impl Root {
                 let history = Sonora::global(cx).history.clone();
                 history.update(cx, |history, cx| history.reload(cx));
             }
-            Destination::Library(_) => library.update(cx, |library, cx| {
+            Destination::Library(_) | Destination::Local(_) => library.update(cx, |library, cx| {
                 library.reload(Shelf::Streaming, cx);
                 library.reload(Shelf::Local, cx);
             }),
@@ -1029,6 +1064,14 @@ impl Root {
                 toolbar = Some(history.read(cx).toolbar());
                 history.into()
             }
+            Destination::Local(tab) => {
+                self.screens
+                    .local
+                    .update(cx, |library, cx| library.select(tab.into(), cx));
+                let library = self.screens.local.clone();
+                toolbar = Some(library.read(cx).toolbar());
+                library.into()
+            }
             Destination::Library(tab) => {
                 self.screens
                     .library
@@ -1223,6 +1266,7 @@ impl Render for Root {
             },
             false => self.options(cx),
         };
+        let bar_height = options.height(window, cx);
         self.title_bar
             .update(cx, |bar, cx| bar.set_options(options, cx));
 
@@ -1264,13 +1308,13 @@ impl Render for Root {
             }
             false => {
                 let settings = Sonora::global(cx).settings.read(cx);
-                let framed = (
-                    settings.window_rounding(),
-                    crate::chrome::traffic_lights(
-                        settings,
-                        ui::snapped(theme.metrics.title_bar, window),
-                    ),
-                );
+                let framed = (settings.window_rounding(), {
+                    let mut controls = crate::chrome::traffic_lights(settings, bar_height);
+                    if !show_sign_in && matches!(self.view, RootView::Workspace) {
+                        controls.x += self.shells.workspace.read(cx).title_bar_offset(cx);
+                    }
+                    controls
+                });
                 if self.framed != Some(framed) {
                     self.framed = Some(framed);
                     window.defer(cx, move |window, cx| {
@@ -1466,6 +1510,7 @@ impl Render for Root {
                     .h(floor)
                     .child(deferred(self.toasts.clone()).with_priority(TOAST_LAYER)),
             )
+            .child(self.card_menu.clone())
             .children(self.dialogs.views())
             .child(self.jam_invite.clone())
             .child(self.theme_invite.clone())
@@ -1554,13 +1599,18 @@ impl Render for Root {
             })
             // The bar only changes when it is told to, so a frame drawn for the lyrics or the
             // progress bar replays it rather than building it again.
-            .child(
-                self.title_bar.clone().cached(
-                    StyleRefinement::default()
-                        .w_full()
-                        .h(ui::snapped(theme.metrics.title_bar, window))
-                        .flex_none(),
-                ),
+            .when(
+                show_sign_in || matches!(self.view, RootView::Fullscreen),
+                |this| {
+                    this.child(
+                        self.title_bar.clone().cached(
+                            StyleRefinement::default()
+                                .w_full()
+                                .h(bar_height)
+                                .flex_none(),
+                        ),
+                    )
+                },
             )
             .when(!show_sign_in, |this| this.child(shell));
         // A closed menu or dialog fades out here, over everything else in the window.

@@ -83,11 +83,11 @@ impl JellyfinProvider {
             Ok(profile) => Ok(Some(session(client, profile))),
             Err(error) if crate::trouble::offline(&format!("{error:#}")) => Err(error),
             Err(error) if error.downcast_ref::<SignInFailure>().is_some() => {
-                log::warn!("jellyfin: the server refused the stored session");
+                tracing::warn!("jellyfin: the server refused the stored session");
                 Err(SignInFailure(SignInProblem::Credentials).into())
             }
             Err(error) => {
-                log::warn!("jellyfin: the stored session is no longer usable: {error:#}");
+                tracing::warn!("jellyfin: the stored session is no longer usable: {error:#}");
                 Ok(None)
             }
         }
@@ -189,7 +189,7 @@ fn log_out(credentials: auth::Credentials) {
     {
         Ok(runtime) => runtime,
         Err(error) => {
-            log::warn!("jellyfin: cannot start the sign-out: {error}");
+            tracing::warn!("jellyfin: cannot start the sign-out: {error}");
             return;
         }
     };
@@ -206,12 +206,12 @@ fn log_out(credentials: auth::Credentials) {
         .await
     });
     match sent {
-        Ok(Ok(response)) => log::info!(
+        Ok(Ok(response)) => tracing::info!(
             "jellyfin: the server ended the session, {}",
             response.status()
         ),
-        Ok(Err(error)) => log::warn!("jellyfin: cannot end the session on the server: {error}"),
-        Err(_) => log::warn!("jellyfin: the server did not answer the sign-out in time"),
+        Ok(Err(error)) => tracing::warn!("jellyfin: cannot end the session on the server: {error}"),
+        Err(_) => tracing::warn!("jellyfin: the server did not answer the sign-out in time"),
     }
 }
 

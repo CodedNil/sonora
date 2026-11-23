@@ -1,3 +1,4 @@
+use gpui::Stateful;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -5,10 +6,9 @@ use std::time::{Duration, Instant};
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, AnyView, App, Bounds, ClickEvent, Context, Entity, FocusHandle, FontWeight,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, Render, ScrollWheelEvent, SharedString, SpringConfig, SpringState, Stateful,
-    Task, TextShadow,
+    AnyElement, App, Bounds, ClickEvent, Context, Entity, FocusHandle, FontWeight, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+    Render, ScrollWheelEvent, SharedString, SpringConfig, SpringState, Task, TextShadow,
 };
 use gpui::{Div, Window, anchored, canvas, deferred, div, phi, point, px, rems};
 use i18n::t;
@@ -230,8 +230,11 @@ impl FullscreenView {
             true => SideTab::Lyrics,
             false => SideTab::Queue,
         });
-        let aside = cx.new(|cx| Aside::new(queue.clone(), playback.clone(), shown, cx));
-        aside.update(cx, |aside, _| aside.strip());
+        let aside = cx.new(|cx| Aside::new(queue.clone(), playback.clone(), cx));
+        aside.update(cx, |aside, cx| {
+            aside.strip();
+            aside.show(shown, cx);
+        });
         let me = cx.entity_id();
         let playlist_scrollbar = cx.new(|_| Scrollbar::inset().watching(me));
 
@@ -291,6 +294,7 @@ impl FullscreenView {
     /// Starts the idle clock as the view opens and stops it as the view closes, so it never
     /// hides the cursor over the workspace. Either way the view next shows with its controls up.
     pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        crate::shared::menus::CardMenu::dismiss(cx);
         self.on_show = shown;
         match shown {
             true => {
@@ -426,7 +430,6 @@ impl FullscreenView {
             || self.volume.held
             || self.pending.is_some()
             || self.context_menu.is_some()
-            || (self.panel.is_some() && self.aside.read(cx).menu_open())
             || Sonora::global(cx).devices.read(cx).invite().is_some()
     }
 
@@ -493,7 +496,8 @@ impl FullscreenView {
     /// rest-expiry time, so no subscription is needed: a parked pointer simply
     /// re-arms the timer instead of letting the chrome go idle under it.
     fn scrollbar_held(&self, cx: &App) -> bool {
-        self.panel.is_some() && self.aside.read(cx).scrollbar_active(cx)
+        crate::shared::menus::CardMenu::is_open(cx)
+            || (self.panel.is_some() && self.aside.read(cx).scrollbar_active(cx))
     }
 
     fn flip(&mut self, awake: bool) {
@@ -1261,7 +1265,7 @@ impl FullscreenView {
                             Some(tab(
                                 "fullscreen-artwork-tab",
                                 "icons/disc-3.svg",
-                                "fullscreen-artwork",
+                                "common-artwork",
                                 None,
                             )),
                             lyrics.then(|| {
@@ -1486,13 +1490,13 @@ fn explicit_badge(id: &'static str, named: bool) -> impl IntoElement {
 }
 
 impl Shell for FullscreenView {
-    fn title_bar(&self, _content: Option<AnyView>, cx: &App) -> TitleBarOptions {
+    fn title_bar(&self, cx: &App) -> TitleBarOptions {
         TitleBarOptions {
             navigation: false,
             sidebar_open: false,
             sidebar_right: None,
             border: false,
-            content: None,
+            tall: false,
             transparent: ambient::shown(cx),
         }
     }
@@ -1730,15 +1734,10 @@ impl Render for FullscreenView {
             ),
             false => (spectrum, None),
         };
-        let perches = match self.panel.is_some() {
-            true => self.aside.update(cx, |aside, cx| aside.perches(window, cx)),
-            false => Vec::new(),
-        };
-
         div()
             .id("fullscreen")
             .role(Role::Main)
-            .aria_label(t!("player-fullscreen"))
+            .aria_label(t!("queue-now-playing"))
             .key_context(super::shell_context(WORKSPACE_CONTEXT))
             .track_focus(&self.focus)
             .relative()
@@ -1922,20 +1921,6 @@ impl Render for FullscreenView {
             })
             // The panel's floating buttons stand over it here, above the visualizer and the band
             // over it, which would otherwise cover and blur them.
-            .when(!perches.is_empty(), |this| {
-                let at = self.panel_bounds.get();
-                let origin = at.origin - self.root_origin.get();
-                this.child(entering(
-                    div()
-                        .absolute()
-                        .left(origin.x)
-                        .top(origin.y)
-                        .w(at.size.width)
-                        .h(at.size.height)
-                        .children(perches),
-                    switching,
-                ))
-            })
             .map(|this| match narrow {
                 // The bar along the bottom spans the window edge to edge the way the player
                 // bar does, over the page's side padding. It lays out on its own like the

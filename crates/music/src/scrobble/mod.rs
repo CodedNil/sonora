@@ -157,12 +157,12 @@ pub fn load(service: &str) -> Account {
         Ok(body) => body,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Account::default(),
         Err(error) => {
-            log::warn!("scrobble: cannot read {}: {error}", path.display());
+            tracing::warn!("scrobble: cannot read {}: {error}", path.display());
             return Account::default();
         }
     };
     serde_json::from_slice(&body).unwrap_or_else(|error| {
-        log::warn!("scrobble: cannot parse {}: {error}", path.display());
+        tracing::warn!("scrobble: cannot parse {}: {error}", path.display());
         Account::default()
     })
 }

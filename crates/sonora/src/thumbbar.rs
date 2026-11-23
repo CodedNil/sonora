@@ -158,7 +158,7 @@ pub fn install(window: WindowId, hwnd: *mut c_void, cx: &mut App) -> bool {
             .try_global::<Installed>()
             .is_some_and(|installed| installed.window == window);
         if ours {
-            log::debug!("thumbbar: the window closed, taking the toolbar down");
+            debug!("thumbbar: the window closed, taking the toolbar down");
             cx.remove_global::<Installed>();
         }
     });
@@ -283,12 +283,12 @@ impl Bar {
             match unsafe { CoCreateInstance(&TaskbarList, None, CLSCTX_INPROC_SERVER) } {
                 Ok(taskbar) => taskbar,
                 Err(error) => {
-                    log::warn!("thumbbar: cannot reach the taskbar: {error:#}");
+                    warn!("thumbbar: cannot reach the taskbar: {error:#}");
                     return None;
                 }
             };
         if let Err(error) = unsafe { taskbar.HrInit() } {
-            log::warn!("thumbbar: cannot start the taskbar list: {error:#}");
+            warn!("thumbbar: cannot start the taskbar list: {error:#}");
             return None;
         }
 
@@ -312,11 +312,11 @@ impl Bar {
         let hooked = unsafe { SetWindowSubclass(hwnd, Some(subclass), SUBCLASS, refdata) };
         if !hooked.as_bool() {
             drop(unsafe { Rc::from_raw(refdata as *const RefCell<Shared>) });
-            log::warn!("thumbbar: cannot listen for taskbar button clicks");
+            warn!("thumbbar: cannot listen for taskbar button clicks");
             return None;
         }
 
-        log::debug!("thumbbar: watching {hwnd:?} for taskbar message {created}");
+        debug!("thumbbar: watching {hwnd:?} for taskbar message {created}");
         Some(Self { shared, hwnd })
     }
 
@@ -397,14 +397,14 @@ impl Shared {
         match outcome {
             Ok(()) if self.added => {}
             Ok(()) => {
-                log::debug!("thumbbar: buttons are on the taskbar");
+                debug!("thumbbar: buttons are on the taskbar");
                 self.added = true;
             }
             Err(error) if self.added => {
-                log::warn!("thumbbar: cannot update the taskbar buttons: {error:#}");
+                warn!("thumbbar: cannot update the taskbar buttons: {error:#}");
             }
             Err(error) => {
-                log::debug!("thumbbar: the taskbar button is not ready yet: {error:#}");
+                debug!("thumbbar: the taskbar button is not ready yet: {error:#}");
             }
         }
     }
@@ -429,21 +429,21 @@ impl Shared {
         }
 
         let Some(images) = images else {
-            log::warn!("thumbbar: cannot draw the taskbar button glyphs");
+            warn!("thumbbar: cannot draw the taskbar button glyphs");
             return;
         };
         if let Err(error) = unsafe { self.taskbar.ThumbBarSetImageList(self.hwnd, images) } {
             // Before the taskbar button exists this is expected; `arrived`
             // draws again once the shell announces it.
             match self.added {
-                true => log::warn!("thumbbar: cannot hand over the button glyphs: {error:#}"),
-                false => log::debug!("thumbbar: no taskbar button for the glyphs yet: {error:#}"),
+                true => warn!("thumbbar: cannot hand over the button glyphs: {error:#}"),
+                false => debug!("thumbbar: no taskbar button for the glyphs yet: {error:#}"),
             }
             let _ = unsafe { ImageList_Destroy(Some(images)) };
             return;
         }
 
-        log::debug!("thumbbar: drew {} glyphs at {}px", GLYPHS.len(), look.size);
+        debug!("thumbbar: drew {} glyphs at {}px", GLYPHS.len(), look.size);
         // Only now that the shell holds the new list is the old one free.
         self.clear();
         self.images = Some(images);
@@ -485,7 +485,7 @@ impl Shared {
             .and_then(|()| self.taskbar.SetProgressState(self.hwnd, flag))
         };
         if let Err(error) = outcome {
-            log::debug!("thumbbar: cannot show the progress on the taskbar: {error:#}");
+            debug!("thumbbar: cannot show the progress on the taskbar: {error:#}");
         }
     }
 
@@ -511,7 +511,7 @@ unsafe extern "system" fn subclass(
 
     if let Ok(mut shared) = shared.try_borrow_mut() {
         if message == shared.created {
-            log::debug!("thumbbar: the shell created the taskbar button");
+            debug!("thumbbar: the shell created the taskbar button");
             shared.arrived();
         } else if message == WM_COMMAND && (wparam.0 as u32 >> 16) == THBN_CLICKED {
             let event = match wparam.0 as u32 & 0xffff {
@@ -556,28 +556,13 @@ fn tip(button: &mut THUMBBUTTON, text: &str) {
 
 /// Rasterises one pack glyph into an icon Windows can own.
 fn glyph(name: &str, look: Look) -> Option<HICON> {
-    let bytes = icons::asset(&icons::path(name))?;
     let colour = match look.light {
         true => ON_LIGHT,
         false => ON_DARK,
     };
-    // Pack SVGs are stroked and filled with `currentColor`, which has no meaning
-    // outside a document; give it one before parsing.
-    let source = std::str::from_utf8(bytes)
-        .ok()?
-        .replace("currentColor", colour);
-
-    let tree = resvg::usvg::Tree::from_str(&source, &resvg::usvg::Options::default()).ok()?;
     let size = look.size.max(1) as u32;
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size)?;
-    let scale = size as f32 / tree.size().width().max(1.0);
-    resvg::render(
-        &tree,
-        resvg::tiny_skia::Transform::from_scale(scale, scale),
-        &mut pixmap.as_mut(),
-    );
-
-    icon(pixmap.data(), size)
+    let image = icons::rasterize(name, colour, size)?;
+    icon(image.as_bytes(0)?, size)
 }
 
 /// Gathers the glyphs into an image list, which is the handle the toolbar reads
@@ -596,9 +581,9 @@ fn list(icons: &[HICON], size: i32) -> Option<HIMAGELIST> {
     Some(images)
 }
 
-/// Turns premultiplied RGBA into an `HICON`. Windows wants the channels the
-/// other way round and the rows top down, which the negative height asks for.
-fn icon(rgba: &[u8], size: u32) -> Option<HICON> {
+/// Turns GPUI's straight-alpha BGRA into a premultiplied `HICON`. The negative height
+/// asks Windows for top-down rows, matching the image buffer.
+fn icon(bgra: &[u8], size: u32) -> Option<HICON> {
     let info = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: size_of::<BITMAPINFOHEADER>() as u32,
@@ -620,10 +605,13 @@ fn icon(rgba: &[u8], size: u32) -> Option<HICON> {
         return None;
     }
     unsafe {
-        let pixels = std::slice::from_raw_parts_mut(bits.cast::<u8>(), rgba.len());
+        let pixels = std::slice::from_raw_parts_mut(bits.cast::<u8>(), bgra.len());
         let (pixels, _) = pixels.as_chunks_mut::<4>();
-        for (out, pixel) in pixels.iter_mut().zip(rgba.as_chunks::<4>().0) {
-            *out = [pixel[2], pixel[1], pixel[0], pixel[3]];
+        for (out, pixel) in pixels.iter_mut().zip(bgra.as_chunks::<4>().0) {
+            // Windows requires premultiplied BGRA; GPUI images store straight alpha.
+            let alpha = u16::from(pixel[3]);
+            *out = pixel.map(|channel| ((u16::from(channel) * alpha + 127) / 255) as u8);
+            out[3] = pixel[3];
         }
     }
 
@@ -658,8 +646,8 @@ fn shown(cx: &App) -> Shown {
     Shown {
         previous: t!("player-previous").to_string(),
         toggle: match playing {
-            true => t!("tray-pause"),
-            false => t!("tray-play"),
+            true => t!("play-pause"),
+            false => t!("common-play"),
         }
         .to_string(),
         next: t!("player-next").to_string(),

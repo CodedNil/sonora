@@ -155,7 +155,7 @@ impl SettingsView {
 
         drill(
             "music-folders",
-            t!("settings-music-folders"),
+            t!("settings-page-music-folders"),
             Some(value),
             cx,
         )
@@ -214,7 +214,7 @@ impl SettingsView {
             .session
             .update(cx, |session, cx| session.choose_library(choice.clone(), cx));
         if let Err(error) = kept {
-            log::warn!("settings: cannot keep the library choice: {error:#}");
+            tracing::warn!("settings: cannot keep the library choice: {error:#}");
             Toasts::post(
                 Toast::new(Outcome::Failed, "toast-subsonic-library-failed"),
                 cx,
@@ -438,7 +438,7 @@ impl SettingsView {
         // that is the longest part, so it says so rather than showing nothing.
         let note = match (scanning, scan.done()) {
             (Some(progress), _) => Some(match progress.percent() {
-                Some(percent) => t!("unit-percent", value = percent),
+                Some(percent) => t!("common-progress", percent = percent),
                 None => t!("settings-scan-walking"),
             }),
             (None, Some(took)) => Some(t!("settings-scan-done", seconds = text::lapsed(took))),
@@ -465,7 +465,7 @@ impl SettingsView {
             div()
                 .id("local-folders")
                 .role(Role::List)
-                .aria_label(t!("settings-music-folders"))
+                .aria_label(t!("settings-page-music-folders"))
                 .flex()
                 .flex_col()
                 .children(items)
@@ -548,7 +548,7 @@ impl SettingsView {
                                 let path = path.clone();
                                 move |_, _, _| {
                                     if let Err(error) = open::that_detached(&path) {
-                                        log::warn!("settings: cannot open {path}: {error}");
+                                        tracing::warn!("settings: cannot open {path}: {error}");
                                     }
                                 }
                             }),
@@ -1333,7 +1333,7 @@ impl RenderOnce for ProviderRow {
             Offer::SignIn => Role::Button,
             Offer::Cancel(_) => Role::Group,
         };
-        let hint = matches!(offer, Offer::SignIn).then(|| t!("settings-provider-sign-in"));
+        let hint = matches!(offer, Offer::SignIn).then(|| t!("common-sign-in"));
         let description = status
             .iter()
             .chain(hint.iter())

@@ -164,7 +164,7 @@ pub async fn authenticate(
         .await
         .map_err(lost)?;
     let status = response.status();
-    log::info!("jellyfin: the sign-in answered {status}");
+    tracing::info!("jellyfin: the sign-in answered {status}");
     if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
         return Err(SignInFailure(SignInProblem::Password).into());
     }
@@ -592,9 +592,9 @@ impl JellyfinClient {
             .shares
             .iter()
             .any(|share| share.user_id.as_deref() == Some(self.user_id.as_str()));
-        playlist.public = info.open_access;
+        playlist.public = Some(info.open_access);
         playlist.owned = editable && !shared;
-        playlist.collaborative = editable && shared;
+        playlist.can_edit_tracks = editable;
         // Jellyfin has no user pages to link an owner to, so the owner is a name alone.
         if playlist.owned {
             playlist.owner = self.username.clone();
@@ -777,7 +777,7 @@ impl MusicApi for JellyfinClient {
         let artist = artist?;
         let albums = albums.with_context(|| format!("cannot load the albums of {artist_id}"))?;
         let top_tracks = top.unwrap_or_else(|error| {
-            log::warn!("jellyfin: cannot rank the songs of {artist_id}: {error:#}");
+            tracing::warn!("jellyfin: cannot rank the songs of {artist_id}: {error:#}");
             Vec::new()
         });
         Ok(Artist {
@@ -1152,8 +1152,8 @@ impl MusicApi for JellyfinClient {
         );
         let tracks = tracks.with_context(|| format!("cannot load the songs of {album_id}"))?;
         let mut album = self.covers.album(album?);
-        if album.track_count == 0 {
-            album.track_count = tracks.len() as u32;
+        if album.track_count.is_none() {
+            album.track_count = u32::try_from(tracks.len()).ok();
         }
         Ok(AlbumDetail { album, tracks })
     }
@@ -1215,7 +1215,7 @@ impl MusicApi for JellyfinClient {
             .map(|item| self.covers.track(item))
             .collect();
         let mut playlist = self.playlist_rights(self.covers.playlist(playlist)).await;
-        playlist.track_count = tracks.len() as u32;
+        playlist.track_count = u32::try_from(tracks.len()).ok();
         if playlist.cover.is_none() {
             playlist.cover = tracks.iter().find_map(|track| track.cover.clone());
         }
@@ -1499,8 +1499,8 @@ fn checked(response: reqwest::Response, what: &str) -> Result<reqwest::Response>
         return Ok(response);
     }
     match status {
-        StatusCode::NOT_FOUND => log::info!("jellyfin: {what} answered {status}"),
-        _ => log::warn!("jellyfin: {what} answered {status}"),
+        StatusCode::NOT_FOUND => tracing::info!("jellyfin: {what} answered {status}"),
+        _ => tracing::warn!("jellyfin: {what} answered {status}"),
     }
     match status {
         StatusCode::UNAUTHORIZED => Err(anyhow::Error::new(SignInFailure(
@@ -1820,8 +1820,8 @@ mod tests {
         assert_eq!(album.name, "Homogenic");
         assert_eq!(album.artists, "Björk");
         assert_eq!(album.artist_refs[0].id.as_deref(), Some("a1"));
-        assert_eq!(album.year, 1997);
-        assert_eq!(album.track_count, 10);
+        assert_eq!(album.year(), Some(1997));
+        assert_eq!(album.track_count, Some(10));
         assert!(
             album
                 .cover_large
@@ -1893,7 +1893,7 @@ mod tests {
         assert_eq!(detail.tracks.len(), 1);
         let track = &detail.tracks[0];
         assert_eq!(track.id.as_deref(), Some("t1"));
-        assert_eq!(track.duration, Duration::from_millis(255_000));
+        assert_eq!(track.duration, Some(Duration::from_millis(255_000)));
         assert_eq!(track.artists, "Björk");
         assert!(
             track
@@ -1902,7 +1902,7 @@ mod tests {
                 .unwrap()
                 .contains("/Items/al1/Images/Primary")
         );
-        assert_eq!(detail.album.track_count, 1);
+        assert_eq!(detail.album.track_count, Some(1));
         let children = mock
             .seen()
             .into_iter()
@@ -1965,7 +1965,7 @@ mod tests {
         let playlists = mock.client().playlists().await.unwrap();
 
         assert_eq!(playlists[0].name, "Road trip");
-        assert_eq!(playlists[0].track_count, 12);
+        assert_eq!(playlists[0].track_count, Some(12));
         assert!(!playlists[0].owned);
         let seen = &mock.seen()[0];
         assert_eq!(seen.query["IncludeItemTypes"], "Playlist");
@@ -2060,7 +2060,7 @@ mod tests {
 
         assert_eq!(track.id.as_deref(), Some("t1"));
         assert_eq!(track.name, "");
-        assert_eq!(track.duration, Duration::ZERO);
+        assert_eq!(track.duration, None);
         assert_eq!(track.cover, None);
     }
 }

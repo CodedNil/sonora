@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use tracing::warn;
 
 use anyhow::{Context as _, Result};
 
@@ -341,7 +343,7 @@ fn unpack_bundle(image: &Path, staged: &Path) -> Result<PathBuf> {
         .args(["detach", "-quiet"])
         .arg(mount.path()))
     {
-        log::warn!("updates: cannot eject the disk image: {error:#}");
+        warn!("updates: cannot eject the disk image: {error:#}");
     }
     copied?;
     std::fs::remove_file(image).ok();
@@ -363,7 +365,7 @@ fn swap_bundle(staged: &Path, bundle: &Path) -> Result<()> {
         return Err(error).context("cannot put the new version in place");
     }
     if let Err(error) = remove(&retired) {
-        log::warn!("updates: cannot delete the old version: {error:#}");
+        warn!("updates: cannot delete the old version: {error:#}");
     }
     relaunch(Command::new("/usr/bin/open").arg(bundle))
 }

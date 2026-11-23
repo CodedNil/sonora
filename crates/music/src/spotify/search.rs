@@ -67,7 +67,7 @@ pub(super) async fn lyric_tracks(session: &Session, term: &str) -> Result<Vec<Tr
                     .track_album
                     .map(|album| album.name)
                     .unwrap_or_default(),
-                duration: duration.unwrap_or_default(),
+                duration,
                 ..Default::default()
             })
         })
@@ -146,7 +146,7 @@ fn album(hit: Entity) -> Option<Album> {
         AlbumType::Audiobook => ReleaseType::Audiobook,
         AlbumType::Podcast => ReleaseType::Podcast,
     };
-    let release_date = crate::calendar::parse_release_date(&album.user_country_release_iso_time)
+    let release_date = crate::ReleaseDate::parse(&album.user_country_release_iso_time)
         .or_else(|| crate::calendar::release_date(album.release_year, 0, 0))
         .or_else(|| {
             let stamp = album.release_time?;
@@ -159,8 +159,7 @@ fn album(hit: Entity) -> Option<Album> {
                 date.month().into(),
                 date.day().into(),
             )
-        })
-        .unwrap_or_default();
+        });
     let cover = wire::playlist_image(&hit.image_uri);
     let cover_large = cover
         .as_deref()
@@ -181,7 +180,6 @@ fn album(hit: Entity) -> Option<Album> {
         cover,
         cover_large,
         release_type,
-        year: album.release_year,
         release_date,
         ..Default::default()
     })
@@ -193,9 +191,9 @@ fn playlist(hit: Entity) -> Option<Playlist> {
         id: id(&hit.uri, "spotify:playlist:")?,
         name: hit.name,
         owner: playlist.owner_name,
-        public: true,
+        public: Some(true),
         cover: wire::playlist_image(&hit.image_uri),
-        track_count: playlist.number_of_tracks.try_into().unwrap_or_default(),
+        track_count: playlist.number_of_tracks.try_into().ok(),
         ..Default::default()
     })
 }

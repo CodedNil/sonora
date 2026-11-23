@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use tracing::warn;
 
 use gpui::{App, Context, Entity, EventEmitter, Task};
 use music::{
@@ -48,7 +49,7 @@ impl Reorder {
         let Some(playlist) = playlist else {
             return Self::Off;
         };
-        if !playlist.owned && !playlist.collaborative {
+        if !playlist.owned && !playlist.can_edit_tracks {
             return Self::Off;
         }
         if playlist.read_only {
@@ -70,11 +71,11 @@ pub struct Header {
     pub artist: Option<String>,
     pub artist_refs: Vec<ArtistRef>,
     pub owner: Option<Contributor>,
-    pub release_date: Option<String>,
+    pub release_date: Option<music::ReleaseDate>,
     /// The owner's name when the provider gives no id to link it to.
     pub owner_name: Option<String>,
-    /// Zero when the provider does not report a count.
-    pub track_count: u32,
+    /// Total number of tracks, absent when the provider does not report it.
+    pub track_count: Option<u32>,
     pub cover: Option<String>,
     /// Artwork already available while this page loads a better image.
     pub cover_preview: Option<String>,
@@ -367,14 +368,17 @@ impl Detail {
                         ));
                         this.continuation = continuation;
                         if let Some(playlist) = this.playlist.as_mut()
-                            && playlist.track_count < this.tracks.len() as u32
+                            && (this.continuation.is_none()
+                                || playlist
+                                    .track_count
+                                    .is_some_and(|count| count < this.tracks.len() as u32))
                         {
-                            playlist.track_count = this.tracks.len() as u32;
+                            playlist.track_count = Some(this.tracks.len() as u32);
                             this.header = Some(playlist_header(playlist));
                         }
                         this.load_more(cx);
                     }
-                    Err(error) => log::warn!("detail: cannot load more playlist tracks: {error:#}"),
+                    Err(error) => warn!("detail: cannot load more playlist tracks: {error:#}"),
                 }
                 cx.notify();
             })
@@ -439,7 +443,7 @@ impl Detail {
     /// told about each row the page shows of them, so its count and Undo cover every copy.
     pub fn remove_tracks_from_playlist(&mut self, track_ids: Vec<String>, cx: &mut Context<Self>) {
         let Some(playlist_id) = self.id.clone() else {
-            log::warn!("detail: cannot remove a track without a playlist");
+            warn!("detail: cannot remove a track without a playlist");
             return;
         };
         if self
@@ -676,7 +680,7 @@ impl Detail {
             .read(cx)
             .playlist(&playlist.id)
             .and_then(|known| known.cover.clone())
-            .or_else(|| mosaic::cached(&playlist.id, playlist.track_count))
+            .or_else(|| mosaic::cached(&playlist.id, playlist.track_count.unwrap_or(0)))
     }
 
     fn paint_mosaic(&mut self, playlist: &Playlist, tracks: &[Track], cx: &mut Context<Self>) {
@@ -686,7 +690,7 @@ impl Detail {
         }
 
         let id = playlist.id.clone();
-        let stamp = playlist.track_count;
+        let stamp = playlist.track_count.unwrap_or(0);
         let io = self.io.clone();
         let http = cx.http_client();
         self.mosaic = Some(cx.spawn(async move |this, cx| {
@@ -703,7 +707,7 @@ impl Detail {
                     }
                     cx.notify();
                 }
-                Err(error) => log::warn!("detail: cannot build a mosaic: {error:#}"),
+                Err(error) => warn!("detail: cannot build a mosaic: {error:#}"),
             })
             .ok();
         }));
@@ -717,17 +721,10 @@ impl Detail {
     fn adopt(&mut self, loaded: Loaded, cx: &mut Context<Self>) {
         match loaded {
             Loaded::Album(detail) => {
-                let mut header = album_header(&detail.album);
-                if let Some(previous) = self.header.as_ref().and_then(|header| header.cover.clone())
-                {
-                    if header.cover.is_none() {
-                        header.cover = Some(previous);
-                    } else if header.cover.as_ref() != Some(&previous) {
-                        header.cover_preview = Some(previous);
-                    }
-                }
-                self.header = Some(header);
-                self.album = Some(detail.album.clone());
+                let mut album = detail.album.clone();
+                album.track_count.get_or_insert(detail.tracks.len() as u32);
+                self.header = Some(album_header(&album));
+                self.album = Some(album);
                 self.tracks = detail
                     .tracks
                     .iter()
@@ -744,6 +741,9 @@ impl Detail {
             }
             Loaded::Playlist(detail) => {
                 let mut playlist = detail.playlist.clone();
+                if playlist.track_count.is_none() && detail.continuation.is_none() {
+                    playlist.track_count = Some(detail.tracks.len() as u32);
+                }
                 if playlist.cover.is_none() {
                     playlist.cover = self.known_mosaic(&playlist, cx);
                 }
@@ -828,7 +828,7 @@ impl Detail {
                 this.filling_request = None;
                 match filled {
                     Ok(catalogue) => this.absorb(&catalogue),
-                    Err(error) => log::warn!("detail: cannot fill the page: {error:#}"),
+                    Err(error) => warn!("detail: cannot fill the page: {error:#}"),
                 }
                 cx.notify();
             })
@@ -859,10 +859,7 @@ fn album_header(album: &Album) -> Header {
         artist: Some(album.artists.clone()),
         artist_refs: album.artist_refs.clone(),
         owner: None,
-        release_date: match album.release_date.is_empty() {
-            true => (album.year > 0).then(|| album.year.to_string()),
-            false => Some(album.release_date.clone()),
-        },
+        release_date: album.release_date,
         owner_name: None,
         track_count: album.track_count,
         cover: album.cover_large.clone().or_else(|| album.cover.clone()),
@@ -876,18 +873,15 @@ fn album_header(album: &Album) -> Header {
 }
 
 fn playlist_header(playlist: &Playlist) -> Header {
-    let owner = match playlist.owner_id.is_empty() {
-        true => None,
-        false => Some(Contributor {
-            id: playlist.owner_id.clone(),
-            name: playlist.owner.clone(),
-            avatar: None,
-        }),
-    };
-    let owner_name = match owner.is_some() {
-        true => None,
-        false => Some(playlist.owner.clone()).filter(|name| !name.is_empty()),
-    };
+    let owner = playlist.owner_id.as_ref().map(|id| Contributor {
+        id: id.clone(),
+        name: playlist.owner.clone(),
+        avatar: None,
+    });
+    let owner_name = owner
+        .is_none()
+        .then(|| playlist.owner.clone())
+        .filter(|name| !name.is_empty());
 
     Header {
         kind: Collection::Playlist,
@@ -928,13 +922,13 @@ mod tests {
             id: "p".into(),
             name: "Mix".into(),
             owner: String::new(),
-            owner_id: String::new(),
+            owner_id: None,
             owned,
-            collaborative: false,
+            can_edit_tracks: owned,
             blend: false,
-            public: false,
+            public: Some(false),
             cover: None,
-            track_count: 3,
+            track_count: Some(3),
             modified_at: None,
             read_only: false,
         }
@@ -981,7 +975,7 @@ mod tests {
         assert_eq!(Reorder::of(None, ordering(true), true), Reorder::Off);
 
         let mut shared = playlist(false);
-        shared.collaborative = true;
+        shared.can_edit_tracks = true;
         assert_eq!(
             Reorder::of(Some(&shared), ordering(true), true),
             Reorder::On

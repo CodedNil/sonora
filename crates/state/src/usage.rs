@@ -1,4 +1,5 @@
 use std::time::Duration;
+use tracing::warn;
 
 use anyhow::{Context as _, Result};
 use gpui::{Context, Entity, Task};
@@ -145,7 +146,7 @@ impl Usage {
             }))
             .await;
             if let Err(error) = sent {
-                log::warn!("usage: cannot report usage: {error:#}");
+                warn!("usage: cannot report usage: {error:#}");
             }
             this.update(cx, |this, _| this.task = None).ok();
         }));
@@ -166,7 +167,7 @@ impl Usage {
             }))
             .await;
             if let Err(error) = saved {
-                log::warn!("usage: cannot remember the first sign in: {error:#}");
+                warn!("usage: cannot remember the first sign in: {error:#}");
             }
             this.update(cx, |this, _| this.mark = None).ok();
         }));
@@ -188,7 +189,7 @@ impl Usage {
                         this.logged_in = logged_in;
                     }
                     Err(error) => {
-                        log::warn!("usage: cannot read flags: {error:#}");
+                        warn!("usage: cannot read flags: {error:#}");
                         this.settled = true;
                     }
                 }

@@ -1,5 +1,6 @@
 use anyhow::{Context as _, Result};
 use raw_window_handle::{HasDisplayHandle as _, RawDisplayHandle, RawWindowHandle};
+use tracing::warn;
 use x11rb::connection::Connection as _;
 use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, PropMode};
 use x11rb::wrapper::ConnectionExt as _;
@@ -8,7 +9,7 @@ use x11rb::xcb_ffi::XCBConnection;
 /// Publishes every icon size on X11 windows. Wayland resolves the icon through the app id.
 pub fn install(window: &gpui::Window) {
     if let Err(error) = set_icons(window) {
-        log::warn!("icon: cannot set the X11 window icons: {error:#}");
+        warn!("icon: cannot set the X11 window icons: {error:#}");
     }
 }
 

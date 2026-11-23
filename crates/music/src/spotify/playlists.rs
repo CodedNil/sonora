@@ -293,7 +293,7 @@ pub(super) async fn library(session: &Session) -> Result<Vec<Playlist>> {
                 .and_then(|item| item.attributes)
                 .unwrap_or_default();
             let mut playlist = wire::playlist_summary(id.to_owned(), attrs, username);
-            playlist.public = entry.published_to_profile.unwrap_or_default();
+            playlist.public = entry.published_to_profile;
             playlists.push(playlist);
         }
         if length < PAGE_SIZE {
@@ -379,11 +379,11 @@ async fn hydrate_tracks(
         }
         own_name = session
             .display_name()
-            .filter(|_| playlist.owner_id == session.username());
+            .filter(|_| playlist.owner_id.as_deref() == Some(session.username()));
         if let Some(name) = own_name {
             name.clone_into(&mut playlist.owner);
-        } else if !playlist.owner_id.is_empty() {
-            ids.insert(playlist.owner_id.clone());
+        } else if let Some(owner) = &playlist.owner_id {
+            ids.insert(owner.clone());
         }
     }
     let profile_uris: Vec<_> = ids
@@ -418,7 +418,7 @@ async fn hydrate_tracks(
                 if let Some(data) = collection::take(&mut data, ExtensionKind::UserProfile, uri) {
                     let card = profiles::contributor(uri, data);
                     if let Some(playlist) = playlist.as_deref_mut()
-                        && card.id == playlist.owner_id
+                        && Some(card.id.as_str()) == playlist.owner_id.as_deref()
                         && own_name.is_none()
                     {
                         playlist.owner.clone_from(&card.name);
@@ -602,7 +602,7 @@ fn listed_track(track: &Track, item: &Attributes) -> Track {
         .added_at
         .as_ref()
         .filter(|stamp| stamp.seconds > 0)
-        .map(|stamp| stamp.seconds);
+        .and_then(|stamp| crate::Timestamp::new(stamp.seconds, stamp.nanos).ok());
     let added_by = profiles::username(item.added_by_username.as_deref().unwrap_or_default());
     track.added_by = (!added_by.is_empty()).then(|| Arc::new(Contributor::unnamed(added_by)));
     track
@@ -941,7 +941,7 @@ pub(super) async fn browse_sections(
                 .filter_map(|(uri, meta)| {
                     let card = playlist_card(uri.strip_prefix(PLAYLIST_PREFIX)?, meta.attributes?)?;
                     // Incomplete projections still get the same direct read as other cards.
-                    (!card.owner_id.is_empty() && card.cover.is_some()).then_some((uri, card))
+                    (card.owner_id.is_some() && card.cover.is_some()).then_some((uri, card))
                 })
                 .collect();
             Ok(BrowseSection {
@@ -993,9 +993,9 @@ pub(super) fn playlist_card(id: &str, attributes: Attributes) -> Option<Playlist
         } else {
             String::new()
         },
-        owner_id: attributes.owner_username,
+        owner_id: Some(attributes.owner_username).filter(|id| !id.is_empty()),
         cover,
-        public: true,
+        public: Some(true),
         ..Default::default()
     })
 }

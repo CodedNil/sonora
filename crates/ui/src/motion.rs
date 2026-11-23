@@ -185,7 +185,7 @@ impl Saver {
     pub fn label(self) -> SharedString {
         match self.rate() {
             Some(fps) => t!("unit-fps", value = fps),
-            None => t!("saver-off"),
+            None => t!("common-off"),
         }
     }
 
@@ -414,7 +414,7 @@ impl Stillness {
 
     pub fn label(self) -> SharedString {
         match self {
-            Self::System => t!("motion-system"),
+            Self::System => t!("common-system"),
             Self::Always => t!("motion-always"),
             Self::Never => t!("motion-never"),
         }

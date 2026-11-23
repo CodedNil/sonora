@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::{debug, warn};
 
 use gpui::{Context, Entity, Task};
 use logic::lyrics::{awaits_better, gather, ordered};
@@ -425,7 +426,7 @@ impl Lyrics {
             if providers.is_empty() {
                 this.update(cx, |this, cx| {
                     if this.finished(&id) {
-                        log::debug!("lyrics: showing the stored answer");
+                        debug!("lyrics: showing the stored answer");
                         this.show(&cached, &query, cx);
                     }
                 })
@@ -496,7 +497,7 @@ impl Lyrics {
                         }
                     }
                     Err(error) => {
-                        log::warn!("lyrics: cannot look up {}: {error:#}", track.name);
+                        warn!("lyrics: cannot look up {}: {error:#}", track.name);
                         let reason = crate::blamed(&error, cx);
                         if current {
                             this.state = LyricsState::Failed(reason);
@@ -533,10 +534,10 @@ impl Lyrics {
         }
         match waiting {
             false => {
-                log::debug!("lyrics: settling on a synced answer as it arrives");
+                debug!("lyrics: settling on a synced answer as it arrives");
                 self.settled = true;
             }
-            true => log::debug!("lyrics: showing the first synced answer while the rest arrive"),
+            true => debug!("lyrics: showing the first synced answer while the rest arrive"),
         }
         self.apply(ranked, displayed, cx);
     }
@@ -617,7 +618,7 @@ impl Lyrics {
         cx: &mut Context<Self>,
     ) {
         if !self.settled {
-            log::debug!("lyrics: settling on the best answer");
+            debug!("lyrics: settling on the best answer");
             self.settled = true;
             self.pin(ranked, displayed);
             self.state = state_for(&self.hits, instrumental);
@@ -718,7 +719,7 @@ fn query_for(track: &Track, key: Option<TrackKey>) -> LyricsQuery {
         title: track.name.clone(),
         artist: track.artists.clone(),
         album: (!track.album.is_empty()).then(|| track.album.clone()),
-        duration: track.duration,
+        duration: track.duration.unwrap_or_default(),
         track: key,
     }
 }

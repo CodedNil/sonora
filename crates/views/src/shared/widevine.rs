@@ -78,7 +78,7 @@ impl Render for WidevinePrompt {
         };
         let (detail, note, license, action) = match &state {
             CdmState::Wanted => (wanted, None, None, true),
-            CdmState::Offering => (wanted, Some(t!("settings-downloading")), None, false),
+            CdmState::Offering => (wanted, Some(t!("common-downloading")), None, false),
             CdmState::Offered(terms) => (
                 t!("widevine-prompt-terms", version = terms.version.as_str()),
                 None,
@@ -87,7 +87,7 @@ impl Render for WidevinePrompt {
             ),
             _ => (
                 t!("widevine-prompt-terms", version = ""),
-                Some(t!("settings-installing")),
+                Some(t!("common-installing")),
                 None,
                 false,
             ),
@@ -95,11 +95,11 @@ impl Render for WidevinePrompt {
         let accepting = matches!(state, CdmState::Offered(_));
         let proceed = match accepting {
             true => t!("widevine-prompt-accept"),
-            false => t!("widevine-prompt-download"),
+            false => t!("menu-download"),
         };
         let decline = match accepting {
             true => t!("widevine-prompt-decline"),
-            false => t!("common-not-now"),
+            false => t!("soloist-later"),
         };
 
         div()

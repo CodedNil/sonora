@@ -144,7 +144,7 @@ impl Render for JamInvite {
                     .action(
                         Button::new("join-jam")
                             .primary()
-                            .label(t!("devices-jam-invite-join"))
+                            .label(t!("common-join"))
                             .on_click(cx.listener(|this, _, window, cx| this.join(window, cx))),
                     )
                     .on_dismiss(cx.listener(|this, _, window, cx| this.decline(window, cx))),
@@ -281,7 +281,7 @@ impl Render for JamJoin {
                         Button::new("confirm-jam-join")
                             .primary()
                             .disabled(!ready)
-                            .label(t!("devices-jam-invite-join"))
+                            .label(t!("common-join"))
                             .on_click(cx.listener(|this, _, window, cx| this.join(window, cx))),
                     )
                     .on_dismiss(cx.listener(|this, _, window, cx| this.close(window, cx))),

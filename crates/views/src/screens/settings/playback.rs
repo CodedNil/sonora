@@ -73,50 +73,6 @@ impl SettingsView {
         i18n::lookup(detail, None)
     }
 
-    pub(super) fn playback_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.playback.read(cx).normalisation();
-
-        self.row(
-            t!("settings-normalisation"),
-            Switch::new("normalisation", on)
-                .name(t!("settings-normalisation"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.playback
-                        .update(cx, |playback, cx| playback.set_normalisation(!on, cx));
-                }))
-                .into_any_element(),
-        )
-    }
-
-    pub(super) fn gapless_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.playback.read(cx).gapless();
-
-        self.row(
-            t!("settings-gapless"),
-            Switch::new("gapless", on)
-                .name(t!("settings-gapless"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.playback
-                        .update(cx, |playback, cx| playback.set_gapless(!on, cx));
-                }))
-                .into_any_element(),
-        )
-    }
-
-    pub(super) fn sponsorblock_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).sponsorblock();
-        self.row(
-            t!("settings-sponsorblock"),
-            Switch::new("sponsorblock", on)
-                .name(t!("settings-sponsorblock"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_sponsorblock(!on, cx));
-                }))
-                .into_any_element(),
-        )
-    }
-
     /// The switch that keeps played tracks on disk. Soloist streams every track and keeps its
     /// own cache, so the switch is out of use while it plays.
     pub(super) fn keep_tracks_row(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -319,21 +275,6 @@ impl SettingsView {
         )
     }
 
-    pub(super) fn stay_awake_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.settings.read(cx).stay_awake();
-
-        self.row(
-            t!("settings-stay-awake"),
-            Switch::new("stay-awake", on)
-                .name(t!("settings-stay-awake"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings
-                        .update(cx, |settings, cx| settings.set_stay_awake(!on, cx));
-                }))
-                .into_any_element(),
-        )
-    }
-
     /// The sleep timer as a slider in its row with the time it is set to before it: off at the
     /// left, end of track at the right, minutes in between with the quarter hours widened. The
     /// label follows a drag at once, and the timer is armed when the drag lets go.
@@ -422,7 +363,7 @@ impl SettingsView {
             .when(offerable, |row| {
                 row.child(
                     Button::new("fetch-widevine")
-                        .label(t!("settings-widevine-fetch"))
+                        .label(t!("menu-download"))
                         .small()
                         .outline()
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -471,7 +412,7 @@ impl SettingsView {
 /// Shared by the row and its search entry.
 pub(super) fn widevine_copy(state: &CdmState) -> (&'static str, &'static str) {
     match state {
-        CdmState::Looking => ("settings-widevine-detail", "settings-looking"),
+        CdmState::Looking => ("settings-widevine-detail", "common-looking"),
         CdmState::Ready(Origin::Configured) => {
             ("settings-widevine-detail", "settings-widevine-configured")
         }
@@ -484,8 +425,8 @@ pub(super) fn widevine_copy(state: &CdmState) -> (&'static str, &'static str) {
         CdmState::Wanted | CdmState::Offered(_) => {
             ("settings-widevine-none", "settings-widevine-asking")
         }
-        CdmState::Offering => ("settings-widevine-none", "settings-downloading"),
-        CdmState::Installing => ("settings-widevine-none", "settings-installing"),
+        CdmState::Offering => ("settings-widevine-none", "common-downloading"),
+        CdmState::Installing => ("settings-widevine-none", "common-installing"),
         CdmState::Declined | CdmState::Missing => {
             ("settings-widevine-none", "settings-widevine-missing")
         }
@@ -543,7 +484,7 @@ fn sleep_label(sleep: Option<Sleep>) -> SharedString {
     match sleep {
         Some(Sleep::EndOfTrack) => t!("settings-sleep-end-of-track"),
         Some(Sleep::After(after)) => t!("settings-sleep-minutes", count = after.as_secs() / 60),
-        None => t!("settings-sleep-off"),
+        None => t!("common-off"),
     }
 }
 
@@ -614,7 +555,7 @@ pub(super) fn codec_key(codec: Option<Codec>) -> &'static str {
 
 pub(super) fn bitrate_label(bitrate: Option<u32>) -> SharedString {
     match bitrate {
-        Some(kbps) => t!("unit-kbps", value = i64::from(kbps)),
+        Some(kbps) => t!("common-kbps", kbps = i64::from(kbps)),
         None => t!("settings-stream-bitrate-unlimited"),
     }
 }
@@ -653,4 +594,20 @@ fn signal(rank: usize, steps: usize, cx: &App) -> Div {
                     false => theme.muted,
                 })
         }))
+}
+
+impl SettingsView {
+    pub(super) fn sponsorblock_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.settings.read(cx).sponsorblock();
+        self.row(
+            t!("settings-sponsorblock"),
+            Switch::new("sponsorblock", on)
+                .name(t!("settings-sponsorblock"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.settings
+                        .update(cx, |settings, cx| settings.set_sponsorblock(!on, cx));
+                }))
+                .into_any_element(),
+        )
+    }
 }

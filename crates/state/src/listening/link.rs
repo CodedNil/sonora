@@ -3,6 +3,7 @@
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tracing::{error, warn};
 
 use futures::{SinkExt as _, StreamExt as _};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -71,12 +72,12 @@ async fn run(
     let socket = match tokio::time::timeout(CONNECT, tokio_tungstenite::connect_async(&url)).await {
         Ok(Ok((socket, _))) => socket,
         Ok(Err(error)) => {
-            log::warn!("listening: cannot reach {url}: {error}");
+            warn!("listening: cannot reach {url}: {error}");
             heard.send(Heard::Lost).ok();
             return;
         }
         Err(_) => {
-            log::warn!("listening: {url} did not answer in time");
+            warn!("listening: {url} did not answer in time");
             heard.send(Heard::Lost).ok();
             return;
         }
@@ -103,7 +104,7 @@ async fn run(
                             Ok(reply) => {
                                 heard.send(Heard::Reply(Box::new(reply))).ok();
                             }
-                            Err(error) => log::warn!("listening: unreadable reply: {error}"),
+                            Err(error) => warn!("listening: unreadable reply: {error}"),
                         },
                         Some(Ok(Message::Close(_))) | Some(Err(_)) | None => {
                             heard.send(Heard::Lost).ok();
@@ -128,12 +129,12 @@ async fn run(
         let text = match serde_json::to_string(&request) {
             Ok(text) => text,
             Err(error) => {
-                log::error!("listening: cannot encode a request: {error}");
+                error!("listening: cannot encode a request: {error}");
                 continue;
             }
         };
         if let Err(error) = sink.send(Message::Text(text.into())).await {
-            log::warn!("listening: cannot send to the server: {error}");
+            warn!("listening: cannot send to the server: {error}");
             heard.send(Heard::Lost).ok();
             return;
         }

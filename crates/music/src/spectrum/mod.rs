@@ -5,6 +5,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+use tracing::error;
 
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex32;
@@ -149,7 +150,7 @@ impl Spectrum {
             .name("spectrum".to_owned())
             .spawn(move || analyze(listener, target));
         if let Err(error) = spawned {
-            log::error!("spectrum: cannot spawn analyzer thread: {error}");
+            error!("spectrum: cannot spawn analyzer thread: {error}");
         }
         Tap {
             feed,

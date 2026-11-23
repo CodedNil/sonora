@@ -5,11 +5,9 @@ use gpui::{
     div,
 };
 use i18n::t;
-use router::{Destination, Link, navigate};
+use router::{Destination, Link};
 use state::Playback;
-use ui::{
-    ActiveTheme as _, Badge, InlineLink, InlineLinks, Perch, Pinnable, Tails as _, Tipped as _,
-};
+use ui::{ActiveTheme as _, Badge, Perch, Pinnable, Tails as _, Tipped as _};
 
 use crate::shared::pins::Pinned as _;
 use crate::shared::transport::like;
@@ -130,20 +128,29 @@ pub(crate) fn track_details<V: 'static>(
         .child(headline)
         .when_some(track, |this, track| {
             this.child(
-                InlineLinks::new(
-                    "now-playing-artist",
-                    track.artist_refs.iter().map(|artist| {
-                        InlineLink::new(artist.name.clone(), artist.id.clone().map(Into::into))
-                    }),
-                    track.artists.clone(),
-                    muted,
-                )
-                .text_size(artists)
-                .when(centered, |this| this.justify_center())
-                .truncate()
-                .on_click(|id, cx| {
-                    navigate(Destination::Artist(id), cx);
-                }),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .min_w_0()
+                    .when(centered, |this| this.justify_center())
+                    .text_size(artists)
+                    .text_color(muted)
+                    .child(
+                        crate::shared::cells::artist_links(
+                            "now-playing-artist",
+                            track.artist_refs.clone(),
+                            track.artists.clone(),
+                            muted,
+                        )
+                        .text_size(artists)
+                        .when(centered, |this| this.justify_center())
+                        .truncate(),
+                    )
+                    .children(
+                        crate::chrome::stage::release(cx)
+                            .map(|date| div().flex_none().child(format!("· {date}"))),
+                    ),
             )
         })
 }

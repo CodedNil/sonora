@@ -15,8 +15,12 @@ fn main() {
         println!("cargo:rerun-if-changed={file}");
     }
 
-    cc::Build::new()
-        .cpp(true)
+    let mut shim = cc::Build::new();
+    // Nix enables _FORTIFY_SOURCE in debug builds too; glibc requires optimization.
+    if env::var("OPT_LEVEL").as_deref() == Ok("0") {
+        shim.opt_level(1);
+    }
+    shim.cpp(true)
         .std("c++14")
         .file("shim/shim.cc")
         .include("shim/cdm")

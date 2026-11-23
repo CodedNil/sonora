@@ -36,7 +36,7 @@ impl Kind {
             Self::Downloads => t!("confirm-remove-downloads"),
             Self::EqualizerProfile(ref name) => {
                 let name = equalizer_profile_label(name);
-                t!("confirm-delete-named", name = &name)
+                t!("common-delete-confirm", name = &name)
             }
         }
     }
@@ -44,7 +44,7 @@ impl Kind {
     fn action(&self) -> gpui::SharedString {
         match self {
             Self::Widevine => t!("settings-widevine-uninstall"),
-            Self::Soloist => t!("settings-soloist-remove"),
+            Self::Soloist => t!("common-remove"),
             Self::Downloads => t!("settings-downloads-remove"),
             Self::DeleteTrackFiles(_) | Self::EqualizerProfile(_) => t!("common-delete"),
         }
@@ -121,7 +121,7 @@ impl Confirm {
                                     Ok(()) => deleted.push(id),
                                     Err(error) => {
                                         failed += 1;
-                                        log::warn!(
+                                        tracing::warn!(
                                             "local: cannot delete track file {id}: {error:#}"
                                         );
                                     }
@@ -142,7 +142,7 @@ impl Confirm {
                             });
                         }
                         Err(error) => {
-                            log::warn!("local: deletion task failed: {error}");
+                            tracing::warn!("local: deletion task failed: {error}");
                             cx.update(|cx| {
                                 Toasts::show(Outcome::Failed, "toast-local-delete-failed", cx);
                             });

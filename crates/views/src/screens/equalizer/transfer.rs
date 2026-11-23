@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::{self, Read as _};
 use std::path::Path;
+use tracing::warn;
 
 use gpui::prelude::*;
 use gpui::{AnyElement, ClipboardItem, Context, PathPromptOptions, SharedString, div};
@@ -32,7 +33,7 @@ impl EqualizerView {
         let name = equalizer_profile_label(self.settings.read(cx).equalizer_profile_name());
         let toast = match result {
             Ok(skipped) if skipped.is_empty() => {
-                Toast::new(Outcome::Done, "equalizer-imported").name(name)
+                Toast::new(Outcome::Done, "common-imported").name(name)
             }
             Ok(skipped) => Toast::new(Outcome::Warning, "equalizer-imported-skipped")
                 .name(name)
@@ -73,8 +74,8 @@ impl EqualizerView {
             let path = match receiver.await {
                 Ok(Ok(Some(paths))) => paths.into_iter().next(),
                 Ok(Err(error)) => {
-                    log::warn!("equalizer: cannot open the file dialog: {error:#}");
-                    cx.update(|cx| Toasts::show(Outcome::Failed, "toast-file-dialog-failed", cx));
+                    warn!("equalizer: cannot open the file dialog: {error:#}");
+                    cx.update(|cx| Toasts::show(Outcome::Failed, "common-file-dialog-failed", cx));
                     None
                 }
                 _ => None,
@@ -102,7 +103,7 @@ impl EqualizerView {
                     this.import(&name, &apo::decode(&bytes), cx);
                 }
                 Err(error) => {
-                    log::warn!("equalizer: cannot read {}: {error}", path.display());
+                    warn!("equalizer: cannot read {}: {error}", path.display());
                     Toasts::post(
                         Toast::new(Outcome::Failed, "equalizer-file-unreadable")
                             .detail(error.to_string()),
@@ -132,8 +133,8 @@ impl EqualizerView {
             let path = match receiver.await {
                 Ok(Ok(path)) => path,
                 Ok(Err(error)) => {
-                    log::warn!("equalizer: cannot open the file dialog: {error:#}");
-                    cx.update(|cx| Toasts::show(Outcome::Failed, "toast-file-dialog-failed", cx));
+                    warn!("equalizer: cannot open the file dialog: {error:#}");
+                    cx.update(|cx| Toasts::show(Outcome::Failed, "common-file-dialog-failed", cx));
                     None
                 }
                 Err(_) => None,
@@ -150,7 +151,7 @@ impl EqualizerView {
             cx.update(|cx| match written {
                 Ok(()) => Toasts::show(Outcome::Done, "equalizer-exported", cx),
                 Err(error) => {
-                    log::warn!("equalizer: cannot write {}: {error}", path.display());
+                    warn!("equalizer: cannot write {}: {error}", path.display());
                     Toasts::post(
                         Toast::new(Outcome::Failed, "equalizer-file-unwritable")
                             .detail(error.to_string()),
@@ -191,7 +192,13 @@ impl EqualizerView {
         div()
             .flex()
             .flex_col()
-            .child(heading("equalizer-transfer", ICON, None, cx))
+            .child(heading(
+                "equalizer-transfer",
+                "equalizer-transfer",
+                ICON,
+                None,
+                cx,
+            ))
             .child(Row::new(t!("equalizer-import"), import))
             .child(Row::new(t!("equalizer-export"), export))
             .into_any_element()

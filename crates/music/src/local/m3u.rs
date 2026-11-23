@@ -38,7 +38,10 @@ pub fn write(tracks: &[Track], folder: &Path) -> String {
         };
         text.push_str(&format!(
             "#EXTINF:{},{}\n{}\n",
-            track.duration.as_secs(),
+            track
+                .duration
+                .map(|duration| duration.as_secs() as i64)
+                .unwrap_or(-1),
             title.replace(['\r', '\n'], " "),
             path.display()
         ));

@@ -123,6 +123,26 @@ impl MusicApi for SpotifyClient {
             .context("track metadata is missing")
     }
 
+    async fn track_playcount(&self, track_id: &str) -> Result<Option<u64>> {
+        Ok(self.track(track_id).await?.playcount)
+    }
+
+    async fn credits(&self, track_id: &str) -> Result<Vec<crate::Credit>> {
+        super::credits::credits(&self.session, track_id).await
+    }
+
+    async fn canvas(&self, track_id: &str) -> Result<Option<crate::Canvas>> {
+        Ok(self
+            .session
+            .api()
+            .track_canvas(track_id)
+            .await?
+            .map(|canvas| crate::Canvas {
+                video: canvas.kind != 0,
+                url: canvas.url,
+            }))
+    }
+
     async fn tracks_by_id(&self, ids: &[String]) -> Result<HashMap<String, Track>> {
         let uris: Vec<_> = ids
             .iter()

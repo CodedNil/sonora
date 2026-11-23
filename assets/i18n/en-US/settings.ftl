@@ -413,7 +413,7 @@ settings-lyrics-priority = Provider priority
 settings-lyrics-priority-detail = Sonora shows synced lyrics from the highest source that has them
 settings-lyrics-word-synced-first = Prioritize word-synced lyrics
 settings-lyrics-word-synced-first-detail = Show lyrics timed word by word first, even from a source lower in the list
-settings-lyrics-providers-detail =Choose which services to search for lyrics
+settings-lyrics-providers-detail = Choose which services to search for lyrics
 settings-lyrics-providers-selected = { $count ->
     [one] { $count } selected
    *[other] { $count } selected
@@ -555,3 +555,22 @@ settings-downloading = Downloading…
 settings-installing = Installing…
 
 settings-space-used = Space used
+
+login-signed-out = Sign in to load your music library
+login-use = Use { $provider }
+soloist-key-hint = API key
+soloist-later = Not now
+soloist-pair-waiting = Waiting for Spotify…
+soloist-step-key = API key
+settings-page-lyrics-sources = Lyrics sources
+settings-page-music-folders = Music folders
+settings-font-value = { $size } px
+settings-theme-folder = Open folder
+settings-cache-size-value = { $count } GB
+settings-cache-used = Space used
+settings-lyrics-size-value = { $size }%
+settings-scrobble-key = API key
+settings-scrobble-off = Not connected
+settings-size-gb = { $size } GB
+settings-size-mb = { $size } MB
+settings-startup-no-guest = Unavailable in Guest mode

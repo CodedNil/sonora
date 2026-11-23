@@ -149,6 +149,6 @@ impl Cache {
     /// A connection with every cache table in place. The local scan index reaches for this
     /// directly, the way local playlists do with [`crate::Database`].
     pub fn open(&self) -> Result<rusqlite::Connection> {
-        crate::connect(&self.path, SCHEMA, &self.ready, "the cache")
+        crate::connect(&self.path, SCHEMA, &self.ready, "the cache", |_| Ok(()))
     }
 }

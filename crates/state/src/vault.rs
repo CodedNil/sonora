@@ -12,6 +12,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use tracing::{info, warn};
 
 use anyhow::{Context as _, Result, bail};
 use gpui::{App, AppContext as _, AsyncApp, Task};
@@ -44,11 +45,11 @@ pub(crate) fn unlock(vault: Arc<Vault>, cx: &mut App) -> Task<()> {
     cx.spawn(async move |cx| match master(&vault, cx).await {
         Ok(master) => {
             vault.unlock(&master);
-            log::info!("vault: unlocked");
+            info!("vault: unlocked");
         }
         Err(error) => {
             vault.stay_locked();
-            log::warn!("vault: stays locked, no track is kept or played from disk: {error:#}");
+            warn!("vault: stays locked, no track is kept or played from disk: {error:#}");
         }
     })
 }
@@ -73,7 +74,7 @@ async fn master(vault: &Arc<Vault>, cx: &mut AsyncApp) -> Result<Vec<u8>> {
             fresh(vault, true, cx).await
         }
         Err(error) if no_service(&error) => {
-            log::warn!("vault: there is no keychain, using a key file: {error:#}");
+            warn!("vault: there is no keychain, using a key file: {error:#}");
             match cx.background_spawn(async { from_file() }).await? {
                 Some(master) => Ok(master),
                 None => fresh(vault, false, cx).await,
@@ -81,7 +82,7 @@ async fn master(vault: &Arc<Vault>, cx: &mut AsyncApp) -> Result<Vec<u8>> {
         }
         Err(error) => match cx.background_spawn(async { from_file() }).await? {
             Some(master) => {
-                log::warn!("vault: the keychain did not answer, using the key file: {error:#}");
+                warn!("vault: the keychain did not answer, using the key file: {error:#}");
                 Ok(master)
             }
             None => Err(error.context(
@@ -115,13 +116,13 @@ async fn fresh(vault: &Arc<Vault>, keychain: bool, cx: &mut AsyncApp) -> Result<
         match written {
             Ok(()) => return Ok(master.to_vec()),
             Err(error) => {
-                log::warn!("vault: the keychain will not store a key, using a file: {error:#}")
+                warn!("vault: the keychain will not store a key, using a file: {error:#}")
             }
         }
     }
     cx.background_spawn(async move { write_file(&master) })
         .await?;
-    log::info!("vault: made a new key");
+    info!("vault: made a new key");
     Ok(master.to_vec())
 }
 
@@ -132,7 +133,7 @@ async fn into_keychain(master: &[u8], cx: &mut AsyncApp) {
         .update(|cx| cx.write_credentials(KEYCHAIN_URL, KEYCHAIN_USER, master))
         .await;
     if let Err(error) = written {
-        log::warn!("vault: the keychain will not store the key, keeping the file: {error:#}");
+        warn!("vault: the keychain will not store the key, keeping the file: {error:#}");
         return;
     }
     let removed = cx
@@ -142,8 +143,8 @@ async fn into_keychain(master: &[u8], cx: &mut AsyncApp) {
         })
         .await;
     match removed {
-        Ok(()) => log::info!("vault: moved the key from its file into the keychain"),
-        Err(error) => log::warn!("vault: the key is in the keychain, but {error:#}"),
+        Ok(()) => info!("vault: moved the key from its file into the keychain"),
+        Err(error) => warn!("vault: the key is in the keychain, but {error:#}"),
     }
 }
 

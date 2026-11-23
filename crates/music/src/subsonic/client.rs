@@ -1,6 +1,8 @@
+use crate::{CoverSize, SmartPlaylist, SmartRules, parse_timestamp};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tracing::warn;
 
 use anyhow::{Context as _, Result, bail};
 use async_trait::async_trait;
@@ -23,10 +25,9 @@ use crate::smart::SmartPlaylistUpdate;
 use crate::subsonic::auth::Signature;
 use crate::subsonic::wire;
 use crate::{
-    Album, AlbumCatalogue, AlbumDetail, Artist, ArtistProfile, Codec, CoverSize, Genre,
-    GenreDetail, GenreItem, GenreSection, HomeFeed, MediaKind, MusicApi, Playlist, PlaylistDetail,
-    Report, SUGGESTIONS, SavedArtist, SmartPlaylist, SmartRules, Track, Transcode, UserProfile,
-    distinct_covers, iso_8601_to_epoch,
+    Album, AlbumCatalogue, AlbumDetail, Artist, ArtistProfile, Codec, Genre, GenreDetail,
+    GenreItem, GenreSection, HomeFeed, MediaKind, MusicApi, Playlist, PlaylistDetail, Report,
+    SUGGESTIONS, SavedArtist, Track, Transcode, UserProfile,
 };
 
 const PORTRAIT_LIMIT: usize = 24;
@@ -314,7 +315,7 @@ impl SubsonicClient {
                 let answer: serde_json::Value = match self.http.get(url).send().await {
                     Ok(response) => response.json().await.unwrap_or_default(),
                     Err(error) => {
-                        log::info!("subsonic: cannot ask what the server is: {error:#}");
+                        tracing::info!("subsonic: cannot ask what the server is: {error:#}");
                         return None;
                     }
                 };
@@ -496,7 +497,7 @@ impl SubsonicClient {
                         .map(|extension| extension.name)
                         .collect(),
                     Err(error) => {
-                        log::info!("subsonic: the server lists no extensions: {error:#}");
+                        tracing::info!("subsonic: the server lists no extensions: {error:#}");
                         HashSet::new()
                     }
                 }
@@ -595,7 +596,6 @@ impl SubsonicClient {
             detail.artists.as_ref(),
             detail.display_artist.clone(),
         );
-        let year = detail.year.unwrap_or(0);
         Album {
             id,
             name: detail.name.clone(),
@@ -607,16 +607,11 @@ impl SubsonicClient {
                 detail.release_types.as_deref(),
                 detail.is_compilation,
             ),
-            year,
-            track_count: detail
-                .song_count
-                .map(|count| count.max(0) as u32)
-                .unwrap_or(tracks as u32),
-            release_date: wire::release_date(detail.release_date.as_ref(), year)
-                .unwrap_or_default(),
+            track_count: Some(tracks as u32),
+            release_date: detail.year.and_then(crate::ReleaseDate::from_year),
             label: wire::labels(detail.record_labels.as_deref()),
             copyrights: Vec::new(),
-            added_at: iso_8601_to_epoch(detail.created.as_deref()),
+            added_at: detail.created.as_deref().and_then(crate::parse_timestamp),
         }
     }
 
@@ -625,18 +620,17 @@ impl SubsonicClient {
             .cover_art
             .as_deref()
             .and_then(|id| self.cover_url(id, COVER));
-        Playlist {
-            read_only: source.readonly.unwrap_or(false),
-            ..wire::playlist(
-                &source.id,
-                &source.name,
-                source.owner.as_deref(),
-                source.public.unwrap_or(false),
-                source.song_count.unwrap_or(0).max(0) as u32,
-                cover,
-                &self.username,
-            )
-        }
+        wire::playlist(
+            &source.id,
+            &source.name,
+            source.owner.as_deref(),
+            source.public,
+            source
+                .song_count
+                .and_then(|count| u32::try_from(count).ok()),
+            cover,
+            &self.username,
+        )
     }
 
     fn artist_cover(
@@ -704,7 +698,7 @@ impl SubsonicClient {
         let held = match self.library_albums().await {
             Ok(held) => held,
             Err(error) => {
-                log::warn!("subsonic: cannot scope similar releases: {error:#}");
+                tracing::warn!("subsonic: cannot scope similar releases: {error:#}");
                 return Vec::new();
             }
         };
@@ -718,7 +712,7 @@ impl SubsonicClient {
                 let detail = match client.client.get_artist(&artist_id).await.map_err(bare) {
                     Ok(detail) => detail,
                     Err(error) => {
-                        log::warn!("subsonic: cannot load similar artist {artist_id}: {error:#}");
+                        warn!("subsonic: cannot load similar artist {artist_id}: {error:#}");
                         return None;
                     }
                 };
@@ -855,7 +849,7 @@ impl MusicApi for SubsonicClient {
     async fn artist_tracks(&self, artist_id: &str) -> Result<Vec<Track>> {
         let artist = self.artist(artist_id).await?;
         let mut albums = artist.albums;
-        albums.sort_by_key(|album| std::cmp::Reverse(album.year));
+        albums.sort_by_key(|album| std::cmp::Reverse(album.release_date));
         let reads: Vec<_> = stream::iter(albums)
             .map(|album| async move { (self.album_tracks(&album.id).await, album.name) })
             .buffered(ALBUM_READS)
@@ -865,7 +859,7 @@ impl MusicApi for SubsonicClient {
         for (read, album) in reads {
             match read {
                 Ok(songs) => tracks.extend(songs),
-                Err(error) => log::warn!("subsonic: cannot read the album {album}: {error:#}"),
+                Err(error) => warn!("subsonic: cannot read the album {album}: {error:#}"),
             }
         }
         Ok(crate::artist_songs(tracks, artist_id))
@@ -914,7 +908,7 @@ impl MusicApi for SubsonicClient {
             .song
             .into_iter()
             .map(|song| {
-                let liked = iso_8601_to_epoch(song.starred.as_deref());
+                let liked = song.starred.as_deref().and_then(parse_timestamp);
                 let mut track = self.song(song);
                 track.added_at = liked.or(track.added_at);
                 track
@@ -1255,7 +1249,7 @@ impl MusicApi for SubsonicClient {
             .album
             .into_iter()
             .map(|album| {
-                let liked = iso_8601_to_epoch(album.starred.as_deref());
+                let liked = album.starred.as_deref().and_then(parse_timestamp);
                 let mut album = self.convert_album(album);
                 album.added_at = liked.or(album.added_at);
                 album
@@ -1309,7 +1303,7 @@ impl MusicApi for SubsonicClient {
                     &artist.id,
                 );
                 SavedArtist {
-                    added_at: iso_8601_to_epoch(artist.starred.as_deref()),
+                    added_at: artist.starred.as_deref().and_then(parse_timestamp),
                     ..wire::saved_artist(artist, cover)
                 }
             })
@@ -1367,10 +1361,6 @@ impl MusicApi for SubsonicClient {
         Ok(AlbumDetail { album, tracks })
     }
 
-    async fn album_tracks(&self, album_id: &str) -> Result<Vec<Track>> {
-        Ok(self.album(album_id).await?.tracks)
-    }
-
     async fn album_catalogue(
         &self,
         album_id: &str,
@@ -1390,10 +1380,10 @@ impl MusicApi for SubsonicClient {
             pair => pair,
         };
         if let Err(error) = &more_by {
-            log::warn!("subsonic: cannot read more from this artist: {error:#}");
+            warn!("subsonic: cannot read more from this artist: {error:#}");
         }
         if let Err(error) = &similar {
-            log::warn!("subsonic: cannot read similar artists: {error:#}");
+            warn!("subsonic: cannot read similar artists: {error:#}");
         }
         let (more_by, similar) = (more_by.unwrap_or_default(), similar.unwrap_or_default());
         let mut seen = HashSet::new();
@@ -1437,14 +1427,15 @@ impl MusicApi for SubsonicClient {
             &detail.id,
             &detail.name,
             detail.owner.as_deref(),
-            detail.public.unwrap_or(false),
-            detail.song_count.unwrap_or(0).max(0) as u32,
+            detail.public,
+            detail
+                .song_count
+                .and_then(|count| u32::try_from(count).ok()),
             cover,
             &self.username,
         );
-        playlist.read_only = detail.readonly.unwrap_or(false);
-        if playlist.track_count == 0 {
-            playlist.track_count = tracks.len() as u32;
+        if playlist.track_count.is_none() {
+            playlist.track_count = Some(tracks.len() as u32);
         }
         if playlist.cover.is_none() {
             playlist.cover = tracks.iter().find_map(|track| track.cover.clone());
@@ -1454,15 +1445,6 @@ impl MusicApi for SubsonicClient {
             tracks,
             continuation: None,
         })
-    }
-
-    async fn playlist_tracks(&self, playlist_id: &str) -> Result<Vec<Track>> {
-        Ok(self.playlist(playlist_id).await?.tracks)
-    }
-
-    async fn playlist_covers(&self, playlist_id: &str, wanted: usize) -> Result<Vec<String>> {
-        let tracks = self.playlist_tracks(playlist_id).await?;
-        Ok(distinct_covers(&tracks, wanted))
     }
 
     async fn track_radio(

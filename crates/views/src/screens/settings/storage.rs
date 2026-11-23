@@ -50,7 +50,7 @@ impl SettingsView {
             .child(ui::spoken("cache-used", size(used)).text_color(theme.muted_foreground))
             .child(
                 Button::new("clear-cache")
-                    .label(t!("settings-cache-clear"))
+                    .label(t!("common-clear"))
                     .small()
                     .outline()
                     .disabled(used.is_none_or(|used| used == 0))
@@ -91,7 +91,7 @@ impl SettingsView {
                     .downloads_of(provider)
                     .and_then(|folder| open::that_detached(folder).map_err(Into::into));
                 if let Err(error) = opened {
-                    log::warn!("settings: cannot open the {provider} downloads: {error:#}");
+                    tracing::warn!("settings: cannot open the {provider} downloads: {error:#}");
                 }
             })
             .into_any_element()

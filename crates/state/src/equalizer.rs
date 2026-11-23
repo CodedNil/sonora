@@ -3,6 +3,7 @@
 //! output meter raises against it.
 
 use std::time::{Duration, Instant};
+use tracing::info;
 
 use gpui::prelude::*;
 use gpui::{App, Context, Entity, Subscription, Task};
@@ -544,7 +545,7 @@ impl Equalizer {
         let Some(sound) = self.output_sound(cx) else {
             return;
         };
-        log::info!("equalizer: playing {sound:?}, the sound for the output played on");
+        info!("equalizer: playing {sound:?}, the sound for the output played on");
         self.play_sound(&sound, cx);
     }
 

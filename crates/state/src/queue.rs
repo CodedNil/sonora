@@ -9,7 +9,7 @@ use music::Track;
 use crate::{AppSettings, Origin, Outcome, Session, SessionEvent, Toast, Toasts};
 
 mod view;
-pub use logic::queue::{QueueKind, QueuePlacement, QueuePosition, QueueSections, QueueSlot, Stub};
+pub use logic::queue::{QueueKind, QueuePlacement, QueuePosition, QueueSections, QueueSlot};
 pub(crate) use logic::queue::{Reach, gap_target};
 pub use view::{QueueView, RemoteQueuePick};
 

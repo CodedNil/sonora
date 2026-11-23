@@ -274,7 +274,7 @@ impl Updates {
         match applied {
             Ok(()) => cx.quit(),
             Err(error) => {
-                log::warn!("updates: cannot install the new version: {error:#}");
+                tracing::warn!("updates: cannot install the new version: {error:#}");
                 self.state = UpdateState::Failed;
                 cx.notify();
             }
@@ -314,7 +314,7 @@ impl Updates {
                     return;
                 }
                 Err(error) => {
-                    log::warn!("updates: cannot ask github: {error:#}");
+                    tracing::warn!("updates: cannot ask github: {error:#}");
                     this.update(cx, |this, _| this.task = None).ok();
                     return;
                 }
@@ -330,11 +330,11 @@ impl Updates {
                     // The manifest is written here rather than on tokio, so a look cancelled by
                     // a change in settings never leaves an update behind to install.
                     if let Err(error) = staged.write() {
-                        log::warn!("updates: cannot stage {}: {error:#}", release.version);
+                        tracing::warn!("updates: cannot stage {}: {error:#}", release.version);
                         this.offer(release, cx);
                         return;
                     }
-                    log::info!("updates: {} is ready for the next start", staged.version);
+                    tracing::info!("updates: {} is ready for the next start", staged.version);
                     this.task = None;
                     if this.dismissed.as_deref() != Some(release.version.as_str()) {
                         this.state = UpdateState::Ready(release);
@@ -344,7 +344,7 @@ impl Updates {
                 // The change in settings that brought this about already cleared the update.
                 Ok(_) => this.task = None,
                 Err(error) => {
-                    log::warn!("updates: cannot stage {}: {error:#}", release.version);
+                    tracing::warn!("updates: cannot stage {}: {error:#}", release.version);
                     this.offer(release, cx);
                 }
             })

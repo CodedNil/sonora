@@ -177,7 +177,7 @@ impl Discord {
         let worker = io.spawn(run(receiver));
         let _worker = cx.spawn(async move |_, _| {
             if let Err(error) = worker.await {
-                log::warn!("discord: the presence worker stopped: {error}");
+                tracing::warn!("discord: the presence worker stopped: {error}");
             }
         });
 
@@ -276,7 +276,7 @@ impl Discord {
                             this.uploaded.insert(upload.key, (url, Instant::now()));
                         }
                         Err(error) => {
-                            log::warn!("discord: cannot upload the cover: {error:#}");
+                            tracing::warn!("discord: cannot upload the cover: {error:#}");
                             this.upload_failed = Some(upload.key);
                         }
                     }
@@ -333,7 +333,10 @@ impl Discord {
             self.timing
                 .track_started_at(track, playback.live_position())
         });
-        let duration = track.duration.as_secs() as i64;
+        let duration = track
+            .duration
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or(0);
         let public_art = provider.is_some_and(|provider| provider.public_art());
         let lookup = !track.id.as_deref().is_some_and(music::is_local_id)
             || settings.artwork_for_local_files();
@@ -454,7 +457,7 @@ async fn run(mut receiver: watch::Receiver<Shown>) {
         .await;
 
         let Ok((used, wanted, result)) = attempted else {
-            log::warn!("discord: the presence thread went away");
+            tracing::warn!("discord: the presence thread went away");
             return;
         };
         client = used;
@@ -517,7 +520,7 @@ fn complain(reported: &mut Option<String>, failure: String) {
         return;
     }
 
-    log::warn!("discord: cannot show the presence: {failure}");
+    tracing::warn!("discord: cannot show the presence: {failure}");
     *reported = Some(failure);
 }
 

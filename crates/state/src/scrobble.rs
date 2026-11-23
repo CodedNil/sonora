@@ -6,6 +6,7 @@
 //! play counts and now-playing list.
 
 use std::time::{Duration, SystemTime};
+use tracing::warn;
 
 use gpui::{App, Context, Entity, SharedString, Task};
 use music::scrobble::{self, Account, Link, Play, Secret, Service};
@@ -212,7 +213,7 @@ impl Scrobbling {
                         this.rebuild(cx);
                     }
                     Err(error) => {
-                        log::warn!("scrobble: cannot link {}: {error:#}", this.rows[index].id());
+                        warn!("scrobble: cannot link {}: {error:#}", this.rows[index].id());
                         this.rows[index].state = ScrobbleState::Failed(FAILED);
                     }
                 }
@@ -333,7 +334,7 @@ impl Scrobbling {
             let (service, account, play) = (row.service.clone(), row.account.clone(), play.clone());
             self.io.spawn(async move {
                 if let Err(error) = service.now_playing(&account, &play).await {
-                    log::warn!(
+                    warn!(
                         "scrobble: cannot report the current track to {}: {error:#}",
                         service.id()
                     );
@@ -390,7 +391,7 @@ impl Scrobbling {
             let at = play.at;
             self.io.spawn(async move {
                 if let Err(error) = client.played(&id, at).await {
-                    log::warn!("scrobble: cannot submit the track to its provider: {error:#}");
+                    warn!("scrobble: cannot submit the track to its provider: {error:#}");
                 }
             });
         }
@@ -408,7 +409,7 @@ impl Scrobbling {
                     .scrobble(&account, std::slice::from_ref(&play))
                     .await
                 {
-                    log::warn!(
+                    warn!(
                         "scrobble: cannot submit the track to {}: {error:#}",
                         service.id()
                     );
@@ -466,7 +467,7 @@ fn played(track: &Track, at: SystemTime) -> Option<Play> {
         artist,
         title: track.name.clone(),
         album: Some(track.album.clone()).filter(|album| !album.is_empty()),
-        duration: track.duration,
+        duration: track.duration?,
         at,
     })
 }
@@ -478,7 +479,7 @@ fn send_reports(io: &Io) -> mpsc::UnboundedSender<Reported> {
     io.spawn(async move {
         while let Some((client, id, report, position)) = queued.recv().await {
             if let Err(error) = client.report(&id, report, position).await {
-                log::warn!("scrobble: cannot report the track to its provider: {error:#}");
+                warn!("scrobble: cannot report the track to its provider: {error:#}");
             }
         }
     });

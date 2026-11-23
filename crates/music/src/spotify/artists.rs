@@ -332,7 +332,9 @@ pub async fn saved_artists(session: &Session) -> Result<Vec<SavedArtist>> {
         .into_iter()
         .filter_map(|item| {
             let mut artist = known.remove(item.uri.strip_prefix(ARTIST_PREFIX)?)?;
-            artist.added_at = item.added_at.map(i64::from);
+            artist.added_at = item
+                .added_at
+                .and_then(|seconds| crate::Timestamp::from_second(seconds.into()).ok());
             Some(artist)
         })
         .collect())
@@ -502,7 +504,7 @@ mod tests {
         .map(|(name, release_type, release_date)| Album {
             name: name.into(),
             release_type,
-            release_date: release_date.into(),
+            release_date: crate::ReleaseDate::parse(release_date),
             ..Album::default()
         });
         assert_eq!(
@@ -510,7 +512,7 @@ mod tests {
                 .into_iter()
                 .map(|album| album.release_date)
                 .collect::<Vec<_>>(),
-            ["2022", "2021", "2020"]
+            ["2022", "2021", "2020"].map(crate::ReleaseDate::parse)
         );
         assert_eq!(plain_text("A &amp; B<br>Live"), "A & B Live");
     }

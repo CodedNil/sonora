@@ -118,14 +118,18 @@ pub(super) async fn playlist_owners(session: &Session, playlists: &mut [Playlist
     let own_name = session.display_name();
     let ids = playlists
         .iter()
-        .filter(|playlist| own_name.is_none() || playlist.owner_id != session.username())
-        .map(|playlist| playlist.owner_id.clone())
+        .filter(|playlist| {
+            own_name.is_none() || playlist.owner_id.as_deref() != Some(session.username())
+        })
+        .filter_map(|playlist| playlist.owner_id.clone())
         .collect();
     let known = contributors(session, ids).await;
     for playlist in playlists {
-        if let Some(name) = own_name.filter(|_| playlist.owner_id == session.username()) {
+        if let Some(name) =
+            own_name.filter(|_| playlist.owner_id.as_deref() == Some(session.username()))
+        {
             name.clone_into(&mut playlist.owner);
-        } else if let Some(owner) = known.get(&playlist.owner_id) {
+        } else if let Some(owner) = playlist.owner_id.as_ref().and_then(|id| known.get(id)) {
             playlist.owner.clone_from(&owner.name);
         }
     }
@@ -147,13 +151,13 @@ fn listed(found: PublicPlaylist) -> Option<Playlist> {
         } else {
             found.owner_name
         },
-        owner_id,
+        owner_id: Some(owner_id).filter(|id| !id.is_empty()),
         owned: false,
-        collaborative: false,
+        can_edit_tracks: false,
         blend: false,
-        public: true,
+        public: Some(true),
         cover: wire::fetchable(&found.image_url).then_some(found.image_url),
-        track_count: 0,
+        track_count: None,
         modified_at: None,
         read_only: false,
     })

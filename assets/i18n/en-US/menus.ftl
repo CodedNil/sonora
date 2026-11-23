@@ -141,3 +141,51 @@ confirm-remove-soloist = Sonora deletes the Soloist program, your API key and it
 confirm-remove-downloads-title = Remove all downloads?
 confirm-remove-downloads = Every song you downloaded is deleted from this computer, from every service. They stream again until you download them once more.
 confirm-delete-named = Delete “{ $name }”? This cannot be undone.
+
+confirm-remove-albums = { $count ->
+    [one] Remove this album from your library?
+   *[other] Remove { $count } albums from your library?
+}
+confirm-remove-artists = { $count ->
+    [one] Remove this artist from Favorites?
+   *[other] Remove { $count } artists from Favorites?
+}
+confirm-remove-history-songs = { $count ->
+    [one] Remove this song from listening history?
+   *[other] Remove { $count } songs from listening history?
+}
+confirm-remove-library-title = Remove from library
+confirm-remove-playlist-songs = { $count ->
+    [one] Remove this song from the playlist?
+   *[other] Remove { $count } songs from the playlist?
+}
+confirm-remove-playlists = { $count ->
+    [one] Remove this playlist from your library?
+   *[other] Remove { $count } playlists from your library?
+}
+confirm-remove-songs = { $count ->
+    [one] Remove this song from your library?
+   *[other] Remove { $count } songs from your library?
+}
+menu-add-tracks-to-playlist = { $count ->
+    [one] Add { $count } track to playlist
+   *[other] Add { $count } tracks to playlist
+}
+menu-add-tracks-to-queue = { $count ->
+    [one] Add { $count } track to queue
+   *[other] Add { $count } tracks to queue
+}
+menu-delete-playlist = Delete playlist
+menu-delete-track-file = Delete track file
+menu-edit-playlist = Edit playlist
+menu-edit-tags = Edit tags
+menu-play-tracks-last = { $count ->
+    [one] Play { $count } track last
+   *[other] Play { $count } tracks last
+}
+menu-play-tracks-next = { $count ->
+    [one] Play { $count } track next
+   *[other] Play { $count } tracks next
+}
+menu-remove-from-history = Remove from history
+menu-remove-from-playlist = Remove from playlist

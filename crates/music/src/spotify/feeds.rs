@@ -336,12 +336,12 @@ pub(super) async fn cards(
                 continue;
             };
             // Spotify publishes Liked Songs under its own account.
-            let liked_songs = playlist.owner_id == "spotify"
+            let liked_songs = playlist.owner_id.as_deref() == Some("spotify")
                 && playlist
                     .cover
                     .as_deref()
                     .is_some_and(|url| url.starts_with(LIKED_SONGS_ART));
-            if playlist.owner_id == session.username() || liked_songs {
+            if playlist.owner_id.as_deref() == Some(session.username()) || liked_songs {
                 own_name.clone_into(&mut playlist.owner);
             }
         }

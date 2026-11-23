@@ -21,6 +21,7 @@
 //! goes without a token.
 
 use anyhow::Result;
+use tracing::debug;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -193,7 +194,7 @@ impl Page {
         if !matches(&host, &self.target.domain) {
             return;
         }
-        log::debug!("webview: {host} came up signed out, loading the sign-in url again");
+        debug!("webview: {host} came up signed out, loading the sign-in url again");
         self.retried = true;
         self.window.load(&self.target.url);
     }

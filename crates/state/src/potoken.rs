@@ -18,6 +18,7 @@
 //! its last answer and only a burst of asks shares one.
 
 use std::time::{Duration, Instant};
+use tracing::{debug, warn};
 
 use gpui::{App, AppContext as _, Context, Task};
 
@@ -112,9 +113,7 @@ impl PoToken {
             return;
         };
         if !webview::supported() {
-            log::debug!(
-                "potoken: no browser engine here, the stream goes out on a cold start token"
-            );
+            debug!("potoken: no browser engine here, the stream goes out on a cold start token");
             music::potoken::failed();
             return;
         }
@@ -129,7 +128,7 @@ impl PoToken {
         };
         match webview::Page::open(target) {
             Ok(page) => {
-                log::debug!("potoken: minting a token");
+                debug!("potoken: minting a token");
                 let now = Instant::now();
                 self.open = Some(Open {
                     page,
@@ -139,7 +138,7 @@ impl PoToken {
                 });
             }
             Err(error) => {
-                log::warn!("potoken: cannot open the minting page: {error:#}");
+                warn!("potoken: cannot open the minting page: {error:#}");
                 music::potoken::failed();
             }
         }
@@ -152,7 +151,7 @@ impl PoToken {
             return;
         };
         if open.used.elapsed() > LINGER {
-            log::debug!("potoken: nothing more to mint, closing the minting page");
+            debug!("potoken: nothing more to mint, closing the minting page");
             self.close();
             return;
         }
@@ -182,14 +181,14 @@ impl PoToken {
         let outcome = match open.page.peek() {
             webview::Poll::Pending => Outcome::Waiting,
             webview::Poll::Closed => {
-                log::warn!("potoken: the minting page closed before it answered");
+                warn!("potoken: the minting page closed before it answered");
                 Outcome::Failed
             }
             webview::Poll::Cookies(header) => match reply(&header, &binding) {
                 None => Outcome::Waiting,
                 Some(answer) => match answer.strip_prefix(FAILED) {
                     Some(why) => {
-                        log::warn!("potoken: the page could not mint a token: {why}");
+                        warn!("potoken: the page could not mint a token: {why}");
                         Outcome::Failed
                     }
                     None => Outcome::Minted(answer.to_string()),
@@ -198,7 +197,7 @@ impl PoToken {
         };
         let outcome = match outcome {
             Outcome::Waiting if asked.elapsed() > patience => {
-                log::warn!("potoken: the minting page did not answer in {patience:?}");
+                warn!("potoken: the minting page did not answer in {patience:?}");
                 Outcome::Failed
             }
             outcome => outcome,
@@ -206,7 +205,7 @@ impl PoToken {
         match outcome {
             Outcome::Waiting => {}
             Outcome::Minted(token) => {
-                log::debug!("potoken: minted a token in {:?}", asked.elapsed());
+                debug!("potoken: minted a token in {:?}", asked.elapsed());
                 open.warm = true;
                 open.asked = None;
                 open.used = Instant::now();

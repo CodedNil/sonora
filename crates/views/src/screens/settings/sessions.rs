@@ -14,13 +14,7 @@ impl SettingsView {
         if !self.settings.read(cx).sessions_official() {
             slots.push(Slot::SessionsServer);
         }
-        vec![
-            Group::new(
-                "settings-group-sessions",
-                "icons/users-round-collaboration.svg",
-            )
-            .rows(slots),
-        ]
+        vec![Group::new("player-sessions", "icons/users-round-collaboration.svg").rows(slots)]
     }
 
     pub(super) fn sessions_button_row(&self, cx: &mut Context<Self>) -> AnyElement {

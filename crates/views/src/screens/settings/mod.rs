@@ -143,8 +143,6 @@ enum Slot {
     Keybind(usize),
     KeybindsReset,
     Startup,
-    Provider,
-    Entries,
     Language,
     Tray,
     TrayIcon,
@@ -168,7 +166,6 @@ enum Slot {
     Motion,
     Pace,
     Saver,
-    AdaptiveMenu,
     Version,
     Updates,
     AutoUpdate,
@@ -257,6 +254,8 @@ pub struct SettingsView {
     /// Where a lyrics source dragged over the priority list would land, as a gap between the
     /// enabled sources. `None` while the drop would leave the order as it is.
     lyrics_drop_gap: Option<usize>,
+    lyrics_drag: Option<String>,
+    lyrics_motion: ui::ReorderMotion,
     scrollbar: Entity<Scrollbar>,
     /// The page that opened a drill-in and where its tab was scrolled, so the way back to that
     /// page or to the drill-in's parent lands there again.
@@ -476,6 +475,8 @@ impl SettingsView {
             query: String::new(),
             reveal: None,
             lyrics_drop_gap: None,
+            lyrics_drag: None,
+            lyrics_motion: ui::ReorderMotion::default(),
             scrollbar: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(me)),
             drilled_from: None,
             layout_revision: 0,
@@ -790,9 +791,7 @@ impl SettingsView {
         let meta = match slot {
             Slot::Folders => return None,
             Slot::Startup => (t!("settings-startup"), t!("settings-startup-detail")),
-            Slot::Provider => (t!("settings-provider"), t!("settings-provider-detail")),
-            Slot::Entries => (t!("settings-entries"), t!("settings-entries-detail")),
-            Slot::Language => (t!("settings-language"), t!("settings-language-detail")),
+            Slot::Language => (t!("common-language"), t!("settings-language-detail")),
             Slot::Tray => (
                 t!("settings-close-to-tray"),
                 t!("settings-close-to-tray-detail"),
@@ -809,10 +808,13 @@ impl SettingsView {
             Slot::Accounts => {
                 let detail = t!("settings-accounts-detail");
                 let names = self.account_words(cx);
-                (t!("settings-accounts"), format!("{detail} {names}").into())
+                (
+                    t!("settings-group-services"),
+                    format!("{detail} {names}").into(),
+                )
             }
             Slot::LocalFolder => (
-                t!("settings-music-folders"),
+                t!("settings-page-music-folders"),
                 match self.session.read(cx).local_paths().is_empty() {
                     true => t!("settings-local-folder-empty"),
                     false => SharedString::default(),
@@ -918,10 +920,6 @@ impl SettingsView {
                 t!("settings-window-rounding"),
                 t!("settings-window-rounding-detail"),
             ),
-            Slot::AdaptiveMenu => (
-                t!("settings-adaptive-menu"),
-                t!("settings-adaptive-menu-detail"),
-            ),
             Slot::Normalisation => (
                 t!("settings-normalisation"),
                 t!("settings-normalisation-detail"),
@@ -938,7 +936,7 @@ impl SettingsView {
             Slot::CacheSize => (t!("settings-cache-size"), t!("settings-cache-size-detail")),
             Slot::CacheUsage => (t!("settings-space-used"), t!("settings-cache-used-detail")),
             Slot::DownloadsUsage => (
-                t!("settings-space-used"),
+                t!("settings-cache-used"),
                 t!("settings-downloads-used-detail"),
             ),
             Slot::OfflineMode => (
@@ -985,7 +983,7 @@ impl SettingsView {
                 .into(),
             ),
             Slot::LyricsSources => (
-                t!("settings-lyrics-sources"),
+                t!("settings-page-lyrics-sources"),
                 t!("settings-lyrics-providers-detail"),
             ),
             Slot::LyricsPriority => (
@@ -1091,13 +1089,19 @@ impl SettingsView {
     fn slot_element(&self, slot: Slot, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         match slot {
             Slot::Startup => self.startup_row(cx),
-            Slot::Provider => self.provider_row(cx),
-            Slot::Entries => self.entries_row(cx),
             Slot::Language => self.language_row(cx),
-            Slot::Tray => self.tray_row(cx),
-            Slot::TrayIcon => self.tray_icon_row(cx),
-            Slot::NowPlayingOnFileOpen => self.now_playing_on_file_open_row(cx),
-            Slot::TaskbarProgress => self.taskbar_progress_row(cx),
+            Slot::Tray => self.toggle_row(
+                "settings-close-to-tray",
+                &self.settings,
+                (AppSettings::close_to_tray, AppSettings::set_close_to_tray),
+                cx,
+            ),
+            Slot::TrayIcon => self.toggle_row(
+                "settings-tray-icon",
+                &self.settings,
+                (AppSettings::tray_icon, AppSettings::set_tray_icon),
+                cx,
+            ),
             Slot::Accounts => div().into_any_element(),
             Slot::LocalFolder => self.local_folder_row(cx),
             Slot::SubsonicLibrary => self.subsonic_library_row(cx),
@@ -1105,7 +1109,12 @@ impl SettingsView {
             Slot::Theme | Slot::Icons | Slot::Corners | Slot::PageWidth => div().into_any_element(),
             Slot::Adaptive => self.adaptive_row(cx),
             Slot::CommunityThemes => self.community_themes_row(cx),
-            Slot::Ambient => self.ambient_row(cx),
+            Slot::Ambient => self.toggle_row(
+                "settings-ambient",
+                &self.settings,
+                (AppSettings::ambient, AppSettings::set_ambient),
+                cx,
+            ),
             Slot::AmbientMotion => self.ambient_motion_row(cx),
             Slot::Visualizer => div().into_any_element(),
             Slot::PlayerBarLayout => div().into_any_element(),
@@ -1117,10 +1126,20 @@ impl SettingsView {
             Slot::WindowBlur => self.blur_window_row(cx),
             Slot::Blur => self.blur_row(cx),
             Slot::FullscreenControlsAutohide => self.fullscreen_controls_autohide_row(cx),
-            Slot::OsFullscreen => self.os_fullscreen_row(cx),
+            Slot::OsFullscreen => self.toggle_row(
+                "settings-os-fullscreen",
+                &self.settings,
+                (AppSettings::os_fullscreen, AppSettings::set_os_fullscreen),
+                cx,
+            ),
             Slot::PanelLyricsSize => self.panel_lyrics_size_row(cx),
             Slot::FullscreenLyricsSize => self.fullscreen_lyrics_size_row(cx),
-            Slot::BlurLyrics => self.blur_lyrics_row(cx),
+            Slot::BlurLyrics => self.toggle_row(
+                "settings-blur-lyrics",
+                &self.settings,
+                (AppSettings::blur_lyrics, AppSettings::set_blur_lyrics),
+                cx,
+            ),
             Slot::Font => self.font_row(cx),
             Slot::Typeface => self.typeface_row(cx),
             Slot::Motion => self.motion_row(cx),
@@ -1129,11 +1148,27 @@ impl SettingsView {
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             Slot::ServerSideDecorations => self.server_side_decorations_row(cx),
             #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
-            Slot::Decorations => self.decorations_row(cx),
+            Slot::Decorations => self.toggle_row(
+                "settings-window-controls",
+                &self.settings,
+                (
+                    AppSettings::window_controls,
+                    AppSettings::set_window_controls,
+                ),
+                cx,
+            ),
             #[cfg(not(target_os = "macos"))]
             Slot::Side => self.side_row(cx),
             #[cfg(not(target_os = "macos"))]
-            Slot::TrafficLights => self.traffic_light_controls_row(cx),
+            Slot::TrafficLights => self.toggle_row(
+                "settings-traffic-light-controls",
+                &self.settings,
+                (
+                    AppSettings::traffic_light_controls,
+                    AppSettings::set_traffic_light_controls,
+                ),
+                cx,
+            ),
             #[cfg(any(
                 target_os = "windows",
                 target_os = "linux",
@@ -1141,10 +1176,18 @@ impl SettingsView {
                 target_os = "macos"
             ))]
             Slot::WindowRounding => self.window_rounding_row(window, cx),
-            Slot::AdaptiveMenu => self.adaptive_menu_row(cx),
-            Slot::Normalisation => self.playback_row(cx),
-            Slot::Gapless => self.gapless_row(cx),
-            Slot::SponsorBlock => self.sponsorblock_row(cx),
+            Slot::Normalisation => self.toggle_row(
+                "settings-normalisation",
+                &self.playback,
+                (Playback::normalisation, Playback::set_normalisation),
+                cx,
+            ),
+            Slot::Gapless => self.toggle_row(
+                "settings-gapless",
+                &self.playback,
+                (Playback::gapless, Playback::set_gapless),
+                cx,
+            ),
             Slot::KeepTracks => self.keep_tracks_row(cx),
             Slot::CacheSize => self.cache_size_row(cx),
             Slot::CacheUsage => self.cache_usage_row(cx),
@@ -1155,7 +1198,12 @@ impl SettingsView {
             Slot::StreamFormat => self.stream_format_row(cx),
             Slot::StreamBitrate => self.stream_bitrate_row(cx),
             Slot::Sleep => self.sleep_row(cx),
-            Slot::StayAwake => self.stay_awake_row(cx),
+            Slot::StayAwake => self.toggle_row(
+                "settings-stay-awake",
+                &self.settings,
+                (AppSettings::stay_awake, AppSettings::set_stay_awake),
+                cx,
+            ),
             Slot::OutputDevice => self.output_device_row(cx),
             Slot::OutputFailure => self.output_failure_row(cx),
             Slot::SampleRate => self.sample_rate_row(cx),
@@ -1164,26 +1212,83 @@ impl SettingsView {
             Slot::Widevine => self.widevine_row(cx),
             Slot::Equalizer => self.equalizer_row(cx),
             Slot::LyricsSources => self.lyrics_sources_row(cx),
-            Slot::LyricsPriority => self.lyrics_priority(cx),
+            Slot::LyricsPriority => self.lyrics_priority(window, cx),
             Slot::WordSyncedFirst => self.word_synced_first_row(cx),
             Slot::Lyrics => self.lyrics_row(cx),
-            Slot::Karaoke => self.karaoke_lyrics_row(cx),
+            Slot::Karaoke => self.toggle_row(
+                "settings-karaoke-lyrics",
+                &self.settings,
+                (AppSettings::karaoke_lyrics, AppSettings::set_karaoke_lyrics),
+                cx,
+            ),
             Slot::Romanized => self.romanized_lyrics_row(cx),
-            Slot::LyricsForLocal => self.lyrics_for_local_files_row(cx),
+            Slot::LyricsForLocal => self.toggle_row(
+                "settings-lyrics-for-local-files",
+                &self.settings,
+                (
+                    AppSettings::lyrics_for_local_files,
+                    AppSettings::set_lyrics_for_local_files,
+                ),
+                cx,
+            ),
             Slot::SpotifyConnect => self.spotify_connect_row(cx),
             Slot::SpotifyConnectName => self.spotify_connect_name_row(cx),
             Slot::SpotifyConnectCustom => self.spotify_connect_custom_row(cx),
             Slot::SessionsButton => self.sessions_button_row(cx),
             Slot::SessionsOfficial => self.sessions_official_row(cx),
             Slot::SessionsServer => self.sessions_server_row(cx),
-            Slot::Discord => self.discord_row(cx),
+            Slot::Discord => self.toggle_row(
+                "settings-discord",
+                &self.settings,
+                (
+                    AppSettings::discord_presence,
+                    AppSettings::set_discord_presence,
+                ),
+                cx,
+            ),
             Slot::DiscordName => self.discord_name_row(cx),
-            Slot::DiscordShowPaused => self.discord_show_paused_row(cx),
-            Slot::DiscordBadge => self.discord_badge_row(cx),
-            Slot::DiscordUploadCovers => self.discord_upload_covers_row(cx),
-            Slot::ArtworkForLocal => self.artwork_for_local_files_row(cx),
-            Slot::DiscordAnonymous => self.discord_anonymous_row(cx),
-            Slot::DiscordHideOnConnect => self.discord_hide_on_connect_row(cx),
+            Slot::DiscordShowPaused => self.toggle_row(
+                "settings-discord-show-paused",
+                &self.settings,
+                (
+                    AppSettings::discord_show_paused,
+                    AppSettings::set_discord_show_paused,
+                ),
+                cx,
+            ),
+            Slot::DiscordBadge => self.toggle_row(
+                "settings-discord-badge",
+                &self.settings,
+                (AppSettings::discord_badge, AppSettings::set_discord_badge),
+                cx,
+            ),
+            Slot::ArtworkForLocal => self.toggle_row(
+                "settings-artwork-for-local-files",
+                &self.settings,
+                (
+                    AppSettings::artwork_for_local_files,
+                    AppSettings::set_artwork_for_local_files,
+                ),
+                cx,
+            ),
+            Slot::DiscordAnonymous => self.toggle_row(
+                "settings-discord-anonymous",
+                &self.settings,
+                (
+                    AppSettings::discord_without_details,
+                    AppSettings::set_discord_without_details,
+                ),
+                cx,
+            ),
+            Slot::DiscordHideOnConnect => self.toggle_row(
+                "settings-discord-hide-on-connect",
+                &self.settings,
+                (
+                    AppSettings::discord_hide_on_connect,
+                    AppSettings::set_discord_hide_on_connect,
+                ),
+                cx,
+            ),
             Slot::DiscordButtons => self.discord_buttons_row(cx),
             Slot::Scrobble(index) => match index < self.scrobbling.read(cx).rows().len() {
                 true => self.scrobble_row(index, cx),
@@ -1193,11 +1298,20 @@ impl SettingsView {
             Slot::Keybind(index) => self.keybind_row(index, cx),
             Slot::KeybindsReset => self.keybinds_reset_row(cx),
             Slot::Version => self.version_row(),
-            Slot::Updates => self.updates_row(cx),
-            Slot::AutoUpdate => self.auto_update_row(cx),
+            Slot::Updates => self.toggle_row(
+                "settings-check-updates",
+                &self.settings,
+                (AppSettings::check_updates, AppSettings::set_check_updates),
+                cx,
+            ),
             Slot::Channel => self.channel_row(cx),
             Slot::Log => self.log_row(cx),
             Slot::License => self.license_row(cx),
+            Slot::SponsorBlock => self.sponsorblock_row(cx),
+            Slot::DiscordUploadCovers => self.discord_upload_covers_row(cx),
+            Slot::NowPlayingOnFileOpen => self.now_playing_on_file_open_row(cx),
+            Slot::TaskbarProgress => self.taskbar_progress_row(cx),
+            Slot::AutoUpdate => self.auto_update_row(cx),
             Slot::Source => self.source_row(cx),
         }
     }
@@ -1364,7 +1478,7 @@ impl SettingsView {
         let theme = *cx.theme();
         let hits = self.found(cx);
         if hits.is_empty() {
-            let empty = t!("search-no-matches");
+            let empty = t!("common-no-matches");
             return div().child(
                 div()
                     .id("settings-results-empty")
@@ -1481,6 +1595,7 @@ impl Render for SettingsView {
         }
         if !cx.has_active_drag() {
             self.lyrics_drop_gap = None;
+            self.lyrics_drag = None;
         }
         self.load_fonts(cx);
 

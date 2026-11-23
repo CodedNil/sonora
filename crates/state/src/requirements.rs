@@ -4,6 +4,7 @@
 
 use gpui::{App, Context, Entity, Task};
 use music::SoundServer;
+use tracing::warn;
 
 use crate::{AppSettings, Io, Outputs, Session};
 
@@ -64,7 +65,7 @@ impl Requirements {
                 return;
             };
             if let Some(server) = bridge {
-                log::warn!("requirements: {server:?} runs without its ALSA plugin");
+                warn!("requirements: {server:?} runs without its ALSA plugin");
             }
             this.update(cx, |this, cx| {
                 this.task = None;
@@ -128,7 +129,7 @@ impl Requirements {
             return;
         }
         match output {
-            true => log::warn!("requirements: the audio output cannot be opened"),
+            true => warn!("requirements: the audio output cannot be opened"),
             false => {
                 let slug = Requirement::AudioOutput.slug();
                 self.dismissed.retain(|dismissed| *dismissed != slug);

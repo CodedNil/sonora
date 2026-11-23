@@ -14,13 +14,13 @@ use crate::input::{
     clamp_range, masked_text, primary_paste, span,
 };
 use crate::menu::{Menu, MenuItem};
-use crate::motion::mix;
+use crate::metrics::Text as Size;
 use crate::popup::Popup;
+use crate::separator::Separator;
 use crate::theme::ActiveTheme as _;
 
 /// How much of the foreground a field takes as its fill and as its edge, and how much of the
 /// muted foreground and of the danger colour the ring a focused or turned down field wears.
-const FILL: f32 = 0.045;
 const EDGE: f32 = 0.15;
 const RING: f32 = 0.4;
 /// How far that ring reaches past the field.
@@ -304,7 +304,7 @@ impl Render for Input {
         };
         let edge = match self.invalid {
             true => theme.danger,
-            false => mix(
+            false => crate::motion::mix(
                 theme.foreground.opacity(EDGE),
                 theme.muted_foreground,
                 shown,
@@ -402,16 +402,16 @@ impl Render for Input {
             .h(height)
             .px_3()
             .rounded(radius)
+            .when(self.pill, |this| this.rounded_full().px_4())
             // a field tucked into a frosted menu takes the menu's own translucent row fill, since
             // a flat one would sit on the frost as a solid slab
-            .map(
-                |this| match (self.bare, self.blurred, self.tucked, blurring(cx)) {
-                    (true, ..) => this,
-                    (false, true, _, true) => glass(this, cx),
-                    (false, false, true, true) => this.bg(theme.secondary_hover),
-                    _ => this.bg(theme.foreground.opacity(FILL)),
-                },
-            )
+            .when(!self.transparent, |this| {
+                match (self.blurred, self.tucked, blurring(cx)) {
+                    (true, _, true) => glass(this, cx),
+                    (false, true, true) => this.bg(theme.secondary_hover),
+                    _ => this.bg(theme.secondary),
+                }
+            })
             .when(self.blurred, |this| this.shadow_sm())
             .when_else(
                 self.tucked || self.bare,
@@ -468,7 +468,10 @@ impl Render for Input {
                             false => icon.size_4(),
                         })
                         .flex_none()
-                        .text_color(theme.muted_foreground),
+                        .text_color(match self.icon_foreground {
+                            true => theme.foreground,
+                            false => theme.muted_foreground,
+                        }),
                 )
             })
             .child(Text { input: cx.entity() })
@@ -497,6 +500,18 @@ impl Render for Input {
                 self.shortcut.clone().filter(|_| self.content.is_empty()),
                 |this, keystroke| this.child(crate::Kbd::new(keystroke)),
             )
+            .when_some(self.action.clone(), |this, (icon, tooltip, act)| {
+                this.child(Separator::vertical().h(theme.text(Size::Large)))
+                    .child(
+                        Button::new("input-action")
+                            .icon(icon)
+                            .tooltip(tooltip)
+                            .small()
+                            .ghost()
+                            .px_1()
+                            .on_click(move |_, window, cx| act(window, cx)),
+                    )
+            })
             .when_some(context_menu, |this, menu| this.child(menu))
     }
 }

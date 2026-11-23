@@ -14,6 +14,7 @@ mod wire;
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
+use tracing::{debug, warn};
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -116,7 +117,7 @@ impl YouTubeProvider {
         match serde_json::from_slice(&body) {
             Ok(saved) => Some(saved),
             Err(error) => {
-                log::warn!("youtube: cannot read the stored credentials: {error}");
+                warn!("youtube: cannot read the stored credentials: {error}");
                 None
             }
         }
@@ -209,7 +210,7 @@ impl YouTubeProvider {
         credentials::remove(&self.cookies);
         let api = self.cookie_client(&cookies, account.index, page_id.as_deref());
         self.store_cookies(&cookies, account.index, page_id.clone())?;
-        log::debug!(
+        debug!(
             "youtube: cookie sign-in succeeded for authuser {} page {page_id:?}",
             account.index
         );
@@ -239,13 +240,11 @@ impl YouTubeProvider {
             .rotated_at()
             .is_some_and(|at| at.elapsed().is_ok_and(|elapsed| elapsed < ROTATION));
         if !fresh && let Err(error) = api.rotate_cookies().await {
-            log::warn!("youtube: cannot rotate the stored cookies: {error:#}");
+            warn!("youtube: cannot rotate the stored cookies: {error:#}");
         }
         match api.profile().await {
             Ok(profile) => {
-                log::debug!(
-                    "youtube: restored the session for authuser {authuser} page {page_id:?}"
-                );
+                debug!("youtube: restored the session for authuser {authuser} page {page_id:?}");
                 Ok(Some(
                     self.authenticated_session(api, wire::profile(profile)),
                 ))
@@ -255,7 +254,7 @@ impl YouTubeProvider {
                 Err(error.context(SignInFailure(SignInProblem::Blocked)))
             }
             Err(error) => {
-                log::warn!("youtube: the cached cookies are no longer usable: {error:#}");
+                warn!("youtube: the cached cookies are no longer usable: {error:#}");
                 Ok(None)
             }
         }
@@ -275,7 +274,7 @@ impl YouTubeProvider {
     fn store_guest(&self) {
         credentials::remove(&self.cookies);
         if let Err(error) = self.save(&Saved::Guest) {
-            log::warn!("youtube: cannot remember the guest session: {error:#}");
+            warn!("youtube: cannot remember the guest session: {error:#}");
         }
     }
 }
@@ -295,8 +294,8 @@ fn keep_fresh(api: Weak<YtMusic>, since: SystemTime) {
                 continue;
             }
             match api.rotate_cookies().await {
-                Ok(()) => log::debug!("youtube: rotated the session cookies"),
-                Err(error) => log::warn!("youtube: cannot rotate the session cookies: {error:#}"),
+                Ok(()) => debug!("youtube: rotated the session cookies"),
+                Err(error) => warn!("youtube: cannot rotate the session cookies: {error:#}"),
             }
             rotated = SystemTime::now();
         }
@@ -387,7 +386,7 @@ impl MusicProvider for YouTubeProvider {
                     .await
             }
             Some(Saved::Guest) => {
-                log::debug!("youtube: restoring guest session");
+                debug!("youtube: restoring guest session");
                 Ok(Some(self.guest_session(self.guest_client())))
             }
             None => Ok(None),

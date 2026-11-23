@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
+use tracing::warn;
 
 use super::{Curve, Filter, Kind, MAX_CHANNELS, SLOTS, Tone, Width};
 
@@ -171,9 +172,7 @@ impl EqualizerWriter {
     fn publish(&self, edit: Edit) {
         let preamp = self.played.preamp_db();
         if self.shared.unprocessed.swap(false, Ordering::Relaxed) {
-            log::warn!(
-                "equalizer: a stream with more than {MAX_CHANNELS} channels played unequalized"
-            );
+            warn!("equalizer: a stream with more than {MAX_CHANNELS} channels played unequalized");
         }
         let shared = &self.shared;
         shared.seq.fetch_add(1, Ordering::Relaxed);

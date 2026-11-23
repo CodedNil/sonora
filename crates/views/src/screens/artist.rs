@@ -1,12 +1,13 @@
+use gpui::ClickEvent;
 use std::cell::Cell;
 use std::rc::Rc;
+use ui::spoken;
 
 use gpui::accesskit::{Role, Toggled};
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Entity, FontWeight, Pixels, Point, Render, ScrollHandle,
-    ScrollWheelEvent, SharedString, WeakEntity, Window, div, linear_color_stop, linear_gradient,
-    point, px, relative,
+    AnyElement, App, Context, Entity, FontWeight, Pixels, Render, ScrollHandle, ScrollWheelEvent,
+    SharedString, WeakEntity, Window, div, linear_color_stop, linear_gradient, point, px, relative,
 };
 
 use crate::chrome::Chrome;
@@ -19,8 +20,8 @@ use ui::ActiveTheme as _;
 use ui::Listing as _;
 use ui::{
     Artwork, Button, Card, Deck, MIN_CONTENT, Modal, Mode, Pending, Picker, Pin, PinKind, Popovers,
-    Popup, Scrollbar, Scroller, TableDelegate, TableEvent, TableState, Text, effects, scrolled,
-    snapped, spoken, table,
+    Scrollbar, Scroller, TableDelegate, TableEvent, TableState, Text, effects, scrolled, snapped,
+    table,
 };
 
 use crate::chrome::tools;
@@ -30,9 +31,9 @@ use crate::shared::album_grid::CardGrid;
 use crate::shared::cards::{self, ReleaseFilter};
 use crate::shared::cover_viewer::CoverViewer;
 use crate::shared::hero::{HeroMetaStrip, HeroPlayButton, PageHero};
-use crate::shared::menus::{ItemMenu, artist_menu};
+use crate::shared::menus::artist_menu;
 use crate::shared::page;
-use crate::shared::picks::{Picks, Shape};
+use crate::shared::picks::{Picks, PicksMotion, Shape};
 use crate::shared::shelves::{Rail, RailSpec};
 use crate::shared::tracks::{PlaybackStatus, TrackSource, Tracks, drop_picked, playback_status};
 use crate::shared::trouble;
@@ -117,6 +118,7 @@ impl Tracks for ArtistTracks {
 }
 
 pub(crate) struct ArtistView {
+    picks_motion: std::rc::Rc<PicksMotion>,
     detail: Entity<ArtistDetail>,
     playback: Entity<Playback>,
     playback_status: PlaybackStatus,
@@ -137,8 +139,6 @@ pub(crate) struct ArtistView {
     popular: Rc<Vec<Track>>,
     popular_page: usize,
     popular_columns: usize,
-    track_menu: ItemMenu,
-    track_context: Option<(usize, Point<Pixels>)>,
     settings: Entity<AppSettings>,
     toolbar: Entity<Toolbar>,
     me: WeakEntity<Self>,
@@ -165,7 +165,6 @@ impl ArtistView {
         let width = MIN_CONTENT;
         let id = cx.entity_id();
         let scrollbar = cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(id));
-        let playlist_scrollbar = cx.new(|_| Scrollbar::inset().watching(id));
         let settings = Sonora::global(cx).settings.clone();
         let saved = settings.read(cx).table(SECTION);
         let sorting = settings.read(cx).sorting(SECTION);
@@ -239,8 +238,6 @@ impl ArtistView {
             }
             this.popular = Rc::new(detail.read(cx).tracks().to_vec());
             this.popular_page = 0;
-            this.track_menu.reset(cx);
-            this.track_context = None;
             this.rebuild(cx);
             cx.notify();
         })
@@ -303,9 +300,8 @@ impl ArtistView {
             shown: LISTED,
             mode,
             popular_page: 0,
+            picks_motion: PicksMotion::new(id),
             popular_columns: 0,
-            track_menu: ItemMenu::new(playlist_scrollbar, cx),
-            track_context: None,
             settings,
             toolbar,
             me: me.downgrade(),
@@ -347,7 +343,6 @@ impl ArtistView {
         if mode == Mode::List {
             self.table.clone().set_width(self.width, cx);
         }
-        self.track_context = None;
         self.settings
             .update(cx, |settings, cx| settings.set_view(SECTION, mode, cx));
         cx.notify();
@@ -373,15 +368,16 @@ impl ArtistView {
                 .tooltip("common-more")
                 .large()
                 .left()
-                .menu(artist_menu(artist, self.playback.clone(), true, cx))
+                .menu(artist_menu(artist, self.playback.clone(), cx))
         });
         let actions = div()
             .flex()
             .items_center()
             .gap_2()
             .child(
-                HeroPlayButton::new(
+                HeroPlayButton::labeled(
                     "play-artist",
+                    t!("artist-play"),
                     self.popular.as_ref().clone(),
                     self.playback.clone(),
                 )
@@ -794,10 +790,11 @@ impl ArtistView {
                 let height = Card::tile_height(grid.card, window, cx);
                 let width = self.width;
                 let card = grid.card;
-                let opened = cx.entity().downgrade();
                 let lead = self.release_lead.clone();
+                let opened = cx.entity().downgrade();
 
                 Deck::new("artist-releases-deck")
+                    .magnetic(self.scrollbar.read(cx).anchors())
                     .rows(std::iter::repeat_n(height, rows))
                     .gap(gap)
                     .on_measure(move |top, _, _| lead.set(Some(top)))
@@ -1025,11 +1022,10 @@ impl ArtistView {
 
     fn popular(&self, cx: &mut Context<Self>) -> AnyElement {
         let tracks = self.popular.clone();
-        let from = self.playing_from(cx);
         let pages = Shape::new(self.width, tracks.len()).pages;
+        let from = self.playing_from(cx);
         let queued = tracks.clone();
         let playback = self.playback.clone();
-        let opened = cx.entity().downgrade();
 
         Picks::new(
             "artist-popular",
@@ -1037,32 +1033,21 @@ impl ArtistView {
             self.playback.clone(),
             self.width,
             self.popular_page,
+            &self.picks_motion,
         )
         .title("artist-popular")
-        .eyebrow(i18n::lookup("artist-popular-eyebrow", None))
+        .controls(self.toolbar.clone())
         .vacancy("artist-popular-empty")
         .detailed()
         .loading(self.detail.read(cx).is_loading())
         .on_previous(cx.listener(|this, _, _, cx| {
             this.popular_page = this.popular_page.saturating_sub(1);
-            this.track_context = None;
             cx.notify();
         }))
         .on_next(cx.listener(move |this, _, _, cx| {
             this.popular_page = (this.popular_page + 1).min(pages.saturating_sub(1));
-            this.track_context = None;
             cx.notify();
         }))
-        .on_context_menu(move |place, event, _, cx| {
-            let Some(view) = opened.upgrade() else {
-                return;
-            };
-            view.update(cx, |this, cx| {
-                this.track_menu.reset(cx);
-                this.track_context = Some((place, event.position));
-                cx.notify();
-            });
-        })
         .on_start(move |place, cx| {
             playback.update(cx, |playback, cx| {
                 playback.start(queued.as_ref().clone(), place, from.clone(), cx)
@@ -1084,9 +1069,11 @@ impl ArtistView {
         }
         Some(
             div()
+                .flex()
                 .pb_3()
                 .child(
                     Button::new("artist-favorites")
+                        .max_w_full()
                         .icon("icons/heart.svg")
                         .label(t!("artist-favorite-songs-count", count = count))
                         .trailing("icons/chevron-right.svg")
@@ -1321,27 +1308,19 @@ impl Render for ArtistView {
         }
         if self.mode == Mode::List {
             self.table.claim(cx);
-            let viewport = page::past_border(page::viewport(&scroll, inset, window, cx));
+            let viewport = page::viewport(&scroll, Pixels::ZERO, window);
+            let anchors = self.scrollbar.read(cx).anchors();
+            self.table.set_anchors(anchors, cx);
             self.table
                 .update(cx, |table, _| table.set_viewport(viewport));
         }
 
-        let picked = self.track_context.and_then(|(place, position)| {
-            self.popular
-                .get(place)
-                .cloned()
-                .map(|track| (track, position))
-        });
-        let track_menu = picked.map(|(track, position)| {
-            Popup::new(position, self.track_menu.for_track(&track, cx)).on_close(cx.listener(
-                |this, _, _, cx| {
-                    this.track_context = None;
-                    cx.notify();
-                },
-            ))
-        });
-
         let listed = self.mode == Mode::List;
+        if !listed {
+            let anchors = self.scrollbar.read(cx).anchors();
+            anchors.set_table(false);
+            anchors.set_marker(None, cx);
+        }
         let release_padding = self.release_padding;
         let head = self.header(cx);
         let cover = theme.metrics.cover;
@@ -1392,18 +1371,23 @@ impl Render for ArtistView {
                     .child(head)
                     .children(favorites)
                     .when(listed, |this| {
-                        let label = t!("artist-popular");
-                        this.child(
-                            div()
-                                .id("artist-popular-heading")
-                                .role(Role::Heading)
-                                .aria_level(2)
-                                .aria_label(label.clone())
-                                .pb_3()
-                                .text_size(theme.text(Text::Title))
-                                .font_weight(FontWeight::BOLD)
-                                .child(label),
-                        )
+                        this.child({
+                            let label = t!("artist-popular");
+                            div().pb_3().child(
+                                div()
+                                    .id("artist-popular-heading")
+                                    .role(Role::Heading)
+                                    .aria_label(label.clone())
+                                    .pb_3()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .text_size(theme.text(Text::Title))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(label)
+                                    .child(self.toolbar.clone()),
+                            )
+                        })
                     }),
             )
             .child(
@@ -1422,7 +1406,6 @@ impl Render for ArtistView {
             .relative()
             .size_full()
             .child(page)
-            .when_some(track_menu, |this, menu| this.child(menu))
             .children(self.about_dialog(cx))
             .children(self.favorites_dialog(window, cx))
             .child(self.cover_viewer.clone())

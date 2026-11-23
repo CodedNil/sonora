@@ -990,7 +990,7 @@ impl Devices {
                         track.added_by = added_by.as_deref().and_then(|id| this.known(id));
                         this.here(cx, |playback, cx| playback.enqueue(track, cx))
                     }
-                    Err(error) => log::warn!("connect: cannot queue {key}: {error:#}"),
+                    Err(error) => tracing::warn!("connect: cannot queue {key}: {error:#}"),
                 }
             },
             cx,
@@ -1026,7 +1026,7 @@ impl Devices {
                         library.liked_elsewhere(&id, Some(track), cx)
                     }),
                     Err(error) => {
-                        log::warn!("connect: cannot read the liked track {id}: {error:#}")
+                        tracing::warn!("connect: cannot read the liked track {id}: {error:#}")
                     }
                 }
             },
@@ -1048,7 +1048,7 @@ impl Devices {
             .as_deref()
             .is_some_and(|sent| sent.same_queue(&state))
         {
-            log::debug!("connect: dropping a queue edit made on an older report");
+            tracing::debug!("connect: dropping a queue edit made on an older report");
             self.sent = None;
             self.publish(cx);
             return;
@@ -1139,7 +1139,7 @@ impl Devices {
                         }
                     }
                     Err(error) => {
-                        log::warn!("connect: cannot apply playback change: {error:#}");
+                        tracing::warn!("connect: cannot apply playback change: {error:#}");
                         this.sent = None;
                         this.publish(cx);
                     }
@@ -1182,7 +1182,7 @@ impl Devices {
         else {
             return;
         };
-        log::debug!(
+        tracing::debug!(
             "connect: reporting {} at {:?} because of the {reason}",
             now.track.as_ref().map_or("", |track| &track.id),
             now.position
@@ -1208,7 +1208,7 @@ impl Devices {
             context,
             playing: playback.wants_playing(),
             position: playback.live_position(),
-            duration: track.duration,
+            duration: track.duration.unwrap_or_default(),
             volume: playback.volume(),
             shuffle: Some(queue.shuffle()),
             repeat: Some(playback.repeat()),
@@ -1298,7 +1298,7 @@ async fn person(client: &dyn MusicApi, id: String) -> Option<(String, Arc<Contri
             }),
         )),
         Err(error) => {
-            log::warn!("connect: cannot read who queued a track: {error:#}");
+            tracing::warn!("connect: cannot read who queued a track: {error:#}");
             None
         }
     }

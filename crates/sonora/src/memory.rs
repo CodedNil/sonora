@@ -1,4 +1,5 @@
 use std::time::Duration;
+use tracing::{Level, debug, enabled};
 
 use gpui::App;
 use state::Sonora;
@@ -25,7 +26,7 @@ pub fn tune() {}
 /// nothing otherwise. The log file keeps it off, so it runs only when `RUST_LOG` or `SONORA_LOG`
 /// asks for `sonora::memory=debug`.
 pub fn watch(cx: &mut App) {
-    if !log::log_enabled!(log::Level::Debug) {
+    if !enabled!(Level::DEBUG) {
         return;
     }
     cx.spawn(async move |cx| {
@@ -48,7 +49,7 @@ fn report(probed: (Footprint, Option<usize>), cx: &mut App) {
     let past = queue.past().len();
     let ahead = queue.upcoming().len();
 
-    log::debug!(
+    debug!(
         "memory: rss {}, heap {}, gpu {}, file {}, artwork {entries} entries / {}, queue {past} past / {ahead} ahead",
         resident.map_or_else(|| "unknown".to_owned(), mib),
         mib(footprint.heap),

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::warn;
 
 use gpui::{Context, Entity, Task};
 use music::{CoverSize, MusicApi};
@@ -156,7 +157,7 @@ impl Cover {
                         }
                     }
                     Err(error) => {
-                        log::warn!("cover: cannot load {id}: {error:#}");
+                        warn!("cover: cannot load {id}: {error:#}");
                         crate::noted(&error, cx);
                     }
                 }

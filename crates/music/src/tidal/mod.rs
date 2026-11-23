@@ -14,6 +14,7 @@ mod playback;
 mod wire;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use tracing::warn;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -52,7 +53,7 @@ impl TidalProvider {
         match opened {
             Ok(session) => Ok(Some(session)),
             Err(error) if auth::refused(&error) => {
-                log::warn!("tidal: the stored session is no longer usable: {error:#}");
+                warn!("tidal: the stored session is no longer usable: {error:#}");
                 let last = client.credentials().await.refresh_token;
                 auth::abandon(generation, &[&first, &last]);
                 Err(error)
@@ -77,7 +78,7 @@ impl TidalProvider {
         let client = match open(&http, upgraded).await {
             Ok(client) => client,
             Err(error) if moved && auth::refused(&error) => {
-                log::warn!(
+                warn!(
                     "tidal: the app client session was refused, signing in as the device client: {error:#}"
                 );
                 let device = Credentials {
@@ -134,7 +135,7 @@ impl MusicProvider for TidalProvider {
     fn offline_playback(&self) -> Option<Arc<dyn PlaybackFactory>> {
         let (stored, generation) = auth::restore()?;
         let http = client::http()
-            .inspect_err(|error| log::warn!("tidal: cannot build an offline client: {error:#}"))
+            .inspect_err(|error| warn!("tidal: cannot build an offline client: {error:#}"))
             .ok()?;
         let client = TidalClient::new(http, stored, Some(generation));
         Some(Arc::new(Factory::new(client)))

@@ -13,6 +13,7 @@
 //! user accepted before, when a newer version is out.
 
 use std::path::{Path, PathBuf};
+use tracing::{debug, info, warn};
 
 use anyhow::{Context as _, Result, bail, ensure};
 use serde_json::{Value, json};
@@ -86,7 +87,7 @@ impl Offer {
             .with_context(|| format!("cannot write {}", part.display()))?;
         std::fs::rename(&part, &path)
             .with_context(|| format!("cannot move {} into place", path.display()))?;
-        log::info!("widevine: {} is in the store", self.release.version);
+        info!("widevine: {} is in the store", self.release.version);
 
         let found = prefer(found(path));
         prune(&self.release.version, &found.path);
@@ -103,10 +104,9 @@ pub async fn offer() -> Result<Offer> {
     );
     let http = client()?;
     let release = latest(&http).await?;
-    log::info!(
+    info!(
         "widevine: fetching {} ({} bytes) from google",
-        release.version,
-        release.size
+        release.version, release.size
     );
     let archive = download(&http, &release).await?;
     let license = entry(crx(&archive)?, LICENSE)
@@ -130,13 +130,12 @@ pub async fn fetch() -> Result<Found> {
     let release = latest(&http).await?;
     let path = store().join(&release.version).join(LIBRARY);
     if path.is_file() {
-        log::debug!("widevine: {} is in the store already", release.version);
+        debug!("widevine: {} is in the store already", release.version);
         return Ok(remember(found(path)));
     }
-    log::info!(
+    info!(
         "widevine: fetching {} ({} bytes) from google",
-        release.version,
-        release.size
+        release.version, release.size
     );
     let archive = download(&http, &release).await?;
     Offer {
@@ -253,7 +252,7 @@ async fn download(http: &reqwest::Client, release: &Release) -> Result<Vec<u8>> 
                 return Ok(bytes.to_vec());
             }
             Err(error) => {
-                log::warn!("widevine: {url} did not answer: {error:#}");
+                warn!("widevine: {url} did not answer: {error:#}");
                 last = Some(error);
             }
         }
@@ -371,7 +370,7 @@ fn prune(keep: &str, open: &Path) {
             continue;
         }
         if let Err(error) = std::fs::remove_dir_all(&path) {
-            log::warn!("widevine: cannot remove the old {name} module: {error:#}");
+            warn!("widevine: cannot remove the old {name} module: {error:#}");
         }
     }
 }

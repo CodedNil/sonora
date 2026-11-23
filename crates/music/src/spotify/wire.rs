@@ -186,10 +186,11 @@ pub(super) fn playlist_summary(
         name: playlist_label(&attrs.name),
         owner: playlist_label(&attrs.owner_username),
         owned: attrs.owner_username == username,
-        owner_id: attrs.owner_username,
-        collaborative: attrs
-            .capabilities
-            .is_some_and(|value| value.can_edit_items()),
+        owner_id: Some(attrs.owner_username.clone()).filter(|id| !id.is_empty()),
+        can_edit_tracks: attrs.owner_username == username
+            || attrs
+                .capabilities
+                .is_some_and(|value| value.can_edit_items()),
         blend: blend_format(
             attrs.format.as_deref().unwrap_or_default(),
             attrs
@@ -199,17 +200,13 @@ pub(super) fn playlist_summary(
                 .map(String::as_str),
         ),
         cover,
-        track_count: u32::try_from(
-            attrs
-                .approximate_length
-                .unwrap_or_default()
-                .clamp(0, i64::from(u32::MAX)),
-        )
-        .unwrap_or_default(),
+        track_count: attrs
+            .approximate_length
+            .and_then(|len| u32::try_from(len).ok()),
         modified_at: attrs
             .updated_at
             .filter(|stamp| stamp.seconds > 0)
-            .map(|stamp| stamp.seconds),
+            .and_then(|stamp| crate::Timestamp::new(stamp.seconds, stamp.nanos).ok()),
         ..Default::default()
     }
 }

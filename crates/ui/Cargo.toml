@@ -10,11 +10,12 @@ gpui.workspace = true
 i18n.workspace = true
 icons.workspace = true
 image.workspace = true
-log.workspace = true
+tracing.workspace = true
 qrcodegen.workspace = true
 serde.workspace = true
 unicode-bidi.workspace = true
 unicode-segmentation.workspace = true
+video.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit.workspace = true

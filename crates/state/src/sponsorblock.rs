@@ -99,7 +99,7 @@ impl SponsorBlock {
     fn applied(&self, cx: &App) -> Option<Duration> {
         let playback = self.playback.read(cx);
         let track = playback.track()?;
-        let duration = track.duration;
+        let duration = track.duration?;
         (!duration.is_zero()
             && self.settings.read(cx).sponsorblock()
             && !Network::lost(cx)
@@ -234,7 +234,7 @@ impl SponsorBlock {
         let at = playback.live_position();
         let duration = playback
             .track()
-            .map(|track| track.duration)
+            .and_then(|track| track.duration)
             .unwrap_or_default();
         let Some(index) = self.segments.iter().position(|segment| {
             segment.matches_duration(duration) && at >= segment.start && at < segment.end

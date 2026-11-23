@@ -182,7 +182,7 @@ fn show_queue(queue: &wire::QueueSnapshot) -> String {
             track.title,
             track.artists.join(", "),
             track.album,
-            clock(track.duration),
+            clock(track.duration.unwrap_or_default()),
             mark
         )
     };
@@ -341,7 +341,7 @@ mod tests {
                 artists: vec!["artist".to_owned()],
                 album: "album".to_owned(),
                 cover: Some("cover".to_owned()),
-                duration: 125,
+                duration: Some(125),
             },
             kind,
         }

@@ -1,16 +1,15 @@
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, Context, Entity, FontWeight, Pixels, Point, Render, SharedString, WeakEntity,
-    Window, div, px,
+    AnyElement, Context, Entity, FontWeight, Pixels, Render, SharedString, Window, div, px,
 };
 use i18n::t;
 use music::{Credit, Track};
 use router::{Destination, Link as _};
 use state::{Playback, SongDetail, Sonora};
 use ui::{
-    ActiveTheme as _, Avatar, Button, Fact, Glowing as _, InfoCard, Initials, Popup, Scrollbar,
-    Scroller, Skeleton, Tails as _, Text, clock,
+    ActiveTheme as _, Avatar, Button, Fact, Glowing as _, InfoCard, Initials, Scrollbar, Scroller,
+    Skeleton, Tails as _, Text, clock,
 };
 
 use crate::shared::about::{AboutArtist, about_modal};
@@ -18,7 +17,7 @@ use crate::shared::cells;
 use crate::shared::hero::{
     HeroMetaStrip, HeroPlayButton, PageHero, copyright_notice, release_date_label,
 };
-use crate::shared::menus::ItemMenu;
+use crate::shared::menus::{CardMenu, Item};
 use crate::shared::pins::Pinned as _;
 use crate::shared::trouble;
 
@@ -34,9 +33,6 @@ pub(crate) struct SongView {
     scrollbar: Entity<Scrollbar>,
     about_bar: Entity<Scrollbar>,
     about_open: bool,
-    track_menu: ItemMenu,
-    context_menu: Option<Point<Pixels>>,
-    me: WeakEntity<Self>,
 }
 
 impl SongView {
@@ -81,7 +77,6 @@ impl SongView {
         let chrome = crate::chrome::Chrome::entity(cx);
         cx.observe(&chrome, |_, _, cx| cx.notify()).detach();
         let me = cx.entity_id();
-        let playlist_scrollbar = cx.new(|_| Scrollbar::inset().watching(me));
 
         Self {
             detail,
@@ -89,9 +84,6 @@ impl SongView {
             scrollbar: cx.new(|_| Scrollbar::new(gpui::ScrollHandle::new()).watching(me)),
             about_bar: cx.new(|_| Scrollbar::new(gpui::ScrollHandle::new()).watching(me)),
             about_open: false,
-            track_menu: ItemMenu::new(playlist_scrollbar, cx),
-            context_menu: None,
-            me: cx.weak_entity(),
         }
     }
 
@@ -103,7 +95,10 @@ impl SongView {
             .album()
             .and_then(|album| album.album.cover_large.clone())
             .or_else(|| track.cover.clone());
-        let release = self.release_label(track, cx);
+        let album = self.detail.read(cx).album().map(|detail| &detail.album);
+        let release = album
+            .and_then(|album| album.release_date)
+            .map(release_date_label);
 
         let mut meta = HeroMetaStrip::new().item(cells::artist_links(
             "song-artists",
@@ -114,7 +109,9 @@ impl SongView {
         if let Some(release) = release {
             meta = meta.text(release);
         }
-        meta = meta.text(clock(track.duration));
+        if let Some(duration) = track.duration {
+            meta = meta.text(clock(duration));
+        }
 
         let actions = div()
             .flex()
@@ -137,49 +134,19 @@ impl SongView {
             });
 
         let pin = track.pin().map(|pin| pin.cover(cover.clone()));
-        let view = self.me.clone();
 
         PageHero::new("song-hero", track.name.clone())
             .pin(pin)
             .cover(cover)
-            .eyebrow(t!("song-eyebrow"))
+            .eyebrow(t!("kind-song"))
             .meta(meta)
             .actions(actions)
             .explicit(track.explicit)
-            .drag_start(move |event, window, cx| {
-                window.prevent_default();
-                view.update(cx, |this, cx| {
-                    this.track_menu.reset(cx);
-                    this.context_menu = Some(event.position);
-                    cx.notify();
-                })
-                .ok();
-            })
+            .drag_start(CardMenu::opener(
+                Item::Track(track.clone()),
+                self.playback.clone(),
+            ))
             .into_any_element()
-    }
-
-    fn menu(&self, cx: &mut Context<Self>) -> Option<Popup> {
-        let position = self.context_menu?;
-        let track = self.detail.read(cx).track().cloned()?;
-
-        Some(
-            Popup::new(position, self.track_menu.for_track(&track, cx)).on_close(cx.listener(
-                |this, _, _, cx| {
-                    this.context_menu = None;
-                    cx.notify();
-                },
-            )),
-        )
-    }
-
-    /// Formats the track date, using the album date when it supplies compatible detail.
-    fn release_label(&self, track: &Track, cx: &Context<Self>) -> Option<SharedString> {
-        let album = self
-            .detail
-            .read(cx)
-            .album()
-            .map(|detail| detail.album.release_date.as_str());
-        track.release_date_with(album).map(release_date_label)
     }
 
     fn overview(&self, track: &Track, cx: &Context<Self>) -> AnyElement {
@@ -187,8 +154,10 @@ impl SongView {
         let album_name = album
             .map(|detail| detail.album.name.clone())
             .unwrap_or_else(|| track.album.clone());
-        let release = self
-            .release_label(track, cx)
+        let release = album
+            .and_then(|detail| detail.album.release_date)
+            .or(track.release_date)
+            .map(release_date_label)
             .unwrap_or_else(|| t!("common-unknown"));
         let label = album
             .and_then(|detail| detail.album.label_name().map(str::to_owned))
@@ -217,8 +186,11 @@ impl SongView {
             ("song-fact-label", t!("song-label"), label),
             (
                 "song-fact-popularity",
-                t!("song-popularity"),
-                t!("unit-percent", value = track.popularity),
+                t!("column-popularity"),
+                track
+                    .popularity
+                    .map(|value| t!("common-percentage", value = value))
+                    .unwrap_or_else(|| t!("common-not-available")),
             ),
         ];
         InfoCard::new(t!("song-about"))
@@ -345,10 +317,10 @@ impl SongView {
             .into_any_element()
     }
 
-    fn discovery(track: &Track) -> AnyElement {
+    fn discovery(&self, track: &Track) -> AnyElement {
         let genres = match track.genres.is_empty() {
             true => t!("common-not-available"),
-            false => SharedString::from(track.genres.join(", ")),
+            false => track.genres.join(", ").into(),
         };
         let languages = match track.languages.is_empty() {
             true => t!("common-not-provided"),
@@ -371,11 +343,8 @@ impl SongView {
                     .child(Fact::new(t!("song-genres"), genres).spoken("song-fact-genres"))
                     .when_some(track.bpm, |this, bpm| {
                         this.child(
-                            Fact::new(
-                                t!("song-tempo"),
-                                t!("unit-bpm", value = f64::from(bpm.round())),
-                            )
-                            .spoken("song-fact-tempo"),
+                            Fact::new(t!("song-tempo"), t!("unit-bpm", value = f64::from(bpm)))
+                                .spoken("song-fact-tempo"),
                         )
                     })
                     .when(!track.tags.is_empty(), |this| {
@@ -391,7 +360,7 @@ impl SongView {
                         )
                     })
                     .child(
-                        Fact::new(t!("song-language"), languages)
+                        Fact::new(t!("common-language"), languages)
                             .spoken("song-fact-language")
                             .striped(true),
                     )
@@ -553,7 +522,7 @@ impl SongView {
 }
 
 impl Render for SongView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(failure) = self.failure(cx) {
             return div()
                 .id("song-failure")
@@ -577,8 +546,8 @@ impl Render for SongView {
                 Scroller::new("song-page", &self.scrollbar)
                     .hold()
                     .bottom_inset(crate::chrome::Chrome::bottom(cx))
-                    .px(theme.metrics.inset + crate::chrome::Chrome::margin(window, cx))
-                    .py(theme.metrics.inset)
+                    .px(theme.metrics.inset)
+                    .pb(theme.metrics.inset)
                     .when(loading && track.is_none(), |this| {
                         this.child(self.loading(cx))
                     })
@@ -604,7 +573,7 @@ impl Render for SongView {
                                             .flex_col()
                                             .gap_5()
                                             .child(self.credits(&track, cx))
-                                            .child(Self::discovery(&track)),
+                                            .child(self.discovery(&track)),
                                     ),
                             )
                             .when_some(self.artist_profile(cx), |this, profile| {
@@ -630,7 +599,6 @@ impl Render for SongView {
                             )
                     }),
             )
-            .children(self.menu(cx))
             .children(self.about_dialog(cx))
             .into_any_element()
     }

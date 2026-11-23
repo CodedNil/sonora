@@ -17,6 +17,9 @@ const BAR_BLUR: Pixels = px(18.);
 /// The bar's fill on a see-through window. The page wash already sits under the bar, so the thick
 /// fill would stack on it and leave the bar far darker than the window around it.
 const CLEAR_BAR_FILL: f32 = 0.3;
+/// Floating previews keep a light popover tint over a broad backdrop blur.
+const FLOATING_FILL: f32 = 0.6;
+const FLOATING_BLUR: Pixels = px(32.);
 
 /// Whether a surface that only frosts for the look of it should frost at all. A backdrop blur
 /// is the priciest thing the renderer does per frame, so the setting turns those off and each
@@ -56,6 +59,17 @@ pub fn popover_surface<E: Styled>(element: E, cx: &App) -> E {
     match blurring(cx) {
         true => frost(element),
         false => element,
+    }
+}
+
+/// Gives floating previews and matching chrome the same tint and blur, with a flat fallback.
+pub fn floating_surface<E: Styled>(element: E, cx: &App) -> E {
+    let color = cx.theme().popover;
+    match blurring(cx) {
+        true => element
+            .bg(color.alpha(FLOATING_FILL))
+            .backdrop_blur(FLOATING_BLUR),
+        false => element.bg(color),
     }
 }
 

@@ -5,6 +5,7 @@ mod artists;
 mod client;
 mod collection;
 mod connect;
+mod credits;
 mod feeds;
 mod links;
 mod lyrics;

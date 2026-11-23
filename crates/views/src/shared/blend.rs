@@ -1,7 +1,5 @@
-use gpui::App;
-use i18n::t;
-use state::{Library, Shelf};
-use ui::{Filter, FilterChange, FlagAxis};
+use state::Shelf;
+use ui::{Filter, FilterChange};
 
 const LOCAL_ONLY: &str = "filter-local-only";
 const STREAMING_ONLY: &str = "filter-streaming-only";
@@ -81,17 +79,6 @@ impl<'a, T> IntoIterator for Joined<'a, T> {
     }
 }
 
-/// One part of the library across both shelves, the streaming rows first.
-pub(crate) fn joined<'a, T: 'a>(
-    library: &'a Library,
-    pick: impl Fn(&'a state::LibraryState) -> &'a [T],
-) -> Joined<'a, T> {
-    Joined::new(
-        pick(library.state(Shelf::Streaming)),
-        pick(library.state(Shelf::Local)),
-    )
-}
-
 /// The shelf a library page is narrowed to by its Local only or Streaming only filter. The two
 /// rule each other out, so turning one on turns the other off.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -120,16 +107,14 @@ impl Reach {
             return Vec::new();
         }
         vec![
-            Filter::Flag(FlagAxis {
+            Filter {
                 key: LOCAL_ONLY,
-                label: t!("filter-local-only"),
-                on: self.0 == Some(Shelf::Local),
-            }),
-            Filter::Flag(FlagAxis {
+                kind: ui::FilterKind::Flag(self.0 == Some(Shelf::Local)),
+            },
+            Filter {
                 key: STREAMING_ONLY,
-                label: t!("filter-streaming-only"),
-                on: self.0 == Some(Shelf::Streaming),
-            }),
+                kind: ui::FilterKind::Flag(self.0 == Some(Shelf::Streaming)),
+            },
         ]
     }
 
@@ -148,9 +133,4 @@ impl Reach {
         }
         true
     }
-}
-
-/// Whether either shelf still has `part` on its way.
-pub(crate) fn waiting(library: &Library, part: state::LibraryPart, cx: &App) -> bool {
-    library.waiting(Shelf::Streaming, part, cx) || library.waiting(Shelf::Local, part, cx)
 }

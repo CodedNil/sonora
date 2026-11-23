@@ -312,7 +312,7 @@ pub struct Track {
     pub album: String,
     pub cover: Option<String>,
     /// In whole seconds, which is as fine as most providers report it.
-    pub duration: u64,
+    pub duration: Option<u64>,
 }
 
 /// Why the running Sonora refused a request. Each is turned into a Fluent message on the
@@ -428,7 +428,7 @@ mod tests {
                 artists: vec!["artist".to_owned()],
                 album: "album".to_owned(),
                 cover: None,
-                duration: 60,
+                duration: Some(60),
             },
             kind,
         }

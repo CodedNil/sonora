@@ -33,6 +33,7 @@ jiff.workspace = true
 lofty.workspace = true
 kakasi.workspace = true
 log.workspace = true
+tracing.workspace = true
 md-5.workspace = true
 open.workspace = true
 opensubsonic.workspace = true
@@ -63,6 +64,8 @@ serde-saphyr.workspace = true
 storage.workspace = true
 symphonia.workspace = true
 tempfile.workspace = true
+tar.workspace = true
+zip.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 widevine.workspace = true
@@ -90,7 +93,7 @@ cpal = { workspace = true, features = ["realtime"] }
 windows.workspace = true
 
 [dev-dependencies]
-env_logger.workspace = true
+
 rustls.workspace = true
 
 [lints]

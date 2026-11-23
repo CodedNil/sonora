@@ -53,9 +53,12 @@ pub trait Tipped: Sized {
     fn tip(self, key: impl Into<SharedString>, perch: Perch) -> Self;
     /// Shows `text` on hover as it is, without a Fluent lookup.
     fn tip_label(self, text: impl Into<SharedString>, perch: Perch) -> Self;
-    /// Shows `text` on hover as it is, but only when `layout` drew it cut short, such as a title
-    /// that ends in an ellipsis. `layout` is the handle of the `StyledText` that renders `text`.
+    /// Shows the full title when its layout reports clipping.
     fn tip_clipped(self, text: impl Into<SharedString>, layout: TextLayout, perch: Perch) -> Self;
+    /// Shows the full text below its text box only when the single line does not fit.
+    fn tip_truncated(self, text: impl Into<SharedString>) -> Self
+    where
+        Self: Styled;
 }
 
 /// Places a tooltip bubble centred against its host, on the preferred side when the window has
@@ -78,16 +81,59 @@ impl<E: StatefulInteractiveElement + ParentElement> Tipped for E {
     fn tip_clipped(self, text: impl Into<SharedString>, layout: TextLayout, perch: Perch) -> Self {
         attach(self, text.into(), true, Some(layout), perch)
     }
+
+    fn tip_truncated(self, text: impl Into<SharedString>) -> Self
+    where
+        Self: Styled,
+    {
+        let text = text.into();
+        let measured = text.clone();
+        let host = Rc::new(Cell::new(Bounds::default()));
+        let clipped = Rc::new(Cell::new(false));
+        let bounds = host.clone();
+        let overflow = clipped.clone();
+        self.relative()
+            .child(
+                canvas(
+                    move |bounds, window, _| {
+                        host.set(bounds);
+                        clipped.set(
+                            crate::metrics::text_width(measured.clone(), window)
+                                > bounds.size.width,
+                        );
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .tooltip_show_delay(DELAY)
+            .tooltip(move |_, cx| {
+                let text = match overflow.get() {
+                    true => text.clone(),
+                    false => SharedString::default(),
+                };
+                cx.new(|_| Tooltip {
+                    hidden: false,
+                    text,
+                    raw: true,
+                    perch: Perch::Below,
+                    host: bounds.get(),
+                })
+                .into()
+            })
+    }
 }
 
 impl Render for Tooltip {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.hidden {
+        if self.hidden || self.text.is_empty() {
             return div().into_any_element();
         }
         let theme = *cx.theme();
         let follow = self.perch == Perch::Follow;
         let bubble = div()
+            .max_w((window.viewport_size().width - MARGIN * 2.).max(Pixels::ZERO))
             .px_2()
             .py_1()
             .rounded(theme.radius)

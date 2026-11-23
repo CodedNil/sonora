@@ -191,3 +191,49 @@ tags-composer = Composer
 tags-publisher = Publisher
 tags-isrc = ISRC
 tags-comment = Comment
+
+column-popularity = Popularity
+column-tags = Tags
+filter-bpm = BPM
+filter-collaborations = Collaborations
+filter-genre = { column-genre }
+filter-mood = Mood
+filter-play-count = Play count
+filter-playable = Playable only
+filter-popularity = { column-popularity }
+filter-tag = Tag
+library-play-liked-songs = Play favorites
+album-copyright-combined = © ℗ { $notice }
+artist-follow = Follow
+artist-following = Following
+artist-play = Play now
+date-added-days-ago = { $count ->
+    [one] 1 day ago
+   *[other] { $count } days ago
+}
+date-added-hours-ago = { $count ->
+    [one] 1 hour ago
+   *[other] { $count } hours ago
+}
+date-added-minutes-ago = { $count ->
+    [one] 1 minute ago
+   *[other] { $count } minutes ago
+}
+date-added-moments-ago = A few moments ago
+date-added-weeks-ago = { $count ->
+    [one] 1 week ago
+   *[other] { $count } weeks ago
+}
+detail-play-album = Play album
+detail-play-playlist = Play playlist
+mood-name = { $mood ->
+    [energetic] Energetic
+    [danceable] Danceable
+    [positive] Positive
+    [negative] Negative
+    [sad] Sad
+    [calming] Calming
+    [instrumental] Instrumental
+    [acoustic] Acoustic
+   *[other] { $fallback }
+    }

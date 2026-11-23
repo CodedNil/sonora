@@ -49,7 +49,7 @@ pub(crate) fn sound_picker(
     let custom_item = custom.then(|| {
         let equalizer = equalizer.clone();
         let index = scratch.unwrap_or_default();
-        MenuItem::new("equalizer-sound-custom", t!("settings-equalizer-custom"))
+        MenuItem::new("equalizer-sound-custom", t!("common-custom"))
             .selected(on_scratch)
             .when_some(settings.equalizer_profile_curve(index), |item, curve| {
                 item.leading(sketch(&curve))
@@ -71,7 +71,7 @@ pub(crate) fn sound_picker(
     );
 
     Picker::new(key, popovers, current)
-        .name(t!("equalizer-sound"))
+        .name(t!("settings-page-sound"))
         .leading(face)
         .scroll_after(height)
         .items(custom_item)
@@ -147,7 +147,7 @@ pub(crate) fn sound_name(settings: &AppSettings) -> SharedString {
         .map(|curve| Preset::matching(&curve));
     match (scratch == Some(playing), shaped.flatten()) {
         (true, Some(preset)) => i18n::lookup(preset_key(preset), None),
-        (true, None) => t!("settings-equalizer-custom"),
+        (true, None) => t!("common-custom"),
         (false, _) => settings
             .equalizer_profiles()
             .nth(playing)

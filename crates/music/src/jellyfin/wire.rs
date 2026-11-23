@@ -11,7 +11,7 @@ use serde::Deserialize;
 use crate::escape;
 use crate::{
     Album, ArtistRef, CoverSize, Credit, Encoding, Genre, LyricsLine, LyricsWord, Playlist,
-    ReleaseType, SavedArtist, Track, UserProfile, Voice, iso_8601_to_epoch,
+    ReleaseDate, ReleaseType, SavedArtist, Track, UserProfile, Voice, parse_timestamp,
 };
 
 /// Jellyfin counts time in ticks of 100 nanoseconds.
@@ -323,24 +323,22 @@ impl Covers {
             album_artist: item.album_artist.clone().unwrap_or_default(),
             album_id: item.album_id.clone().filter(|id| !id.is_empty()),
             cover,
-            duration: item.duration(),
-            added_at: iso_8601_to_epoch(item.date_created.as_deref()),
+            duration: (!item.duration().is_zero()).then(|| item.duration()),
+            added_at: item.date_created.as_deref().and_then(parse_timestamp),
             added_by: None,
             release_date: item
                 .premiere_date
                 .as_deref()
-                .and_then(crate::calendar::parse_release_date)
+                .and_then(crate::ReleaseDate::parse)
                 .or_else(|| crate::calendar::release_date(item.production_year?, 0, 0)),
             playcount: item.user_data.as_ref().and_then(|data| data.play_count),
-            popularity: 0,
             explicit: false,
             track_number: item.index_number.unwrap_or(0),
             disc_number: item.parent_index_number.unwrap_or(1).max(1),
-            isrc: None,
             genres: item.genres,
             languages: Vec::new(),
             credits,
-            ..Track::default()
+            ..Default::default()
         }
     }
 
@@ -367,25 +365,21 @@ impl Covers {
             cover,
             cover_large,
             release_type,
-            year,
-            track_count: item.song_count.or(item.child_count).unwrap_or(0),
+            track_count: item.song_count.or(item.child_count),
             release_date: item
                 .premiere_date
                 .as_deref()
                 .and_then(|date| date.get(..10))
                 .filter(|date| !date.ends_with("-01-01"))
-                .map(str::to_owned)
-                .unwrap_or_else(|| match year {
-                    0 => String::new(),
-                    _ => year.to_string(),
-                }),
+                .and_then(ReleaseDate::parse)
+                .or_else(|| ReleaseDate::from_year(year)),
             label: item
                 .studios
                 .iter()
                 .find_map(|studio| studio.name.clone())
                 .unwrap_or_default(),
             copyrights: Vec::new(),
-            added_at: iso_8601_to_epoch(item.date_created.as_deref()),
+            added_at: item.date_created.as_deref().and_then(parse_timestamp),
         }
     }
 
@@ -411,12 +405,12 @@ impl Covers {
             id: item.id,
             name: item.name.unwrap_or_default(),
             owner: String::new(),
-            owner_id: String::new(),
+            owner_id: None,
             owned: false,
-            collaborative: false,
+            can_edit_tracks: false,
             blend: false,
-            public: false,
-            track_count: item.child_count.or(item.song_count).unwrap_or(0),
+            public: None,
+            track_count: item.child_count.or(item.song_count),
             modified_at: None,
             read_only: false,
         }

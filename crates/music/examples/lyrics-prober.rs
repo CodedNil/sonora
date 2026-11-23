@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
         title: track.name.clone(),
         artist: track.artists.clone(),
         album: (!track.album.is_empty()).then(|| track.album.clone()),
-        duration: track.duration,
+        duration: track.duration.unwrap_or_default(),
         track: track.id.clone().map(|id| TrackKey { provider, id }),
     };
 
@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
         track.name,
         track.artists,
         track.album,
-        clock(track.duration),
+        track.duration.map(clock).unwrap_or_default(),
         track
             .id
             .as_deref()

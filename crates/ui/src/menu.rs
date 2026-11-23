@@ -5,9 +5,9 @@ use std::time::Duration;
 use gpui::prelude::*;
 use gpui::{
     AbsoluteLength, Anchor, AnyElement, AnyWindowHandle, App, Bounds, ClickEvent, DefiniteLength,
-    Div, ElementId, Entity, FocusHandle, Focusable as _, Global, Interactivity, Length,
+    Div, ElementId, Entity, FocusHandle, Focusable as _, FontWeight, Global, Interactivity, Length,
     MouseButton, MouseClickEvent, MouseDownEvent, Pixels, Point, ScrollWheelEvent, SharedString,
-    Size, Stateful, StyleRefinement, Window, anchored, deferred, div, phi, point, px, svg,
+    Size, Stateful, StyleRefinement, Window, anchored, deferred, div, point, px, svg,
 };
 
 use crate::Artwork;
@@ -882,8 +882,8 @@ impl RenderOnce for Menu {
                     .w_full()
                     .min_w_0()
                     .flex_col()
-                    .px_3()
-                    .py_1()
+                    .px(theme.metrics.pad * 1.5)
+                    .py(theme.metrics.pad / 2.)
                     .child(content)
                     .into_any_element();
             }
@@ -1266,7 +1266,7 @@ impl RenderOnce for Menu {
             // field or a page header would otherwise take that text and draw bigger or shorter
             // rows than everywhere else
             .text_size(theme.text(crate::Text::Body))
-            .line_height(phi())
+            .line_height(window.line_height())
             .p_1()
             .rounded(theme.radius)
             .border_1()
@@ -1484,9 +1484,34 @@ fn step(
     }
     search.input.update(cx, |_, cx| cx.notify());
 }
+/// The shared sentence-case label for custom context-menu controls and drag rows.
+pub fn menu_label(label: impl Into<SharedString>, cx: &App) -> Div {
+    div()
+        .text_size(cx.theme().text(crate::Text::Body))
+        .text_color(cx.theme().foreground)
+        .child(label.into())
+}
 
-/// Whether a menu is open and waiting for escape to close it, so a dialog under it leaves that
-/// escape to the menu.
+/// A subdued section title inside a context-menu editor, without sidebar heading capitals.
+pub fn menu_heading(label: impl Into<SharedString>, cx: &App) -> Div {
+    div()
+        .text_size(cx.theme().text(crate::Text::Small))
+        .text_color(cx.theme().muted_foreground)
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(label.into())
+}
+
+/// Shared height, typography and control spacing for custom menu editor rows.
+pub fn menu_row(cx: &App) -> Div {
+    div()
+        .h(cx.theme().metrics.row)
+        .flex()
+        .items_center()
+        .gap_3()
+        .text_size(cx.theme().text(crate::Text::Body))
+        .text_color(cx.theme().foreground)
+}
+
 pub(crate) fn menu_open(cx: &App) -> bool {
     cx.try_global::<Escape>()
         .is_some_and(|escape| escape.0.borrow().is_some())

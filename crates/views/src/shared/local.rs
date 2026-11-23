@@ -2,6 +2,7 @@ use gpui::{App, ElementId, PathPromptOptions};
 use i18n::t;
 use music::Playlist;
 use state::{Outcome, Sonora, Toasts};
+use tracing::warn;
 use ui::{Button, Vacancy};
 
 /// The extension an exported playlist is saved with, read as UTF-8 by every player.
@@ -54,8 +55,8 @@ pub(crate) fn import_playlist(cx: &mut App) {
         let path = match receiver.await {
             Ok(Ok(Some(paths))) => paths.into_iter().next(),
             Ok(Err(error)) => {
-                log::warn!("library: cannot open the file dialog: {error:#}");
-                cx.update(|cx| Toasts::show(Outcome::Failed, "toast-file-dialog-failed", cx));
+                warn!("library: cannot open the file dialog: {error:#}");
+                cx.update(|cx| Toasts::show(Outcome::Failed, "common-file-dialog-failed", cx));
                 None
             }
             _ => None,
@@ -84,8 +85,8 @@ pub(crate) fn export_playlist(playlist: Playlist, cx: &mut App) {
         let path = match receiver.await {
             Ok(Ok(path)) => path,
             Ok(Err(error)) => {
-                log::warn!("library: cannot open the file dialog: {error:#}");
-                cx.update(|cx| Toasts::show(Outcome::Failed, "toast-file-dialog-failed", cx));
+                warn!("library: cannot open the file dialog: {error:#}");
+                cx.update(|cx| Toasts::show(Outcome::Failed, "common-file-dialog-failed", cx));
                 None
             }
             Err(_) => None,

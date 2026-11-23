@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::actions;
@@ -59,6 +60,8 @@ const PRIMARY_SELECTION: bool = cfg!(any(target_os = "linux", target_os = "freeb
 static PRIMARY_PASTE: AtomicBool = AtomicBool::new(true);
 
 type Motion = fn(&str, usize) -> usize;
+/// What the trailing button of a field does when pressed.
+type Act = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 
 /// Set while a press that `keep_focus` claimed for a field is dispatched, so the field it landed
 /// outside of does not let go of the focus.
@@ -271,8 +274,13 @@ pub struct Input {
     /// The Fluent key of what a screen reader calls the field, when that differs from its hint.
     name: Option<SharedString>,
     icon: Option<SharedString>,
+    icon_foreground: bool,
     compact: bool,
     tucked: bool,
+    pill: bool,
+    /// A button at the far end of the field: its icon, its tooltip key and what it does.
+    action: Option<(SharedString, SharedString, Act)>,
+    transparent: bool,
     blurred: bool,
     /// Whether the field draws no fill or border of its own, for one that is the whole surface
     /// it sits on.
@@ -315,8 +323,12 @@ impl Input {
             hint: hint.into(),
             name: None,
             icon: None,
+            icon_foreground: false,
             compact: false,
             tucked: false,
+            pill: false,
+            action: None,
+            transparent: false,
             blurred: false,
             bare: false,
             clearable: false,
@@ -345,6 +357,12 @@ impl Input {
         self
     }
 
+    /// Draws the leading icon in the theme's foreground color.
+    pub fn icon_foreground(mut self) -> Self {
+        self.icon_foreground = true;
+        self
+    }
+
     pub fn compact(mut self) -> Self {
         self.compact = true;
         self
@@ -352,6 +370,30 @@ impl Input {
 
     pub fn tucked(mut self) -> Self {
         self.tucked = true;
+        self
+    }
+
+    /// Rounds the field's ends fully, for a search field that stands on its own in a bar.
+    pub fn pill(mut self) -> Self {
+        self.pill = true;
+        self
+    }
+
+    /// Ends the field with a button behind a rule, showing `icon` with the Fluent `tooltip`,
+    /// which runs `act` when pressed.
+    pub fn action(
+        mut self,
+        icon: impl Into<SharedString>,
+        tooltip: impl Into<SharedString>,
+        act: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.action = Some((icon.into(), tooltip.into(), Rc::new(act)));
+        self
+    }
+
+    /// Lets a containing control provide the field's background.
+    pub fn transparent(mut self) -> Self {
+        self.transparent = true;
         self
     }
 
@@ -449,7 +491,7 @@ impl Input {
         cx.notify();
     }
 
-    fn placeholder(&self) -> SharedString {
+    pub fn placeholder(&self) -> SharedString {
         match self.hint.is_empty() {
             true => SharedString::default(),
             false => i18n::lookup(&self.hint, None),

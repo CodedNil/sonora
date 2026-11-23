@@ -135,7 +135,7 @@ impl SettingsView {
                     }))
                     .into_any_element(),
                 false => Button::new(SharedString::from(format!("scrobble-link-{service}")))
-                    .label(t!("settings-scrobble-connect"))
+                    .label(t!("common-connect"))
                     .small()
                     .outline()
                     .on_click(
@@ -310,7 +310,7 @@ impl SettingsView {
         .action(
             Button::new("settings-scrobble-submit")
                 .primary()
-                .label(t!("settings-scrobble-connect"))
+                .label(t!("common-connect"))
                 .on_click(cx.listener(move |this, _, _, cx| this.link_scrobble(service, link, cx))),
         )
         .on_dismiss(cx.listener(|this, _, _, cx| this.close_scrobble(cx)))

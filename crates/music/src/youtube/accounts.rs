@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use tracing::debug;
 
 use ytmusic::{Identity, YtMusic};
 
@@ -39,7 +40,7 @@ pub async fn list(cookies: &str) -> Vec<Account> {
         {
             Ok(identities) => identities,
             Err(error) => {
-                log::debug!("youtube: authuser {index} names no account: {error:#}");
+                debug!("youtube: authuser {index} names no account: {error:#}");
                 break;
             }
         };

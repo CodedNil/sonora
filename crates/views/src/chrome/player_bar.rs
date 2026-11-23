@@ -4,8 +4,8 @@ use ui::ActiveTheme as _;
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point,
-    Render, SharedString, Stateful,
+    AnyElement, App, Context, Entity, MouseButton, MouseMoveEvent, Pixels, Point, Render,
+    SharedString, Stateful,
 };
 use gpui::{Div, Window, deferred, div, px, rems};
 use i18n::t;
@@ -17,7 +17,7 @@ use crate::chrome::sessions_button::SessionsButton;
 use crate::chrome::timeline::Timeline;
 use crate::chrome::{Chrome, SidebarRight};
 use crate::chrome::{jam, members};
-use crate::shared::menus::ItemMenu;
+use crate::shared::menus::{CardMenu, ItemMenu};
 use crate::shared::now_playing::track_details;
 use crate::shared::pins::Pinned as _;
 use crate::shared::transport::{COVER_FLIGHT, CoverAway, CoverRoom, ShellSwap, moved, transport};
@@ -188,7 +188,7 @@ impl PlayerBar {
             let settings = self.settings.read(cx);
             (
                 settings.sidebar_right_open(),
-                settings.sidebar_right_tab(),
+                settings.fullscreen_tab().unwrap_or(SideTab::Queue),
                 settings.lyrics_enabled(),
             )
         };
@@ -246,7 +246,7 @@ impl PlayerBar {
             .ghost()
             .small()
             .icon("icons/maximize.svg")
-            .tooltip_above("player-fullscreen")
+            .tooltip_above("queue-now-playing")
             .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleFullscreen), cx));
         match cx.try_global::<ShellSwap>().copied().unwrap_or_default() {
             ShellSwap::Closing => deferred(button).into_any_element(),
@@ -325,13 +325,7 @@ impl PlayerBar {
             )
             .when_some(album, |this, album| this.aria_label(album))
             .when(track.is_some(), |this| {
-                this.on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                        window.prevent_default();
-                        this.open_playing_menu(event.position, cx);
-                    }),
-                )
+                this.on_mouse_down(MouseButton::Right, CardMenu::playing)
             })
             .child(
                 // The fullscreen player's cover flies to and from this one, which stays undrawn

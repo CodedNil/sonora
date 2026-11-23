@@ -183,7 +183,7 @@ impl Vault {
     pub fn unlock(&self, master: &[u8]) {
         let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, VERSION).extract(master);
         if self.keys.set(prk).is_err() {
-            log::debug!("vault: already unlocked");
+            tracing::debug!("vault: already unlocked");
         }
         self.settled.send_replace(true);
     }
@@ -214,7 +214,7 @@ impl Vault {
             .await
             .is_err()
         {
-            log::warn!("vault: still locked after {UNLOCK_WAIT:?}, looking past it");
+            tracing::warn!("vault: still locked after {UNLOCK_WAIT:?}, looking past it");
         }
         self.keys.get()
     }
@@ -237,11 +237,11 @@ impl Vault {
             let path = item.path();
             if let Err(error) = remove(&path) {
                 failed = true;
-                log::warn!("vault: cannot forget the cached tracks: {error}");
+                tracing::warn!("vault: cannot forget the cached tracks: {error}");
             }
         }
         if !failed {
-            log::info!("vault: forgot every cached track");
+            tracing::info!("vault: forgot every cached track");
         }
         *self.used.lock().unwrap_or_else(|held| held.into_inner()) = None;
     }
@@ -280,9 +280,9 @@ impl Vault {
     /// Removes every download.
     pub fn forget_downloads(&self) {
         match fs::remove_dir_all(&self.pinned) {
-            Ok(()) => log::info!("vault: removed every download"),
+            Ok(()) => tracing::info!("vault: removed every download"),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => log::warn!("vault: cannot remove the downloads: {error}"),
+            Err(error) => tracing::warn!("vault: cannot remove the downloads: {error}"),
         }
     }
 
@@ -392,7 +392,7 @@ impl Shelf {
         match self.promote_cached(id, kept).await {
             Ok(kept) => Some(kept),
             Err(error) => {
-                log::warn!("vault: cannot move a cached track to the downloads: {error:#}");
+                tracing::warn!("vault: cannot move a cached track to the downloads: {error:#}");
                 self.find_in(prk, Place::Cache, id, variant)
             }
         }
@@ -447,7 +447,7 @@ impl Shelf {
         let pending = match self.begin(place, id, variant, Box::new(facts)) {
             Ok(pending) => pending,
             Err(error) => {
-                log::debug!("vault: not keeping a {} track: {error:#}", self.provider);
+                tracing::debug!("vault: not keeping a {} track: {error:#}", self.provider);
                 None
             }
         };
@@ -526,7 +526,7 @@ impl Shelf {
         }
         copy(kept, pending)?;
         fs::remove_file(old).ok();
-        log::debug!(
+        tracing::debug!(
             "vault: rewrote a sealed {} download as a file",
             self.provider
         );
@@ -554,9 +554,11 @@ impl Shelf {
             return;
         };
         match fs::remove_file(path) {
-            Ok(()) => log::debug!("vault: removed a {} download", self.provider),
+            Ok(()) => tracing::debug!("vault: removed a {} download", self.provider),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => log::warn!("vault: cannot remove a {} download: {error}", self.provider),
+            Err(error) => {
+                tracing::warn!("vault: cannot remove a {} download: {error}", self.provider)
+            }
         }
     }
 
@@ -572,7 +574,7 @@ impl Shelf {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
             Err(error) => {
-                log::warn!("vault: cannot open a kept track: {error}");
+                tracing::warn!("vault: cannot open a kept track: {error}");
                 return None;
             }
         };
@@ -588,7 +590,7 @@ impl Shelf {
                 Some(kept)
             }
             Err(error) => {
-                log::warn!(
+                tracing::warn!(
                     "vault: dropping a damaged {} track: {error:#}",
                     self.provider
                 );
@@ -608,7 +610,7 @@ impl Shelf {
             .context("the vault is locked")?;
         copy(kept, pending)?;
         fs::remove_file(cached).ok();
-        log::debug!(
+        tracing::debug!(
             "vault: moved a cached {} track to the downloads",
             self.provider
         );
@@ -647,7 +649,7 @@ impl Shelf {
         let at = read.iter().position(|byte| *byte == b'\n')?;
         let name = std::str::from_utf8(&read[..at]).ok()?;
         if name.is_empty() || name.starts_with('.') || name.contains(['/', '\\']) {
-            log::warn!("vault: a {} index names no usable file", self.provider);
+            tracing::warn!("vault: a {} index names no usable file", self.provider);
             return None;
         }
         let path = self.folder(Place::Pinned).join(name);
@@ -662,7 +664,7 @@ impl Shelf {
     fn find_plain(&self, id: &str) -> Option<Kept> {
         let (path, facts) = self.plain_file(id)?;
         let file = File::open(&path)
-            .inspect_err(|error| log::warn!("vault: cannot open a plain download: {error}"))
+            .inspect_err(|error| tracing::warn!("vault: cannot open a plain download: {error}"))
             .ok()?;
         let length = file.metadata().ok()?.len();
         Some(Kept {
@@ -686,10 +688,10 @@ impl Shelf {
             return;
         };
         match fs::remove_file(&path) {
-            Ok(()) => log::debug!("vault: removed a plain {} download", self.provider),
+            Ok(()) => tracing::debug!("vault: removed a plain {} download", self.provider),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => {
-                log::warn!(
+                tracing::warn!(
                     "vault: cannot remove a plain {} download: {error}",
                     self.provider
                 );
@@ -912,7 +914,7 @@ impl Source for Stored {
     async fn chunk(&mut self) -> Result<Option<Bytes>> {
         let chunk = self.open_next();
         if let Err(error) = &chunk {
-            log::warn!("vault: cannot read a kept track: {error:#}");
+            tracing::warn!("vault: cannot read a kept track: {error:#}");
             if self.key.is_some() {
                 fs::remove_file(&self.path).ok();
             }
@@ -1071,7 +1073,7 @@ impl<S: Source> Source for Recording<S> {
             };
             match written {
                 Ok(pending) => self.pending = pending,
-                Err(error) => log::warn!("vault: cannot keep the track: {error:#}"),
+                Err(error) => tracing::warn!("vault: cannot keep the track: {error:#}"),
             }
         }
         Ok(chunk)
@@ -1181,7 +1183,7 @@ impl Pending {
         self.file.flush()?;
         let size = self.file.metadata()?.len();
         fs::rename(&self.temporary, &self.path).context("cannot move the entry into place")?;
-        log::debug!(
+        tracing::debug!(
             "vault: kept a track, {:.1} MiB",
             size as f64 / (1024.0 * 1024.0)
         );
@@ -1239,7 +1241,7 @@ impl Pending {
         if let Some(older) = older.filter(|older| *older != file_name && !older.contains('/')) {
             fs::remove_file(self.path.join(older)).ok();
         }
-        log::debug!(
+        tracing::debug!(
             "vault: kept a plain download, {:.1} MiB",
             self.written as f64 / (1024.0 * 1024.0)
         );

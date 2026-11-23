@@ -313,8 +313,8 @@ impl Render for PlaylistEditor {
         let asking = plain(&edit);
         let title = match &edit {
             Edit::Create { .. } => t!("playlist-create-title"),
-            Edit::Details(_) => t!("playlist-edit-title"),
-            Edit::Delete(_) => t!("playlist-delete-title"),
+            Edit::Details(_) => t!("menu-edit-playlist"),
+            Edit::Delete(_) => t!("menu-delete-playlist"),
             Edit::Again { .. } => t!("playlist-again-title"),
         };
         // A blank new playlist can come from an M3U file instead, which the local shelf reads.

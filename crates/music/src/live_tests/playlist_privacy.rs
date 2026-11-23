@@ -85,7 +85,7 @@ async fn reported(api: &dyn MusicApi, playlist_id: &str) -> Option<bool> {
         .playlist(playlist_id)
         .await
         .ok()
-        .map(|detail| detail.playlist.public);
+        .and_then(|detail| detail.playlist.public);
     let listed = api
         .playlists()
         .await
@@ -95,7 +95,7 @@ async fn reported(api: &dyn MusicApi, playlist_id: &str) -> Option<bool> {
                 .into_iter()
                 .find(|playlist| playlist.id == playlist_id)
         })
-        .map(|playlist| playlist.public);
+        .and_then(|playlist| playlist.public);
 
     match (detail, listed) {
         (Some(true), _) | (_, Some(true)) => Some(true),

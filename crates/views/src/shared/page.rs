@@ -1,21 +1,45 @@
 use std::collections::HashMap;
 
 use gpui::prelude::*;
-use gpui::{App, Div, Entity, Pixels, ScrollHandle, Window, div, px};
+use gpui::{AnyElement, App, Div, ElementId, Entity, Pixels, ScrollHandle, Window, div, px};
+use ui::ActiveTheme as _;
 
 use state::{AppSettings, FilterValue, Playback};
-use ui::ActiveTheme as _;
 use ui::{
-    Filter, FilterChange, Listing, Table, TableSource, TableState, Viewport, quantize, scrolled,
+    Button, Filter, FilterChange, FilterKind, Listing, TableState, Viewport, quantize, scrolled,
 };
 
-use crate::chrome::Chrome;
 use crate::shared::cells;
 use crate::shared::tracks::{self, TrackSource};
 
-/// The width of the border around a framed table, which starts its rows this much lower than
-/// the box the page measures the scroll from.
-const TABLE_BORDER: Pixels = px(1.);
+/// Places a page heading and its controls in one consistent row.
+pub(crate) fn row(leading: impl IntoElement, trailing: impl IntoElement) -> AnyElement {
+    div()
+        .flex()
+        .w_full()
+        .min_w_0()
+        .items_center()
+        .gap_x_4()
+        .justify_between()
+        .child(leading)
+        .child(trailing)
+        .into_any_element()
+}
+
+/// Creates a small directional button used by paged decks and horizontal shelves.
+pub(crate) fn arrow_button(id: impl Into<ElementId>, previous: bool) -> Button {
+    Button::new(id)
+        .small()
+        .outline()
+        .icon(match previous {
+            true => "icons/chevron-left.svg",
+            false => "icons/chevron-right.svg",
+        })
+        .tooltip(match previous {
+            true => "common-previous",
+            false => "common-next",
+        })
+}
 
 pub(crate) fn store(
     settings: &Entity<AppSettings>,
@@ -46,25 +70,35 @@ pub(crate) fn snapshot(
 ) -> HashMap<String, FilterValue> {
     let mut stored = into;
     for axis in axes {
-        match axis {
-            Filter::Range(axis) if axis.whole() => {
-                stored.remove(axis.key);
+        let value = match axis.kind {
+            FilterKind::Range(range) => {
+                (!range.whole()).then_some(FilterValue::Range(range.value.0, range.value.1))
             }
-            Filter::Range(axis) => {
-                stored.insert(
-                    axis.key.to_owned(),
-                    FilterValue::Range(axis.value.0, axis.value.1),
-                );
+            FilterKind::Flag(on) => on.then_some(FilterValue::Flag(true)),
+            FilterKind::Choice(options) => {
+                let picked: Vec<_> = options
+                    .into_iter()
+                    .filter(|option| option.on)
+                    .map(|option| option.id.to_string())
+                    .collect();
+                (!picked.is_empty()).then_some(FilterValue::Choice(picked))
             }
-            Filter::Flag(axis) if axis.on => {
-                stored.insert(axis.key.to_owned(), FilterValue::Flag(true));
-            }
-            Filter::Flag(axis) => {
-                stored.remove(axis.key);
-            }
-        }
+        };
+        match value {
+            Some(value) => stored.insert(axis.key.to_owned(), value),
+            None => stored.remove(axis.key),
+        };
     }
     stored
+}
+
+/// Clears saved filter axes, including ones not currently offered, while keeping text search.
+pub(crate) fn clear_filters(settings: &Entity<AppSettings>, key: &str, cx: &mut App) {
+    settings.update(cx, |settings, cx| {
+        let mut filters = settings.filters(key).unwrap_or_default();
+        filters.retain(|_, value| matches!(value, FilterValue::Text(_)));
+        settings.set_filters(key, filters, cx);
+    });
 }
 
 /// Applies the stored axes a table has not narrowed itself yet. Ranges clamp to the current
@@ -81,27 +115,29 @@ pub(crate) fn restore(
         return;
     };
     for axis in table.filters(cx) {
-        match axis {
-            Filter::Range(axis) => {
-                let Some(FilterValue::Range(low, high)) = stored.get(axis.key) else {
-                    continue;
-                };
+        let key = axis.key;
+        match (axis.kind, stored.get(key)) {
+            (FilterKind::Range(range), Some(FilterValue::Range(low, high))) => {
                 let value = (
-                    low.clamp(axis.bounds.0, axis.bounds.1),
-                    high.clamp(axis.bounds.0, axis.bounds.1),
+                    low.clamp(range.bounds.0, range.bounds.1),
+                    high.clamp(range.bounds.0, range.bounds.1),
                 );
-                if value != axis.bounds {
-                    table.filter(FilterChange::Range(axis.key, value), cx);
+                if value != range.bounds && value != range.value {
+                    table.filter(FilterChange::Range(key, Some(value)), cx);
                 }
             }
-            Filter::Flag(axis) => {
-                let Some(FilterValue::Flag(on)) = stored.get(axis.key) else {
-                    continue;
-                };
-                if *on != axis.on {
-                    table.filter(FilterChange::Flag(axis.key, *on), cx);
+            (FilterKind::Flag(on), Some(FilterValue::Flag(wanted))) if on != *wanted => {
+                table.filter(FilterChange::Flag(key, *wanted), cx);
+            }
+            (FilterKind::Choice(options), Some(FilterValue::Choice(picked))) => {
+                for option in options {
+                    let wanted = picked.iter().any(|id| option.id == id.as_str());
+                    if wanted != option.on {
+                        table.filter(FilterChange::Choice(key, option.id, wanted), cx);
+                    }
                 }
             }
+            _ => {}
         }
     }
 }
@@ -161,52 +197,7 @@ pub(crate) fn resize(
     table.set_width(next, cx);
 }
 
-/// Whether a table that fills the page stands framed instead, inset with rounded corners and a
-/// border like the artist page's. It does once the content area outgrows `metrics.page` and the
-/// page stands centred.
-pub(crate) fn framed(window: &Window, cx: &App) -> bool {
-    Chrome::margin(window, cx) > Pixels::ZERO
-}
-
-/// The width of a table that fills the page. Once the table is `framed` it leaves room for the
-/// frame's inset and border.
-pub(crate) fn bleed_width(window: &Window, cx: &App) -> Pixels {
-    let reserved = match framed(window, cx) {
-        true => reserved(cx.theme().metrics.inset),
-        false => Pixels::ZERO,
-    };
-    cells::content_width(window, reserved, cx)
-}
-
-/// Wraps a table that fills the page and draws the frame around it when `framed` is true. The
-/// table's width has to come from `bleed_width` so its rows match the frame.
-pub(crate) fn bleed<S: TableSource>(table: Table<S>, framed: bool, cx: &App) -> Div {
-    let theme = cx.theme();
-    div()
-        .when(framed, |this| this.px(theme.metrics.inset))
-        .child(table.when(framed, |table| {
-            table
-                .rounded(theme.radius)
-                .border_1()
-                .border_color(theme.border)
-        }))
-}
-
-/// Moves a viewport measured from a framed table's outer edge onto its rows, past the border.
-pub(crate) fn past_border(viewport: Viewport) -> Viewport {
-    Viewport {
-        top: (viewport.top - TABLE_BORDER).max(Pixels::ZERO),
-        ..viewport
-    }
-}
-
-/// The viewport of a table below the page hero, with the band the player bar covers marked.
-pub(crate) fn viewport(
-    scroll: &ScrollHandle,
-    inset: Pixels,
-    window: &Window,
-    cx: &App,
-) -> Viewport {
+pub(crate) fn viewport(scroll: &ScrollHandle, header: Pixels, window: &Window) -> Viewport {
     quantize(scroll, window);
     let hero = scroll
         .bounds_for_item(0)
@@ -214,5 +205,42 @@ pub(crate) fn viewport(
         .unwrap_or_default();
     let visible = scroll.bounds().size.height;
 
-    Viewport::measured(scrolled(scroll) - inset - hero, visible, window).covered(Chrome::bottom(cx))
+    let mut viewport =
+        Viewport::measured(scrolled(scroll) - hero + header, visible - header, window);
+    viewport.underlap = header;
+    viewport
+}
+
+/// Reveals the compact header as the full hero scrolls away, keeping table and snap targets below it.
+pub(crate) fn sticky(bar: &Entity<ui::Scrollbar>, cx: &App) -> Pixels {
+    let bar = bar.read(cx);
+    let scroll = bar.scroll();
+    let height = cx.theme().metrics.control + cx.theme().metrics.pad * 2.;
+    let hero = scroll.bounds_for_item(0).map(|bounds| bounds.size.height);
+    let shown = hero.is_some_and(|hero| scrolled(scroll) + height >= hero);
+    let height = match shown {
+        true => height,
+        false => Pixels::ZERO,
+    };
+    bar.anchors().set_inset(height);
+    height
+}
+
+/// The shared surface for a compact page header, above the sticky table headings.
+pub(crate) fn header(content: impl IntoElement, inset: Pixels, cx: &App) -> Div {
+    ui::popover_surface(
+        div()
+            .absolute()
+            .top_0()
+            .left(inset)
+            .right(inset)
+            .px(cx.theme().metrics.pad)
+            .rounded_tl(cx.theme().radius)
+            .rounded_tr(cx.theme().radius)
+            .min_w_0()
+            .overflow_hidden()
+            .occlude(),
+        cx,
+    )
+    .child(content)
 }

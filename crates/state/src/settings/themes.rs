@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use tracing::{error, warn};
 
 use anyhow::{Context as _, Result};
 use base64::Engine as _;
@@ -75,9 +76,7 @@ static BUNDLED_THEMES: LazyLock<Vec<ThemeVariant>> = LazyLock::new(|| {
                     bundled: true,
                     ..theme
                 })
-                .inspect_err(|error| {
-                    log::error!("settings: cannot load bundled theme {id}: {error:#}")
-                })
+                .inspect_err(|error| error!("settings: cannot load bundled theme {id}: {error:#}"))
                 .ok()
         })
         .collect::<Vec<_>>();
@@ -230,7 +229,7 @@ pub(super) fn load(directory: &Path, previous: &[ThemeVariant]) -> Loaded {
     match fs::symlink_metadata(directory) {
         Ok(metadata) if metadata.file_type().is_dir() => {}
         Ok(_) => {
-            log::warn!(
+            warn!(
                 "settings: themes path is not a directory: {}",
                 directory.display()
             );
@@ -243,7 +242,7 @@ pub(super) fn load(directory: &Path, previous: &[ThemeVariant]) -> Loaded {
             };
         }
         Err(error) => {
-            log::warn!("settings: cannot inspect {}: {error}", directory.display());
+            warn!("settings: cannot inspect {}: {error}", directory.display());
             return kept(true);
         }
     }
@@ -257,7 +256,7 @@ pub(super) fn load(directory: &Path, previous: &[ThemeVariant]) -> Loaded {
             continue;
         };
         if reserved(id) {
-            log::warn!(
+            warn!(
                 "settings: theme {} uses a reserved identifier",
                 path.display()
             );
@@ -270,11 +269,11 @@ pub(super) fn load(directory: &Path, previous: &[ThemeVariant]) -> Loaded {
     let mut retry = false;
     for folder in folders {
         let Some(family) = folder.file_name().and_then(|name| name.to_str()) else {
-            log::warn!("settings: theme folder is not UTF-8: {}", folder.display());
+            warn!("settings: theme folder is not UTF-8: {}", folder.display());
             continue;
         };
         if reserved(family) {
-            log::warn!(
+            warn!(
                 "settings: theme folder {} uses a reserved identifier",
                 folder.display()
             );
@@ -302,7 +301,7 @@ pub(super) fn load(directory: &Path, previous: &[ThemeVariant]) -> Loaded {
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) => {
-                log::warn!("settings: cannot read theme {}: {error}", path.display());
+                warn!("settings: cannot read theme {}: {error}", path.display());
                 retry = true;
                 themes.extend(earlier());
                 continue;
@@ -311,7 +310,7 @@ pub(super) fn load(directory: &Path, previous: &[ThemeVariant]) -> Loaded {
         match parse(&bytes, &path.display().to_string(), &family) {
             Ok(theme) => themes.push(ThemeVariant { id, ..theme }),
             Err(error) => {
-                log::warn!("settings: cannot load theme {}: {error:#}", path.display());
+                warn!("settings: cannot load theme {}: {error:#}", path.display());
                 themes.extend(earlier());
             }
         }
@@ -529,7 +528,7 @@ pub(super) fn install(
         {
             let stale = directory.join(format!("{}.json", variant.id));
             if let Err(error) = fs::remove_file(&stale) {
-                log::warn!("settings: cannot delete {}: {error}", stale.display());
+                warn!("settings: cannot delete {}: {error}", stale.display());
             }
         }
         return Ok(id);
@@ -645,7 +644,7 @@ fn parse(bytes: &[u8], origin: &str, family: &str) -> Result<ThemeVariant> {
 /// skipped. Fails on the first entry that cannot be read, after logging it.
 fn entries(directory: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), ()> {
     let failed = |error: std::io::Error| {
-        log::warn!("settings: cannot read {}: {error}", directory.display());
+        warn!("settings: cannot read {}: {error}", directory.display());
     };
     let mut files = Vec::new();
     let mut folders = Vec::new();
@@ -671,7 +670,7 @@ fn entries(directory: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), ()> {
 fn utf8_stem(path: &Path) -> Option<&str> {
     let stem = path.file_stem().and_then(|stem| stem.to_str());
     if stem.is_none() {
-        log::warn!("settings: theme filename is not UTF-8: {}", path.display());
+        warn!("settings: theme filename is not UTF-8: {}", path.display());
     }
     stem
 }

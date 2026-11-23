@@ -73,7 +73,7 @@ fn publish(window: AnyWindowHandle, last: &mut Last, cx: &mut App) {
         return;
     };
     if let Err(error) = window.update(cx, |_, window, _| window.set_window_title(&title)) {
-        log::debug!("window title: cannot reach the main window: {error:#}");
+        tracing::debug!("window title: cannot reach the main window: {error:#}");
         last.forget();
     }
 }

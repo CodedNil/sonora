@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
+use tracing::warn;
 
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
@@ -54,7 +55,7 @@ fn discard(cover: Option<PathBuf>) {
         && let Err(error) = std::fs::remove_file(&path)
         && error.kind() != std::io::ErrorKind::NotFound
     {
-        log::warn!("local: cannot delete {}: {error}", path.display());
+        warn!("local: cannot delete {}: {error}", path.display());
     }
 }
 
@@ -197,19 +198,19 @@ fn playlist_from(stored: Stored, tracks: &[Track]) -> Playlist {
         .cover
         .map(|path| format!("file://{}", path.display()));
     Playlist {
+        read_only: false,
         revision: None,
         id: stored.id,
         name: stored.name,
         owner: String::new(),
-        owner_id: String::new(),
+        owner_id: None,
         owned: true,
-        collaborative: false,
+        can_edit_tracks: true,
         blend: false,
-        public: false,
+        public: Some(false),
         cover: own.or_else(|| tracks.iter().find_map(|track| track.cover.clone())),
-        track_count: tracks.len() as u32,
-        modified_at: Some(stored.modified_at / 1_000),
-        read_only: false,
+        track_count: Some(tracks.len() as u32),
+        modified_at: crate::Timestamp::from_millisecond(stored.modified_at).ok(),
     }
 }
 
@@ -320,7 +321,7 @@ impl MusicApi for LocalClient {
                     .iter()
                     .find(|track| track.id.as_deref() == Some(id.as_str()))
                     .cloned()?;
-                track.added_at = Some(added_at);
+                track.added_at = crate::Timestamp::from_second(added_at).ok();
                 Some(track)
             })
             .collect())
@@ -514,7 +515,7 @@ impl MusicApi for LocalClient {
                     .iter()
                     .find(|album| album.id == id)
                     .cloned()?;
-                album.added_at = Some(added_at);
+                album.added_at = crate::Timestamp::from_second(added_at).ok();
                 Some(album)
             })
             .collect())
@@ -540,7 +541,7 @@ impl MusicApi for LocalClient {
                     .iter()
                     .find(|artist| artist.id == id)
                     .cloned()?;
-                artist.added_at = Some(added_at);
+                artist.added_at = crate::Timestamp::from_second(added_at).ok();
                 Some(artist)
             })
             .collect())
@@ -716,7 +717,7 @@ impl MusicApi for LocalClient {
         let mut sections = Vec::new();
 
         let mut recent_albums = albums.clone();
-        recent_albums.sort_by_key(|album| std::cmp::Reverse(album.added_at.unwrap_or(i64::MIN)));
+        recent_albums.sort_by_key(|album| std::cmp::Reverse(album.added_at));
         let recent_items: Vec<GenreItem> = recent_albums
             .into_iter()
             .take(15)
@@ -757,7 +758,7 @@ impl MusicApi for LocalClient {
         if !artists.is_empty() {
             fastrand::shuffle(&mut artists);
             sections.push(GenreSection {
-                title: "home-artists".to_owned(),
+                title: "nav-artists".to_owned(),
                 items: artists
                     .into_iter()
                     .take(15)
@@ -828,19 +829,16 @@ mod tests {
             album_artist: String::new(),
             album_id: None,
             cover: None,
-            duration: Duration::from_secs(180),
+            duration: Some(Duration::from_secs(180)),
             added_at: None,
             added_by: None,
+            release_date: None,
             playcount: None,
-            popularity: 50,
+            popularity: Some(50),
             explicit: false,
             track_number: 1,
             disc_number: 1,
-            isrc: None,
-            tags: Vec::new(),
-            languages: Vec::new(),
-            credits: Vec::new(),
-            ..Track::default()
+            ..Default::default()
         }
     }
 

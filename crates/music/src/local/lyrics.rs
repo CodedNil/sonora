@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
+use tracing::warn;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -77,7 +78,7 @@ fn sidecar(path: &Path) -> Option<Lyrics> {
             Ok(text) => lrc_lyrics(&text),
             Err(error) if error.kind() == ErrorKind::NotFound => None,
             Err(error) => {
-                log::warn!("lyrics: cannot read {}: {error}", sidecar_path.display());
+                warn!("lyrics: cannot read {}: {error}", sidecar_path.display());
                 None
             }
         }

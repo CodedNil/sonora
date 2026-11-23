@@ -118,7 +118,25 @@ fn warn_missing(language: Language, key: &str) {
         return;
     }
     missing.insert(key.into());
-    log::warn!("i18n: {key} is missing from {}", language.id());
+    tracing::warn!("i18n: {key} is missing from {}", language.id());
+}
+
+/// Groups a signed integer using the active locale, unless it is below `threshold`.
+pub fn grouped_number(value: i128, threshold: u128) -> SharedString {
+    if value.unsigned_abs() < threshold {
+        return value.to_string().into();
+    }
+    let mut digits = value.to_string();
+    let end = digits.len();
+    let start = usize::from(value < 0);
+    let separator = t!("number-group");
+    for at in (start + 1..end)
+        .rev()
+        .filter(|at| (end - at).is_multiple_of(3))
+    {
+        digits.insert_str(at, &separator);
+    }
+    digits.into()
 }
 
 fn format(language: Language, key: &str, args: Option<&FluentArgs>) -> Option<SharedString> {
@@ -130,7 +148,7 @@ fn format(language: Language, key: &str, args: Option<&FluentArgs>) -> Option<Sh
     let mut errors = Vec::new();
     let text = bundle.format_pattern(pattern, args, &mut errors);
     for error in &errors {
-        log::warn!("i18n: cannot format {key}: {error}");
+        tracing::warn!("i18n: cannot format {key}: {error}");
     }
     // The bundles are never dropped, so a message with nothing to fill in is shared as is.
     Some(match text {
@@ -148,13 +166,13 @@ fn bundle(language: Language) -> FluentBundle<FluentResource> {
             Ok(resource) => {
                 if let Err(errors) = bundle.add_resource(resource) {
                     for error in errors {
-                        log::error!("i18n: cannot load {}/{name}.ftl: {error}", language.id());
+                        tracing::error!("i18n: cannot load {}/{name}.ftl: {error}", language.id());
                     }
                 }
             }
             Err((resource, errors)) => {
                 for error in errors {
-                    log::error!("i18n: cannot parse {}/{name}.ftl: {error}", language.id());
+                    tracing::error!("i18n: cannot parse {}/{name}.ftl: {error}", language.id());
                 }
                 bundle.add_resource_overriding(resource);
             }

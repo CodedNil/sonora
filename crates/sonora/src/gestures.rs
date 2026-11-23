@@ -5,6 +5,7 @@
 //! `Ended` phase, so here a local monitor reads the event before it's passed to the window.
 
 use std::ptr::NonNull;
+use tracing::warn;
 
 use gpui::{App, NavigationDirection};
 use objc2_app_kit::{NSEvent, NSEventMask};
@@ -46,7 +47,7 @@ fn watch(sender: UnboundedSender<NavigationDirection>) -> bool {
         NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::Swipe, &block)
     };
     let Some(monitor) = monitor else {
-        log::warn!("gestures: macOS would not hand out a monitor for swipe events");
+        warn!("gestures: macOS would not hand out a monitor for swipe events");
         return false;
     };
     // AppKit calls the block only while the monitor and the block are alive, and the app wants

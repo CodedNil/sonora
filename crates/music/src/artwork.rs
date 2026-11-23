@@ -200,7 +200,7 @@ impl ArtworkSearch {
                 Ok(Some(cover)) => return Ok(Some(cover)),
                 Ok(None) => answered = true,
                 Err(error) => {
-                    log::debug!("artwork: {source:?} failed: {error:#}");
+                    tracing::debug!("artwork: {source:?} failed: {error:#}");
                     failure.get_or_insert(error);
                 }
             }

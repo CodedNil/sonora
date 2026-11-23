@@ -3,10 +3,12 @@
 //! account — profile, favorites, playlists — plus the `media.deezer.com/v1/get_url` call that
 //! hands out the encrypted stream urls.
 
+use crate::AccountChoice;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
+use tracing::{debug, warn};
 
 use anyhow::{Context as _, Result, bail};
 use async_trait::async_trait;
@@ -18,9 +20,9 @@ use crate::cover::{self, CoverLimits};
 use crate::deezer::{auth, decrypt, wire};
 use crate::engine::Loudness;
 use crate::{
-    AccountChoice, Album, AlbumCatalogue, AlbumDetail, Artist, ArtistProfile, ArtistRef, Encoding,
-    Genre, GenreDetail, GenreItem, GenreSection, HomeFeed, MediaKind, MusicApi, Offer, Playlist,
-    PlaylistDetail, Quality, SUGGESTIONS, SavedArtist, Track, UserProfile, distinct_covers, escape,
+    Album, AlbumCatalogue, AlbumDetail, Artist, ArtistProfile, ArtistRef, Encoding, Genre,
+    GenreDetail, GenreItem, GenreSection, HomeFeed, MediaKind, MusicApi, Offer, Playlist,
+    PlaylistDetail, Quality, SUGGESTIONS, SavedArtist, Track, UserProfile, escape,
 };
 
 const GATEWAY: &str = "https://www.deezer.com/ajax/gw-light.php";
@@ -414,14 +416,14 @@ impl DeezerClient {
             .context("cannot switch to that deezer profile")?;
         self.remember_member(id).await;
         if let Err(error) = self.gw("deezer.userAutolog", json!({})).await {
-            log::debug!("deezer: userAutolog after a profile switch failed: {error:#}");
+            tracing::debug!("deezer: userAutolog after a profile switch failed: {error:#}");
         }
         self.refresh().await?;
         let now = self.user_id().await;
         if now != id {
             bail!("deezer still answers as profile {now} after switching to {id}");
         }
-        log::info!("deezer: switched to family profile {id}");
+        tracing::info!("deezer: switched to family profile {id}");
         Ok(())
     }
 
@@ -642,7 +644,7 @@ impl DeezerClient {
         if let Some(arl) = arl
             && arl != session.arl
         {
-            log::debug!("deezer: the gateway handed out a new arl");
+            tracing::debug!("deezer: the gateway handed out a new arl");
             if let Some(stored) = auth::load()
                 && stored.arl == session.arl
                 && let Err(error) = auth::store(&auth::Credentials {
@@ -650,7 +652,7 @@ impl DeezerClient {
                     profile: stored.profile,
                 })
             {
-                log::warn!("deezer: cannot store the renewed session: {error:#}");
+                tracing::warn!("deezer: cannot store the renewed session: {error:#}");
             }
             session.arl = arl;
         }
@@ -679,7 +681,7 @@ impl DeezerClient {
                 });
             }
             let wait = BACKOFF * 2u32.pow(attempt);
-            log::debug!(
+            debug!(
                 "deezer: {path} refused with code {code}, asking again in {}ms",
                 wait.as_millis()
             );
@@ -739,7 +741,11 @@ impl DeezerClient {
 
     /// One `deezer.pageProfile` tab: the user's favorite albums, artists or playlists,
     /// including the private ones the public api hides.
-    async fn profile_tab(&self, tab: &str) -> Result<Vec<Value>> {
+    async fn profile_tab<T>(
+        &self,
+        tab: &str,
+        read: impl FnMut(&Value) -> Option<T> + Send,
+    ) -> Result<Vec<T>> {
         let user_id = self.user_id().await;
         let results = self
             .gw(
@@ -750,10 +756,25 @@ impl DeezerClient {
         Ok(results
             .get("TAB")
             .and_then(|tabs| tabs.get(tab))
-            .and_then(|section| section.get("data"))
-            .and_then(Value::as_array)
-            .cloned()
+            .map(|section| wire::items(section).filter_map(read).collect())
             .unwrap_or_default())
+    }
+
+    /// Decodes one public search category without cloning its JSON rows.
+    async fn search_items<T>(
+        &self,
+        kind: &str,
+        query: &str,
+        limit: u32,
+        read: impl FnMut(&Value) -> Option<T> + Send,
+    ) -> Result<Vec<T>> {
+        let page = self
+            .public(&format!(
+                "/search{kind}?q={}&limit={limit}",
+                escape::component(query)
+            ))
+            .await?;
+        Ok(wire::items(&page).filter_map(read).collect())
     }
 
     async fn favorite(&self, method: &str, key: &str, id: &str) -> Result<()> {
@@ -774,12 +795,7 @@ impl DeezerClient {
             ))
             .await
             .with_context(|| format!("cannot load more from artist {artist_id}"))?;
-        Ok(page
-            .get("data")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-            .iter()
+        Ok(wire::items(&page)
             .filter_map(wire::album)
             .filter(|album| album.id != album_id)
             .take(SUGGESTIONS)
@@ -795,12 +811,7 @@ impl DeezerClient {
             ))
             .await
             .with_context(|| format!("cannot load artists related to {artist_id}"))?;
-        Ok(page
-            .get("data")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-            .iter()
+        Ok(wire::items(&page)
             .filter_map(|artist| {
                 Some(SavedArtist {
                     id: artist.get("id").and_then(wire::id)?,
@@ -872,7 +883,7 @@ impl DeezerClient {
             .unwrap_or_default();
         let mut playlist = wire::smart_tracklist(&results["DATA"])
             .with_context(|| format!("cannot read the smart tracklist {smart_id}"))?;
-        playlist.track_count = tracks.len() as u32;
+        playlist.track_count = Some(tracks.len() as u32);
         if playlist.cover.is_none() {
             playlist.cover = tracks.iter().find_map(|track| track.cover.clone());
         }
@@ -916,7 +927,7 @@ impl DeezerClient {
             None => wire::flow(&json!({ "id": config }))
                 .with_context(|| format!("cannot read the flow {config}"))?,
         };
-        playlist.track_count = tracks.len() as u32;
+        playlist.track_count = Some(tracks.len() as u32);
         if playlist.cover.is_none() {
             playlist.cover = tracks.iter().find_map(|track| track.cover.clone());
         }
@@ -966,7 +977,7 @@ impl DeezerClient {
         for &format in formats {
             match self.stream_url(&license, token, format).await {
                 Ok(Some(url)) => {
-                    log::debug!("deezer: {effective_id} streams as {format}");
+                    debug!("deezer: {effective_id} streams as {format}");
                     let response = self
                         .inner
                         .http
@@ -1110,11 +1121,7 @@ impl MusicApi for DeezerClient {
             top_tracks: top.map(|page| wire::track_list(&page)).unwrap_or_default(),
             albums: albums
                 .map(|page| {
-                    page.get("data")
-                        .and_then(Value::as_array)
-                        .cloned()
-                        .unwrap_or_default()
-                        .iter()
+                    wire::items(&page)
                         .filter_map(wire::album)
                         .map(|album| album.credit(&own))
                         .collect()
@@ -1151,7 +1158,7 @@ impl MusicApi for DeezerClient {
             let releases = match answer {
                 Ok(releases) => releases,
                 Err(error) => {
-                    log::warn!("deezer: cannot read the songs of artist {artist_id}: {error:#}");
+                    warn!("deezer: cannot read the songs of artist {artist_id}: {error:#}");
                     break;
                 }
             };
@@ -1190,7 +1197,7 @@ impl MusicApi for DeezerClient {
                     let page = match self.public(&path).await {
                         Ok(page) => page,
                         Err(error) => {
-                            log::warn!("deezer: cannot read more songs of album {id}: {error:#}");
+                            warn!("deezer: cannot read more songs of album {id}: {error:#}");
                             break;
                         }
                     };
@@ -1301,13 +1308,9 @@ impl MusicApi for DeezerClient {
 
     async fn playlists(&self) -> Result<Vec<Playlist>> {
         let user_id = self.user_id().await;
-        Ok(self
-            .profile_tab("playlists")
+        self.profile_tab("playlists", |value| wire::playlist(value, &user_id))
             .await
-            .context("cannot load the playlists")?
-            .iter()
-            .filter_map(|value| wire::playlist(value, &user_id))
-            .collect())
+            .context("cannot load the playlists")
     }
 
     async fn create_playlist(&self, name: &str) -> Result<String> {
@@ -1401,13 +1404,9 @@ impl MusicApi for DeezerClient {
     }
 
     async fn saved_albums(&self) -> Result<Vec<Album>> {
-        Ok(self
-            .profile_tab("albums")
+        self.profile_tab("albums", wire::album)
             .await
-            .context("cannot load the favorite albums")?
-            .iter()
-            .filter_map(wire::album)
-            .collect())
+            .context("cannot load the favorite albums")
     }
 
     async fn set_album_saved(&self, album_id: &str, saved: bool) -> Result<()> {
@@ -1419,13 +1418,9 @@ impl MusicApi for DeezerClient {
     }
 
     async fn saved_artists(&self) -> Result<Vec<SavedArtist>> {
-        Ok(self
-            .profile_tab("artists")
+        self.profile_tab("artists", wire::saved_artist)
             .await
-            .context("cannot load the favorite artists")?
-            .iter()
-            .filter_map(wire::saved_artist)
-            .collect())
+            .context("cannot load the favorite artists")
     }
 
     async fn set_artist_saved(&self, artist_id: &str, saved: bool) -> Result<()> {
@@ -1456,10 +1451,12 @@ impl MusicApi for DeezerClient {
         match listing {
             Ok(Ok(listing)) => wire::number_tracks(&mut tracks, &listing),
             Ok(Err(error)) => {
-                log::warn!("deezer: cannot read the disc numbers of album {album_id}: {error:#}")
+                tracing::warn!(
+                    "deezer: cannot read the disc numbers of album {album_id}: {error:#}"
+                )
             }
             Err(_) => {
-                log::warn!("deezer: the disc numbers of album {album_id} took too long")
+                tracing::warn!("deezer: the disc numbers of album {album_id} took too long")
             }
         }
         let album =
@@ -1477,10 +1474,6 @@ impl MusicApi for DeezerClient {
             }
         }
         Ok(AlbumDetail { album, tracks })
-    }
-
-    async fn album_tracks(&self, album_id: &str) -> Result<Vec<Track>> {
-        Ok(self.album(album_id).await?.tracks)
     }
 
     async fn album_catalogue(
@@ -1512,10 +1505,10 @@ impl MusicApi for DeezerClient {
             pair => pair,
         };
         if let Err(error) = &more_by {
-            log::warn!("deezer: cannot read more from this artist: {error:#}");
+            warn!("deezer: cannot read more from this artist: {error:#}");
         }
         if let Err(error) = &similar {
-            log::warn!("deezer: cannot read related artists: {error:#}");
+            warn!("deezer: cannot read related artists: {error:#}");
         }
         let (more_by, similar) = (more_by.unwrap_or_default(), similar.unwrap_or_default());
         let mut seen = HashSet::new();
@@ -1548,7 +1541,7 @@ impl MusicApi for DeezerClient {
                         }
                     }
                     Err(error) => {
-                        log::warn!(
+                        warn!(
                             "deezer: cannot load albums by similar artist {}: {error:#}",
                             artist.id
                         );
@@ -1594,8 +1587,8 @@ impl MusicApi for DeezerClient {
             .unwrap_or_default();
         let mut playlist = wire::playlist(data, &user_id)
             .with_context(|| format!("cannot read the playlist {playlist_id}"))?;
-        if playlist.track_count == 0 {
-            playlist.track_count = tracks.len() as u32;
+        if playlist.track_count.is_none() {
+            playlist.track_count = Some(tracks.len() as u32);
         }
         if playlist.cover.is_none() {
             playlist.cover = tracks.iter().find_map(|track| track.cover.clone());
@@ -1605,15 +1598,6 @@ impl MusicApi for DeezerClient {
             tracks,
             continuation: None,
         })
-    }
-
-    async fn playlist_tracks(&self, playlist_id: &str) -> Result<Vec<Track>> {
-        Ok(self.playlist(playlist_id).await?.tracks)
-    }
-
-    async fn playlist_covers(&self, playlist_id: &str, wanted: usize) -> Result<Vec<String>> {
-        let tracks = self.playlist_tracks(playlist_id).await?;
-        Ok(distinct_covers(&tracks, wanted))
     }
 
     async fn track_radio(
@@ -1630,71 +1614,34 @@ impl MusicApi for DeezerClient {
         match results {
             Ok(results) => Ok((wire::track_list(&results), None)),
             Err(error) => {
-                log::warn!("deezer: no track radio for {track_id}: {error:#}");
+                warn!("deezer: no track radio for {track_id}: {error:#}");
                 Ok((Vec::new(), None))
             }
         }
     }
 
     async fn search(&self, query: &str) -> Result<Vec<Track>> {
-        let page = self
-            .public(&format!("/search?q={}&limit=50", escape::component(query)))
+        self.search_items("", query, 50, wire::track)
             .await
-            .context("cannot search deezer")?;
-        Ok(wire::track_list(&page))
+            .context("cannot search deezer")
     }
 
     async fn search_albums(&self, query: &str) -> Result<Vec<Album>> {
-        let page = self
-            .public(&format!(
-                "/search/album?q={}&limit=30",
-                escape::component(query)
-            ))
+        self.search_items("/album", query, 30, wire::album)
             .await
-            .context("cannot search deezer albums")?;
-        Ok(page
-            .get("data")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .filter_map(wire::album)
-            .collect())
+            .context("cannot search deezer albums")
     }
 
     async fn search_artists(&self, query: &str) -> Result<Vec<SavedArtist>> {
-        let page = self
-            .public(&format!(
-                "/search/artist?q={}&limit=30",
-                escape::component(query)
-            ))
+        self.search_items("/artist", query, 30, wire::saved_artist)
             .await
-            .context("cannot search deezer artists")?;
-        Ok(page
-            .get("data")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(wire::saved_artist)
-            .collect())
+            .context("cannot search deezer artists")
     }
 
     async fn search_playlists(&self, query: &str) -> Result<Vec<Playlist>> {
-        let page = self
-            .public(&format!(
-                "/search/playlist?q={}&limit=30",
-                escape::component(query)
-            ))
+        self.search_items("/playlist", query, 30, |value| wire::playlist(value, ""))
             .await
-            .context("cannot search deezer playlists")?;
-        Ok(page
-            .get("data")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|value| wire::playlist(value, ""))
-            .collect())
+            .context("cannot search deezer playlists")
     }
 
     /// The web player's home page, shelf for shelf.

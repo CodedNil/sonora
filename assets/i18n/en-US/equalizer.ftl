@@ -49,7 +49,7 @@ equalizer-import-too-many = Not imported: { $count ->
        *[other] { $count } filters are on
     }, more than a profile holds
 equalizer-import-too-large = Not imported: the text is over 1 MB, too large for an equalizer profile
-equalizer-filter-limit =A profile holds up to { $max } filters.
+equalizer-filter-limit = A profile holds up to { $max } filters.
 equalizer-paste-empty = The clipboard holds no text
 equalizer-copied = Copied the profile as Equalizer APO text
 equalizer-exported = Exported the profile
@@ -129,3 +129,9 @@ response-graph-readout = { $frequency } · { $direction ->
         [down] -{ $gain }
        *[flat] { $gain }
     } dB
+
+equalizer-redo = Redo
+equalizer-rule-disconnected = Not connected
+response-graph-db = { $value } dB
+response-graph-hz = { $value } Hz
+response-graph-khz = { $value } kHz

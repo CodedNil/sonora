@@ -19,6 +19,7 @@ icons.workspace = true
 image.workspace = true
 log.workspace = true
 logic.workspace = true
+tracing.workspace = true
 moka.workspace = true
 music.workspace = true
 notify.workspace = true

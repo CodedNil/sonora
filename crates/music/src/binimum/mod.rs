@@ -1,4 +1,5 @@
 use std::time::Duration;
+use tracing::debug;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -130,7 +131,7 @@ impl LyricsProvider for Binimum {
         let album = query.album.as_deref().filter(|album| !album.is_empty());
         let mut found = self.find(query, album).await?;
         if found.is_empty() && album.is_some() {
-            log::debug!(
+            debug!(
                 "lyrics: apple catalogue found no album match for {}, retrying without the album",
                 query.title
             );

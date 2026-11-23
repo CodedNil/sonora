@@ -52,6 +52,8 @@ pub struct Resume<O> {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Stub {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track: Option<Track>,
     pub id: String,
     pub name: String,
     pub artists: String,
@@ -199,23 +201,18 @@ impl<O> Removed<O> {
 }
 
 fn stub(track: &Track) -> Option<Stub> {
+    let id = track.id.clone()?;
     Some(Stub {
-        id: track.id.clone()?,
-        name: track.name.clone(),
-        artists: track.artists.clone(),
-        credited: track.artist_refs.clone(),
-        album: track.album.clone(),
-        album_artist: track.album_artist.clone(),
-        album_id: track.album_id.clone(),
-        cover: track.cover.clone(),
-        seconds: track.duration.as_secs_f32(),
-        explicit: track.explicit,
-        from: None,
-        kind: QueueKind::Context,
+        id,
+        track: Some(track.clone()),
+        ..Default::default()
     })
 }
 
 fn hydrate(stub: Stub) -> Track {
+    if let Some(track) = stub.track {
+        return track;
+    }
     Track {
         id: Some(stub.id),
         name: stub.name,
@@ -226,7 +223,7 @@ fn hydrate(stub: Stub) -> Track {
         album_artist: stub.album_artist,
         album_id: stub.album_id,
         cover: stub.cover,
-        duration: Duration::from_secs_f32(stub.seconds.max(0.)),
+        duration: Some(Duration::from_secs_f32(stub.seconds.max(0.))),
         explicit: stub.explicit,
         ..Default::default()
     }
@@ -664,6 +661,11 @@ impl<O: Clone + PartialEq> Order<O> {
     }
 
     /// The full upcoming play order, including recommendations.
+    /// Returns stable occurrence keys for animating upcoming queue rows.
+    pub fn upcoming_keys(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.upcoming.iter().map(|entry| entry.uid.as_str())
+    }
+
     pub fn upcoming(&self) -> impl ExactSizeIterator<Item = &Track> {
         self.upcoming.iter().map(|entry| entry.track.as_ref())
     }
@@ -1341,7 +1343,7 @@ mod tests {
             id: Some(id.to_owned()),
             name: id.to_owned(),
             playable: true,
-            duration: Duration::from_secs(180),
+            duration: Some(Duration::from_secs(180)),
             ..Default::default()
         }
     }

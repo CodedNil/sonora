@@ -1,4 +1,5 @@
 use std::time::Duration;
+use tracing::warn;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -142,7 +143,7 @@ impl LyricsProvider for NetEase {
                     .lyric(song.id)
                     .await
                     .inspect_err(|error| {
-                        log::warn!("lyrics: netease did not hand over {}: {error:#}", song.id)
+                        warn!("lyrics: netease did not hand over {}: {error:#}", song.id)
                     })
                     .ok()?;
                 hit(&song, &sheet)

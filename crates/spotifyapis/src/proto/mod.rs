@@ -20,6 +20,7 @@ pub mod searchview;
 pub mod sequence_proxy;
 pub mod social_connect;
 mod storage_resolve;
+pub mod track_extras;
 pub mod user_profile_view;
 
 const UNRESERVED: &AsciiSet = &NON_ALPHANUMERIC

@@ -25,7 +25,9 @@ pub(super) async fn hydrate_saved_albums(
         .into_iter()
         .filter_map(|item| {
             let mut album = known.remove(&item.uri)?;
-            album.added_at = item.added_at.map(i64::from);
+            album.added_at = item
+                .added_at
+                .and_then(|seconds| crate::Timestamp::from_second(seconds.into()).ok());
             Some(album)
         })
         .collect())
@@ -101,18 +103,18 @@ pub(super) fn album_from(uri: &str, album: &AlbumMessage) -> Album {
         cover: cover(album, false),
         cover_large: cover(album, true),
         release_type: release_type(album.album_type()),
-        year: album.date.as_ref().map(|date| date.year()).unwrap_or(0),
-        track_count: album
-            .disc
-            .iter()
-            .flat_map(|disc| &disc.track)
-            .filter(|track| track.gid().len() == 16)
-            .count() as u32,
+        track_count: Some(
+            album
+                .disc
+                .iter()
+                .flat_map(|disc| &disc.track)
+                .filter(|track| track.gid().len() == 16)
+                .count() as u32,
+        ),
         release_date: album
             .date
             .as_ref()
-            .and_then(|date| crate::calendar::release_date(date.year(), date.month(), date.day()))
-            .unwrap_or_default(),
+            .and_then(|date| crate::calendar::release_date(date.year(), date.month(), date.day())),
         label: album.label().to_owned(),
         copyrights: album
             .copyright

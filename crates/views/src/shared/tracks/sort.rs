@@ -18,13 +18,31 @@ pub(super) fn compare(
     let text =
         |index: usize, pick: fn(&Track) -> &str| tracks.get(index).map(pick).unwrap_or_default();
     let folded = |pick: fn(&Track) -> &str| folded(text(a, pick), text(b, pick));
+    let genre = |index: usize| {
+        tracks
+            .get(index)
+            .map(|track| track.genres.as_slice())
+            .unwrap_or_default()
+    };
 
     match field {
+        TrackField::Popularity => tracks
+            .get(a)
+            .and_then(|track| track.popularity)
+            .cmp(&tracks.get(b).and_then(|track| track.popularity)),
+        TrackField::Year => tracks
+            .get(a)
+            .and_then(Track::year)
+            .cmp(&tracks.get(b).and_then(Track::year)),
+        TrackField::Tags => tracks
+            .get(a)
+            .map(|t| &t.tags)
+            .cmp(&tracks.get(b).map(|t| &t.tags)),
         TrackField::Title => folded(|track| &track.name),
         TrackField::Artists => folded(|track| &track.artists),
         TrackField::Album => folded(|track| &track.album),
-        TrackField::Genre => genres(genres_of(tracks, a), genres_of(tracks, b)),
-        TrackField::AddedAt | TrackField::PlayedAt => tracks
+        TrackField::Genre => genres(genre(a), genre(b)),
+        TrackField::AddedAt | TrackField::LikedAt | TrackField::PlayedAt => tracks
             .get(a)
             .and_then(|track| track.added_at)
             .cmp(&tracks.get(b).and_then(|track| track.added_at)),
@@ -35,9 +53,9 @@ pub(super) fn compare(
             .cmp(&tracks.get(b).and_then(|track| track.playcount)),
         TrackField::Duration => tracks
             .get(a)
-            .map(|track| track.duration)
-            .cmp(&tracks.get(b).map(|track| track.duration)),
-        TrackField::Index | TrackField::Cover | TrackField::LikedAt => a.cmp(&b),
+            .and_then(|track| track.duration)
+            .cmp(&tracks.get(b).and_then(|track| track.duration)),
+        TrackField::Index | TrackField::Cover => a.cmp(&b),
     }
 }
 
@@ -62,19 +80,12 @@ pub(super) fn group(
         TrackField::Artists => Some(initial(&track.artists)),
         TrackField::Album => Some(initial(&track.album)),
         TrackField::Genre => Some(match track.genres.first() {
-            Some(genre) => SharedString::from(genre.clone()),
+            Some(genre) => super::title_case(genre).into(),
             None => initial(""),
         }),
         TrackField::AddedBy => Some(initial(contributor(track))),
         _ => None,
     }
-}
-
-fn genres_of<'a>(tracks: Joined<'a, Track>, index: usize) -> &'a [String] {
-    tracks
-        .get(index)
-        .map(|track| track.genres.as_slice())
-        .unwrap_or_default()
 }
 
 /// Orders two genre lists by their first genre that differs, ignoring case. A list that runs out

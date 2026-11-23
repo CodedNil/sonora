@@ -304,8 +304,8 @@ impl Render for SoloistSetup {
                     Button::new("soloist-proceed")
                         .primary()
                         .label(match step {
-                            SoloistStep::Key => t!("soloist-continue"),
-                            _ => t!("soloist-download"),
+                            SoloistStep::Key => t!("common-continue"),
+                            _ => t!("menu-download"),
                         })
                         .disabled(match step {
                             SoloistStep::Consent => false,

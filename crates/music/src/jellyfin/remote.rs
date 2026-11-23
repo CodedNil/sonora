@@ -93,7 +93,7 @@ impl Worker {
     async fn run(mut self, mut requests: UnboundedReceiver<Request>) {
         while let Some(request) = requests.recv().await {
             if let Err(error) = self.handle(request).await {
-                log::warn!("jellyfin: remote control failed: {error:#}");
+                tracing::warn!("jellyfin: remote control failed: {error:#}");
             }
         }
         self.stop();
@@ -317,7 +317,7 @@ struct Notice {
 async fn listen(client: JellyfinClient, out: UnboundedSender<Event>, shared: Arc<Shared>) {
     loop {
         if let Err(error) = socket(&client, &out, &shared).await {
-            log::info!("jellyfin: the remote control socket closed: {error:#}");
+            tracing::info!("jellyfin: the remote control socket closed: {error:#}");
         }
         tokio::time::sleep(RECONNECT).await;
     }
@@ -343,7 +343,7 @@ async fn socket(
     let (mut socket, _) = tokio_tungstenite::connect_async(request)
         .await
         .context("cannot open the jellyfin socket")?;
-    log::info!("jellyfin: listening for remote control");
+    tracing::info!("jellyfin: listening for remote control");
     let mut beat = tokio::time::interval(KEEP_ALIVE);
     beat.tick().await;
     loop {
@@ -496,7 +496,7 @@ async fn play(client: &JellyfinClient, data: &serde_json::Value) -> Vec<Command>
         Ok(songs) if !songs.is_empty() => songs,
         Ok(_) => ids,
         Err(error) => {
-            log::warn!("jellyfin: cannot read what a remote asked to play: {error:#}");
+            tracing::warn!("jellyfin: cannot read what a remote asked to play: {error:#}");
             ids
         }
     };
@@ -511,7 +511,7 @@ async fn play(client: &JellyfinClient, data: &serde_json::Value) -> Vec<Command>
     {
         match client.instant_mix(seed).await {
             Ok(mix) => ids = mix,
-            Err(error) => log::warn!("jellyfin: cannot read the instant mix: {error:#}"),
+            Err(error) => tracing::warn!("jellyfin: cannot read the instant mix: {error:#}"),
         }
     }
     let start = data
@@ -595,7 +595,7 @@ async fn poll(client: JellyfinClient, out: UnboundedSender<Event>, shared: Arc<S
                     .unwrap_or_else(PoisonError::into_inner) = sessions;
                 out.send(Event::Roster(roster)).ok();
             }
-            Err(error) => log::info!("jellyfin: cannot read the other sessions: {error:#}"),
+            Err(error) => tracing::info!("jellyfin: cannot read the other sessions: {error:#}"),
         }
         tokio::time::sleep(ROSTER_EVERY).await;
     }

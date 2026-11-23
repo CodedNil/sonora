@@ -28,6 +28,7 @@ const SCHEMA: &str = "
         cover TEXT,
         duration_ms INTEGER NOT NULL,
         explicit INTEGER NOT NULL,
+        track TEXT,
         PRIMARY KEY (scope, provider, track_id, played_at)
     );
     CREATE INDEX IF NOT EXISTS plays_scope_time
@@ -107,17 +108,18 @@ impl Database {
     }
 
     pub fn open(&self) -> Result<Connection> {
-        connect(&self.path, SCHEMA, &self.ready, "app state")
+        connect(&self.path, SCHEMA, &self.ready, "app state", migrate)
     }
 }
 
-/// Opens `path`, applying `schema` the first time this process opens it. `what` names the
+/// Opens `path`, applying `schema` and migrations the first time this process opens it. `what` names the
 /// database in the errors a caller sees.
 pub(crate) fn connect(
     path: &Path,
     schema: &str,
     ready: &Mutex<bool>,
     what: &str,
+    migrate: fn(&Connection) -> Result<()>,
 ) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -134,7 +136,25 @@ pub(crate) fn connect(
         connection
             .execute_batch(schema)
             .with_context(|| format!("cannot prepare {what}"))?;
+        migrate(&connection)?;
         *ready = true;
     }
     Ok(connection)
+}
+
+/// Keeps old play logs readable while allowing new rows to retain the complete track model.
+fn migrate(connection: &Connection) -> Result<()> {
+    let present: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('plays') WHERE name = 'track')",
+            [],
+            |row| row.get(0),
+        )
+        .context("cannot inspect the listening history schema")?;
+    if !present {
+        connection
+            .execute("ALTER TABLE plays ADD COLUMN track TEXT", [])
+            .context("cannot extend listening history metadata")?;
+    }
+    Ok(())
 }

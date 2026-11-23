@@ -98,3 +98,14 @@ lyrics-source = Lyrics from { $source }
 lyrics-source-local = Lyrics from the local file
 lyrics-writers = Written by { $writers }
 lyrics-instrumental-break = Instrumental break
+
+play-shuffle = Shuffle
+queue-clear-help = Remove upcoming queued songs
+queue-reset-help = Restore the original queue
+stage-album = From the album
+stage-plays = { $count ->
+    [one] { $value } play
+   *[other] { $value } plays
+}
+stage-related = Fans also like
+devices-elsewhere-here = Play Here

@@ -118,7 +118,7 @@ impl Render for SessionJoin {
                         Button::new("confirm-session-join")
                             .primary()
                             .disabled(!ready)
-                            .label(t!("devices-session-join-confirm"))
+                            .label(t!("common-join"))
                             .on_click(cx.listener(|this, _, window, cx| this.join(window, cx))),
                     )
                     .on_dismiss(cx.listener(|this, _, window, cx| this.close(window, cx))),

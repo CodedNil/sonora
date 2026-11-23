@@ -571,7 +571,13 @@ impl EqualizerView {
         div()
             .flex()
             .flex_col()
-            .child(heading("equalizer-sound", SOUND_ICON, Some(mode), cx))
+            .child(heading(
+                "equalizer-sound",
+                "settings-page-sound",
+                SOUND_ICON,
+                Some(mode),
+                cx,
+            ))
             .child(
                 div()
                     .flex()
@@ -667,7 +673,7 @@ impl EqualizerView {
             .child(
                 Scrubber::new(state, ((gain - low) / (high - low)) as f32)
                     .name(title.clone())
-                    .value(t!("unit-db", value = signed.clone()))
+                    .value(t!("common-decibels", db = signed.clone()))
                     .colors(theme.muted, theme.muted, theme.foreground)
                     .on_move(cx.listener(move |this, fraction: &f32, _, cx| {
                         let gain = tone_gain(*fraction);
@@ -679,7 +685,7 @@ impl EqualizerView {
         let value = Button::new(reset)
             .small()
             .w(theme.metrics.cover * TONE_VALUE)
-            .label(t!("unit-db", value = signed))
+            .label(t!("common-decibels", db = signed))
             .tooltip("equalizer-tone-reset")
             .disabled(gain == 0.)
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -727,7 +733,7 @@ impl EqualizerView {
                     .on_click(cx.listener(move |this, _, _, cx| this.set_preamp(choice, cx)))
             }),
         );
-        let level = t!("unit-db", value = figure(resolved, 1));
+        let level = t!("common-decibels", db = figure(resolved, 1));
         let value = match auto {
             true => figure_cell(
                 "equalizer-preamp-value",
@@ -873,6 +879,7 @@ fn shown(part: &Entity<Part>, cx: &App) -> impl IntoElement + use<> {
 /// A group's heading as every settings page draws it, its icon before an uppercase eyebrow, with
 /// `action` at the end of its line when the group has one.
 fn heading(
+    id: &'static str,
     key: &'static str,
     icon: &'static str,
     action: Option<AnyElement>,
@@ -881,7 +888,7 @@ fn heading(
     let theme = cx.theme();
     let label = i18n::lookup(key, None);
     div()
-        .id(SharedString::from(key))
+        .id(SharedString::from(id))
         .role(Role::Heading)
         .aria_level(2)
         .aria_label(label.clone())

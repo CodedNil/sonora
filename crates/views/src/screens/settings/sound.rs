@@ -232,7 +232,7 @@ impl SettingsView {
         let note = self.local_only(cx);
         let sound = sound_picker(SOUND, &self.popovers, &self.equalizer, &self.settings, cx)
             .width(Picker::REGULAR)
-            .name(t!("equalizer-sound"));
+            .name(t!("settings-page-sound"));
 
         div()
             .id("open-equalizer")

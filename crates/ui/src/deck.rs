@@ -28,10 +28,12 @@ pub struct Deck {
     rows: Vec<Pixels>,
     gap: Pixels,
     across: bool,
+    clip_rows: bool,
     held: bool,
     keys: Option<Rc<[usize]>>,
     draw: Option<Draw>,
     measure: Option<Measure>,
+    anchors: Option<crate::ScrollAnchors>,
 }
 
 impl Deck {
@@ -43,15 +45,30 @@ impl Deck {
             rows: Vec::new(),
             gap: Pixels::ZERO,
             across: false,
+            clip_rows: true,
             held: false,
             keys: None,
             draw: None,
             measure: None,
+            anchors: None,
         }
+    }
+
+    /// Makes vertical rows magnetic without measuring or building offscreen content.
+    pub fn magnetic(mut self, anchors: crate::ScrollAnchors) -> Self {
+        self.anchors = Some(anchors);
+        self
     }
 
     pub fn across(mut self) -> Self {
         self.across = true;
+        self
+    }
+
+    /// Allows row contents to slide into neighbouring slots during a reorder preview.
+    /// The enclosing scroll still clips the run to its viewport.
+    pub fn overflow_rows(mut self) -> Self {
+        self.clip_rows = false;
         self
     }
 
@@ -200,23 +217,41 @@ impl Element for Deck {
         let view = window.content_mask().bounds;
         let viewport = match across {
             true => Viewport {
+                underlap: gpui::Pixels::ZERO,
                 top: view.origin.x - lead,
                 height: view.size.width,
                 ..Viewport::default()
             },
             false => Viewport {
+                underlap: gpui::Pixels::ZERO,
                 top: view.origin.y - lead,
                 height: view.size.height,
                 ..Viewport::default()
             },
         };
         let tops = tops(&self.rows, self.gap);
-        let shown = span(&tops, &self.rows, viewport);
+        let shown = match self.clip_rows {
+            true => span(&tops, &self.rows, viewport),
+            false => {
+                let reach = self.rows.iter().copied().max().unwrap_or_default() + self.gap;
+                span(
+                    &tops,
+                    &self.rows,
+                    Viewport {
+                        underlap: gpui::Pixels::ZERO,
+                        top: viewport.top - reach,
+                        height: viewport.height + reach * 2.,
+                        ..Viewport::default()
+                    },
+                )
+            }
+        };
         let reach = viewport.height * PREFETCH_REACH;
         let near = span(
             &tops,
             &self.rows,
             Viewport {
+                underlap: gpui::Pixels::ZERO,
                 top: viewport.top - reach,
                 height: viewport.height + reach * 2.,
                 ..Viewport::default()
@@ -230,7 +265,7 @@ impl Element for Deck {
                 false => (bounds.size.width, self.rows[index]),
             };
             let mut element = div()
-                .overflow_hidden()
+                .when(self.clip_rows, |row| row.overflow_hidden())
                 .w(width)
                 .h(height)
                 .child(draw(index, window, cx))
@@ -248,6 +283,9 @@ impl Element for Deck {
                     true => point(tops[index], Pixels::ZERO),
                     false => point(Pixels::ZERO, tops[index]),
                 };
+            if !across && let Some(anchors) = &self.anchors {
+                anchors.record((self.id.clone(), index.to_string()), origin.y, Pixels::ZERO);
+            }
             element.prepaint_at(origin, window, cx);
             built.push(element);
         }
@@ -370,6 +408,7 @@ mod tests {
             &tops,
             &rows,
             Viewport {
+                underlap: gpui::Pixels::ZERO,
                 top: px(500.),
                 height: px(200.),
                 ..Viewport::default()
@@ -391,6 +430,7 @@ mod tests {
                 &tops,
                 &rows,
                 Viewport {
+                    underlap: gpui::Pixels::ZERO,
                     top: px(0.),
                     height: px(800.),
                     ..Viewport::default()
@@ -418,6 +458,7 @@ mod tests {
                 &[],
                 &[],
                 Viewport {
+                    underlap: gpui::Pixels::ZERO,
                     top: px(0.),
                     height: px(800.),
                     ..Viewport::default()

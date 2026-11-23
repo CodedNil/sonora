@@ -153,7 +153,7 @@ impl Session {
                     Ok(()) => missed = 0,
                     Err(error) => {
                         missed += 1;
-                        log::info!("jellyfin: a session beat failed: {error:#}");
+                        tracing::info!("jellyfin: a session beat failed: {error:#}");
                         if missed >= MISSES {
                             now.lock().unwrap_or_else(PoisonError::into_inner).take();
                             return;

@@ -135,7 +135,9 @@ pub(super) async fn hydrate_saved_tracks(
         .iter()
         .filter_map(|item| {
             let mut track = known.remove(&item.uri)?;
-            track.added_at = item.added_at.map(i64::from);
+            track.added_at = item
+                .added_at
+                .and_then(|seconds| crate::Timestamp::from_second(seconds.into()).ok());
             Some(track)
         })
         .collect())
@@ -188,7 +190,8 @@ pub(super) fn take_track(
         .and_then(|plays| u64::try_from(plays).ok());
     track.bpm = take::<AudioAttributes>(data, ExtensionKind::AudioAttributesV2, uri)
         .map(|attributes| attributes.bpm as f32)
-        .filter(|bpm| bpm.is_finite() && *bpm > 0.);
+        .filter(|bpm| bpm.is_finite() && *bpm > 0. && *bpm <= f32::from(u16::MAX))
+        .map(|bpm| bpm.round() as u16);
     Some(track)
 }
 
@@ -328,7 +331,10 @@ pub(super) fn track_from(uri: &str, track: &TrackMessage) -> Track {
         ),
         album_id: track.album.as_ref().and_then(|album| base62(album.gid())),
         cover: track.album.as_ref().and_then(cover_url),
-        duration: Duration::from_millis(track.duration_ms.unwrap_or_default().max(0) as u64),
+        duration: track
+            .duration_ms
+            .and_then(|ms| u64::try_from(ms).ok())
+            .map(Duration::from_millis),
         added_at: None,
         added_by: None,
         release_date: track
@@ -337,7 +343,7 @@ pub(super) fn track_from(uri: &str, track: &TrackMessage) -> Track {
             .and_then(|album| album.date.as_ref())
             .and_then(|date| crate::calendar::release_date(date.year(), date.month(), date.day())),
         playcount: None,
-        popularity: track.popularity.clamp(0, 100) as u32,
+        popularity: Some(track.popularity.clamp(0, 100) as u8),
         explicit: track.explicit.unwrap_or_default(),
         track_number: track.track_number.max(0) as u32,
         disc_number: track.disc_number.max(0) as u32,
@@ -350,6 +356,7 @@ pub(super) fn track_from(uri: &str, track: &TrackMessage) -> Track {
         tags: Vec::new(),
         moods: Vec::new(),
         bpm: None,
+        audio_features: None,
         languages: track.language_of_performance.clone(),
         credits: track
             .artist_with_role
