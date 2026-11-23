@@ -33,7 +33,7 @@ mod redact;
 pub mod scrobble;
 mod sink;
 pub mod smart;
-pub mod soloist;
+pub use spotify::soloist;
 mod spectrum;
 mod sponsorblock;
 pub mod spotify;
@@ -581,6 +581,16 @@ pub trait MusicApi: Send + Sync {
 
     async fn genre(&self, _genre_id: &str) -> Result<GenreDetail> {
         Ok(GenreDetail::default())
+    }
+
+    /// Reads a category, optionally delivering its first ready shelves before the rest.
+    async fn genre_with_preview(
+        &self,
+        id: &str,
+        _title: Option<&str>,
+        _preview: tokio::sync::mpsc::Sender<GenreDetail>,
+    ) -> Result<GenreDetail> {
+        self.genre(id).await
     }
 
     /// A picture for a genre that `genres` listed without one, found with as few requests as
