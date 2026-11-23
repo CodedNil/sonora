@@ -448,6 +448,7 @@ pub fn playlist(wrapper: &Value, user_id: &str) -> Option<Playlist> {
         .or_else(|| text(value, "created"))
         .and_then(calendar::seconds);
     Some(Playlist {
+        revision: None,
         name: text(value, "title").unwrap_or_default().to_owned(),
         owned: !user_id.is_empty() && owner_id == user_id,
         owner,
@@ -499,6 +500,7 @@ pub fn mix(value: &Value) -> Option<Playlist> {
         })
         .map(str::to_owned);
     Some(Playlist {
+        revision: None,
         id: format!("{MIX}{id}"),
         name: title,
         // Tidal makes every mix. Its subtitles say so in a sentence, or describe the mix.
