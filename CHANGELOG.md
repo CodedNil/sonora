@@ -24,7 +24,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Last.fm, Libre.fm, ListenBrainz and Maloja sign-ins are kept with your other account sign-ins instead of in settings.json, so the settings file is safe to share. Linked accounts move over on their own.
 - Starting a song from Liked Songs or another big collection in a Sonora Session shows the others only the next 20 songs of it, and more as they play, along with everything you queued yourself.
 - Switching to another service from the account menu opens your startup page instead of leaving you on a page of the previous service.
-- Spotify Browse in Search groups categories into shelves with See all links.
 - Spotify renews sign-ins in the background. Sign in again once if you’re upgrading from the previous Spotify player.
 - Spotify playback without Soloist follows Sonora’s playback cache settings immediately.
 
