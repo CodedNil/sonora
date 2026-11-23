@@ -1,0 +1,127 @@
+--- a/crates/music/src/spotify/connect/jam.rs
++++ b/crates/music/src/spotify/connect/jam.rs
+@@ -404,3 +404,7 @@
+             .chars()
+             .all(|c| c.is_ascii_alphanumeric() || extra.contains(c))
+ }
++
++pub async fn bench_jam_current(session: &Session) -> anyhow::Result<usize> {
++    Worker::current_session(session).await.map(|value| usize::from(value.is_some()))
++}
+--- a/crates/music/src/spotify/connect/mod.rs
++++ b/crates/music/src/spotify/connect/mod.rs
+@@ -1981,3 +1981,5 @@
+         assert_eq!(rows.position(id("b"), None), Some(2));
+     }
+ }
++
++pub use jam::bench_jam_current;
+--- a/crates/music/src/spotify/mod.rs
++++ b/crates/music/src/spotify/mod.rs
+@@ -143,3 +143,5 @@
+         }
+     }
+ }
++
++pub use connect::bench_jam_current;
+--- a/crates/spotifyapis/src/http.rs
++++ b/crates/spotifyapis/src/http.rs
+@@ -215,5 +215,7 @@
+                 .build()
+         })
+         .await?;
+-    build(client).send().await
++    let request = build(client).build()?;
++    println!("HTTP {}{}", request.url().host_str().unwrap_or(""), request.url().path());
++    client.execute(request).await
+ }
+--- a/crates/music/examples/spotify_benchmark.rs
++++ b/crates/music/examples/spotify_benchmark.rs
+@@ -2,7 +2,7 @@
+ use log::{LevelFilter, Log, Metadata, Record};
+ use music::{
+     LyricsProvider as _, LyricsQuery, MusicApi as _, TrackKey,
+-    spotify::{AuthConfig, LibrespotClient, SpotifyLyrics, auth},
++    spotify::{AuthConfig, SpotifyClient, SpotifyLyrics, auth},
+ };
+ use std::{
+     fs,
+@@ -74,7 +74,7 @@
+         end($label, start, traffic, result);
+     }};
+ }
+-async fn search(client: &LibrespotClient, query: &str) -> Result<usize> {
++async fn search(client: &SpotifyClient, query: &str) -> Result<usize> {
+     let found = client.search_all(query).await;
+     Ok(found.tracks?.len() + found.albums?.len() + found.artists?.len() + found.playlists?.len())
+ }
+@@ -91,7 +91,7 @@
+     let session = auth::restore(&AuthConfig::from_env())
+         .await?
+         .context("no stored Spotify sign-in")?;
+-    let client = LibrespotClient::new(session);
++    let client = SpotifyClient::new(session);
+     end("sign_in", start, traffic, Ok(1));
+     println!("START own_profile");
+     let start = Instant::now();
+@@ -127,10 +127,7 @@
+             .await
+             .map(|x| x.sections.iter().map(|s| s.items.len()).sum())
+     );
+-    workload!(
+-        "track",
+-        tokio::try_join!(client.track(TRACK), client.track_playcount(TRACK)).map(|_| 1)
+-    );
++    workload!("track", client.track(TRACK).await.map(|_| 1));
+     workload!(
+         "artist_catalogue",
+         client
+@@ -185,25 +182,28 @@
+     );
+     workload!(
+         "playlist_membership",
+-        client.playlist_tracks(PLAYLIST).await.map(|x| x
++        Ok(client
++            .playlist_memberships(&[(PLAYLIST.to_owned(), 4)])
++            .await
+             .into_iter()
+-            .filter_map(|t| t.id)
+-            .collect::<std::collections::HashSet<_>>()
+-            .len())
++            .collect::<Result<Vec<_>>>()?
++            .into_iter()
++            .map(|x| x.tracks.len())
++            .sum())
+     );
+     workload!(
+         "playlist_summary_cold",
+-        client
+-            .playlists()
+-            .await
+-            .map(|x| x.into_iter().filter(|p| p.id == summary_target).count())
++        Ok(client
++            .playlist_snapshots(vec![summary_target.into()])
++            .await
++            .map_or(0, |x| x.len()))
+     );
+     workload!(
+         "playlist_summary_warm",
+-        client
+-            .playlists()
+-            .await
+-            .map(|x| x.into_iter().filter(|p| p.id == summary_target).count())
++        Ok(client
++            .playlist_snapshots(vec![summary_target.into()])
++            .await
++            .map_or(0, |x| x.len()))
+     );
+     workload!("saved_albums", client.saved_albums().await.map(|x| x.len()));
+     workload!(
+@@ -254,6 +254,6 @@
+     Ok(())
+ }
+
+-async fn browse(client: &LibrespotClient) -> Result<usize> {
++async fn browse(client: &SpotifyClient) -> Result<usize> {
+     Ok(client.genres().await?.len())
+ }
