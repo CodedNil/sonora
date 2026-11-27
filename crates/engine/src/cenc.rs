@@ -1,7 +1,7 @@
-//! An Apple Music track that decrypts as it is read, over bytes that are still arriving.
+//! An provider track that decrypts as it is read, over bytes that are still arriving.
 //!
 //! The waiting, the seeking and the splice are [`sound::stream`]'s, the same spool every other
-//! provider streams through. What is Apple's own is the [`Cenc`] body: each `moof`/`mdat` pair
+//! provider streams through. What this adds is the [`Cenc`] body: each `moof`/`mdat` pair
 //! is indexed as it completes, and a sample is handed to the CDM the moment a reader asks for
 //! the bytes it covers. CENC is size preserving and every sample carries its own IV, so
 //! decryption happens in place and in any order, and playback starts on the first fragment
@@ -26,9 +26,9 @@ use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
+use music::drm::Cdm;
+use music::drm::cenc::{self, Encrypted, Sample, Step};
 use sound::stream::{Body, Reader, Source, Spool, Stream, WeakStream};
-use widevine::Cdm;
-use widevine::cenc::{self, Encrypted, Sample, Step};
 
 /// How much has to be in past the init segment before the decoder is let loose.
 const PREROLL: usize = 256 * 1024;
@@ -104,7 +104,7 @@ pub struct Entry {
     pub into: Duration,
 }
 
-/// The encrypted half of an Apple Music track: what has been accounted for, and the keys that
+/// The encrypted half of an provider track: what has been accounted for, and the keys that
 /// turn it into sound.
 #[derive(Default)]
 pub struct Cenc {
@@ -230,7 +230,7 @@ impl Cenc {
             return false;
         };
         log::debug!(
-            "apple: init segment is {} bytes, {} encrypted track(s)",
+            "cenc: init segment is {} bytes, {} encrypted track(s)",
             init.end,
             init.tracks.len()
         );
@@ -238,7 +238,7 @@ impl Cenc {
         // moves forward, so nothing reads the sample entry again.
         cenc::unlock(&mut front, &init);
         if let Err(error) = spool.write_at(0, &front) {
-            log::warn!("apple: cannot relabel the sample entry: {error}");
+            log::warn!("cenc: cannot relabel the sample entry: {error}");
             return false;
         }
         self.walked = init.end;
@@ -286,7 +286,7 @@ impl Cenc {
             License::Pending => return Err(io::Error::other("the track has no license loaded")),
             License::Released => {
                 log::error!(
-                    "apple: sample {index} of {} is still encrypted after the license was released",
+                    "cenc: sample {index} of {} is still encrypted after the license was released",
                     self.samples.len()
                 );
                 return Err(io::Error::other(
@@ -309,7 +309,7 @@ impl Cenc {
         let took = began.elapsed();
         if let Err(error) = spool.write_at(span.start, bytes) {
             self.seals[index] = Seal::Lost;
-            log::error!("apple: cannot keep the cleartext of sample {index}: {error}");
+            log::error!("cenc: cannot keep the cleartext of sample {index}: {error}");
             return Err(error);
         }
         self.seals[index] = Seal::Clear;
@@ -410,7 +410,7 @@ impl Body for Cenc {
     }
 }
 
-/// One Apple Music track being downloaded and decrypted. Clones share the download, the license
+/// One provider track being downloaded and decrypted. Clones share the download, the license
 /// and the index, so a track can be lined up behind the one playing and read twice without
 /// paying for any of it twice.
 #[derive(Clone)]
@@ -420,18 +420,18 @@ impl Media {
     /// Starts pulling the encrypted file from `source`, which is `total` bytes long when that is
     /// known. Nothing can be decrypted until [`license`](Self::license) supplies the keys, so
     /// the license exchange can run while the body is arriving.
-    pub(crate) fn pulling(source: impl Source, total: Option<u64>) -> Self {
+    pub fn pulling(source: impl Source, total: Option<u64>) -> Self {
         Self(Stream::pulling(source, total, Cenc::default()))
     }
 
     /// How much of the encrypted file has arrived, from 0 to 1, when its length is known.
-    pub(crate) fn progress(&self) -> Option<f32> {
+    pub fn progress(&self) -> Option<f32> {
         let total = self.0.total().filter(|total| *total > 0)?;
         Some(self.0.arrived() as f32 / total as f32)
     }
 
     /// Starts pulling an unencrypted uploaded track from `source` and waits for its preroll.
-    pub(crate) async fn plain(source: impl Source, total: Option<u64>) -> Result<Self> {
+    pub async fn plain(source: impl Source, total: Option<u64>) -> Result<Self> {
         Stream::pulling(
             source,
             total,
@@ -473,7 +473,7 @@ impl Media {
             }
             let passed = tokio::task::spawn_blocking(move || clear_rest(&weak)).await;
             if let Err(error) = passed {
-                log::warn!("apple: the decrypt pass stopped: {error}");
+                log::warn!("cenc: the decrypt pass stopped: {error}");
             }
         });
     }
@@ -481,33 +481,47 @@ impl Media {
     /// Waits for the init segment and the preroll behind it, so the decoder opens against a
     /// cushion rather than an empty buffer.
     pub async fn prime(&mut self) -> Result<()> {
-        loop {
-            let (wanted, arrived) = self
-                .0
-                .with(|cenc, spool| {
-                    cenc.index(spool);
-                    (cenc.init_end.map(|end| end + PREROLL), spool.len())
-                })
-                .unwrap_or((None, 0));
-            match wanted {
-                Some(wanted) => {
-                    self.0.wait_for(wanted).await?;
-                    break;
-                }
-                // Nothing to measure the preroll from yet; take another chunk and look again.
-                None if self.0.done() => bail!("the track carries no moov"),
-                None => self.0.wait_for(arrived + 1).await?,
-            }
-        }
+        let end = self.wait_for_init().await?;
+        self.0.wait_for(end + PREROLL).await?;
         let (samples, indexed) = self
             .0
             .with(|cenc, spool| (cenc.samples.len(), spool.len()))
             .unwrap_or_default();
         log::info!(
-            "apple: prebuffer ready, {} KiB in, {samples} samples indexed",
+            "cenc: prebuffer ready, {} KiB in, {samples} samples indexed",
             indexed / 1024
         );
         Ok(())
+    }
+
+    /// Reads the default key ID from a single-key audio stream's initialization segment.
+    pub async fn key_id(&mut self) -> Result<[u8; 16]> {
+        self.wait_for_init().await?;
+        self.0
+            .with(|cenc, _| match cenc.tracks.as_slice() {
+                [track] => track.key_id,
+                _ => None,
+            })
+            .flatten()
+            .ok_or_else(|| anyhow::anyhow!("the track carries no single CENC key ID"))
+    }
+
+    async fn wait_for_init(&mut self) -> Result<usize> {
+        loop {
+            let (end, arrived) = self
+                .0
+                .with(|cenc, spool| {
+                    cenc.index(spool);
+                    (cenc.init_end, spool.len())
+                })
+                .ok_or_else(|| anyhow::anyhow!("the track buffer is poisoned"))?;
+            match end {
+                Some(end) => return Ok(end),
+                // Nothing to measure the preroll from yet; take another chunk and look again.
+                None if self.0.done() => bail!("the track carries no moov"),
+                None => self.0.wait_for(arrived + 1).await?,
+            }
+        }
     }
 
     /// Waits until the download has ended, whether it finished or broke.
@@ -591,13 +605,13 @@ fn clear_rest(weak: &WeakStream<Cenc>) {
             Some(Ok(Pass::Finished(keys))) => {
                 drop(keys);
                 log::info!(
-                    "apple: decrypted the {count} samples left in {:.1}s, license released",
+                    "cenc: decrypted the {count} samples left in {:.1}s, license released",
                     began.elapsed().as_secs_f32()
                 );
                 return;
             }
             Some(Err(error)) => {
-                log::warn!("apple: cannot decrypt ahead, keeping the license: {error}");
+                log::warn!("cenc: cannot decrypt ahead, keeping the license: {error}");
                 return;
             }
             None => return,

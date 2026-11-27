@@ -197,6 +197,7 @@ async fn read(
     .await
 }
 
+/// Sends a caller-provided bearer to a path on the same API origin.
 async fn send_to(
     base: &Url,
     method: Method,
@@ -205,9 +206,30 @@ async fn send_to(
     headers: header::HeaderMap,
     body: Bytes,
 ) -> Result<Bytes> {
+    let url = api_url(base, path)?;
+    request_at(method, url, token, headers, body).await
+}
+
+/// Sends an API request whose caller needs to inspect the response before handling its status.
+pub(crate) async fn send_response(
+    session: &Session,
+    method: Method,
+    path: &str,
+    headers: header::HeaderMap,
+    body: Bytes,
+) -> Result<Response> {
+    let (hosts, bearer) = tokio::try_join!(session.api_urls(), session.access_token())?;
+    let url = api_url(&hosts[0], path)?;
+    Ok(
+        request(|client| authenticated_request(client, &method, &url, &bearer, &headers, &body))
+            .await?,
+    )
+}
+
+fn api_url(base: &Url, path: &str) -> Result<Url> {
     let url = base.join(path)?;
     anyhow::ensure!(url.origin() == base.origin(), "invalid Spotify API path");
-    request_at(method, url, token, headers, body).await
+    Ok(url)
 }
 
 pub fn status(error: &anyhow::Error) -> Option<StatusCode> {
@@ -253,14 +275,8 @@ async fn request_at(
 ) -> Result<Bytes> {
     let metadata =
         method == Method::POST && url.path() == crate::proto::extended_metadata::ENDPOINT;
-    let build = |client: &Client| {
-        client
-            .request(method.clone(), url.clone())
-            .bearer_auth(token)
-            .headers(headers.clone())
-            .header(header::ACCEPT_ENCODING, "gzip")
-            .body(body.clone())
-    };
+    let build =
+        |client: &Client| authenticated_request(client, &method, &url, token, &headers, &body);
     let response = request(&build).await?;
     let retry_body = metadata && response.version() == reqwest::Version::HTTP_2;
     match response_bytes(response).await {
@@ -281,13 +297,39 @@ async fn request_at(
     }
 }
 
-async fn response_bytes(response: Response) -> Result<Bytes> {
-    let mut response = response.error_for_status()?;
+fn authenticated_request(
+    client: &Client,
+    method: &Method,
+    url: &Url,
+    token: &str,
+    headers: &header::HeaderMap,
+    body: &Bytes,
+) -> RequestBuilder {
+    client
+        .request(method.clone(), url.clone())
+        .bearer_auth(token)
+        .headers(headers.clone())
+        .header(header::ACCEPT_ENCODING, "gzip")
+        .body(body.clone())
+}
+
+/// Reads a successful response within the shared compressed and decoded body limits.
+pub(crate) async fn response_bytes(response: Response) -> Result<Bytes> {
+    let response = response.error_for_status()?;
     anyhow::ensure!(
         response.status().is_success(),
         "Spotify returned {}",
         response.status()
     );
+    response_body(response, MAX_API_BODY, MAX_DECODED_BODY).await
+}
+
+/// Reads a bounded response body, including on an HTTP error. Callers decide what is safe to log.
+pub(crate) async fn response_body(
+    mut response: Response,
+    max_encoded: usize,
+    max_decoded: usize,
+) -> Result<Bytes> {
     let gzip = response
         .headers()
         .get(header::CONTENT_ENCODING)
@@ -295,25 +337,25 @@ async fn response_bytes(response: Response) -> Result<Bytes> {
     anyhow::ensure!(
         response
             .content_length()
-            .is_none_or(|length| length <= MAX_API_BODY as u64),
-        "Spotify API response exceeds {MAX_API_BODY} bytes"
+            .is_none_or(|length| length <= max_encoded as u64),
+        "Spotify API response exceeds {max_encoded} bytes"
     );
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         anyhow::ensure!(
-            chunk.len() <= MAX_API_BODY - body.len(),
-            "Spotify API response exceeds {MAX_API_BODY} bytes"
+            chunk.len() <= max_encoded - body.len(),
+            "Spotify API response exceeds {max_encoded} bytes"
         );
         body.extend_from_slice(&chunk);
     }
     if gzip {
         let mut decoded = Vec::new();
         MultiGzDecoder::new(body.as_slice())
-            .take(MAX_DECODED_BODY as u64 + 1)
+            .take(max_decoded as u64 + 1)
             .read_to_end(&mut decoded)?;
         anyhow::ensure!(
-            decoded.len() <= MAX_DECODED_BODY,
-            "Decoded Spotify API response exceeds {MAX_DECODED_BODY} bytes"
+            decoded.len() <= max_decoded,
+            "Decoded Spotify API response exceeds {max_decoded} bytes"
         );
         return Ok(decoded.into());
     }

@@ -1,0 +1,7 @@
+# Captures and decoded bodies may contain account credentials.
+*.har
+*.mitm
+events.jsonl
+mitmdump.log
+analysis/
+conf/

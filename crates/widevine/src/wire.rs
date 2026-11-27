@@ -13,7 +13,7 @@ use std::io::{self, Read, Write};
 
 /// What a host says it is in its first answer. Both sides are the same executable, so this only
 /// differs when the file was replaced under a running app.
-pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/1");
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/2");
 
 /// The largest payload either side accepts. A license or a sample is far smaller, so a length
 /// past this means the two sides are out of step.
@@ -25,6 +25,8 @@ pub const CHALLENGE: u8 = 1;
 pub const UPDATE: u8 = 2;
 /// Decrypts one sample, laid out as the module docs describe.
 pub const DECRYPT: u8 = 3;
+/// Installs the provider certificate. The payload is the certificate and the answer is empty.
+pub const CERTIFICATE: u8 = 4;
 
 /// The status of an answer that carries what was asked for.
 pub const OK: u8 = 0;

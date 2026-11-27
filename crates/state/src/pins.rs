@@ -52,9 +52,6 @@ pub struct Pins {
     settings: Entity<AppSettings>,
     library: Entity<Library>,
     session: Entity<Session>,
-    /// What the provider last reported as pinned, by uri, so only a change since then is
-    /// followed.
-    mirrored: HashMap<String, Pin>,
     /// `entries` as last laid out. Cleared whenever the settings, the session or the library
     /// move, so a frame reads the list without rebuilding it.
     laid: OnceCell<Rc<Vec<Pin>>>,
@@ -73,7 +70,7 @@ pub struct Pins {
 /// A pin as it was stored, with its provider and its slot in the dragged order.
 #[derive(Clone)]
 struct Parted {
-    slug: &'static str,
+    scope: String,
     pin: Pin,
     gap: usize,
 }
@@ -88,14 +85,13 @@ impl Pins {
         cx.subscribe(&library, |this, _, event, cx| match event {
             LibraryEvent::PlaylistGone(id) => {
                 let pin = Pin::new(PinKind::Playlist, id, "");
-                if let Some(slug) = this.session.read(cx).slug_for(id) {
-                    if let Some(parted) = this.part(slug, &pin, cx) {
+                if let Some(scope) = this.session.read(cx).pin_scope_for(id) {
+                    if let Some(parted) = this.part(&scope, &pin, cx) {
                         this.parted.insert(id.clone(), parted);
                     }
                     this.settings
-                        .update(cx, |settings, cx| settings.unpin(slug, &pin, cx));
+                        .update(cx, |settings, cx| settings.unpin(&scope, &pin, cx));
                 }
-                this.mirrored.retain(|_, held| !held.same(&pin));
                 this.changed(cx);
             }
             LibraryEvent::PlaylistBack(id) => {
@@ -124,7 +120,6 @@ impl Pins {
             settings,
             library,
             session,
-            mirrored: HashMap::new(),
             laid: OnceCell::new(),
             rest: OnceCell::new(),
             seen: 0,
@@ -138,8 +133,7 @@ impl Pins {
     pub fn entries(&self, cx: &App) -> Rc<Vec<Pin>> {
         self.laid
             .get_or_init(|| {
-                let slugs = self.session.read(cx).active_slugs();
-                let mut pinned = self.settings.read(cx).pinned(&slugs);
+                let mut pinned = self.dragged(cx);
                 self.lay_out(&mut pinned, cx);
                 Rc::new(pinned)
             })
@@ -218,8 +212,8 @@ impl Pins {
 
     /// The pins in the order they are stored in, whatever the current sort shows.
     fn dragged(&self, cx: &App) -> Vec<Pin> {
-        let slugs = self.session.read(cx).active_slugs();
-        self.settings.read(cx).pinned(&slugs)
+        let scopes = self.session.read(cx).active_pin_scopes();
+        self.settings.read(cx).pinned(&scopes)
     }
 
     /// The automatic order in effect, or `None` for the order the user dragged.
@@ -282,7 +276,7 @@ impl Pins {
     /// Pins at `gap`, a slot counted among the pins already shown, or moves an existing pin there.
     /// `None` appends, and never moves a pin that is already in the list.
     pub fn place(&mut self, pin: Pin, gap: Option<usize>, cx: &mut Context<Self>) {
-        let Some(slug) = self.session.read(cx).slug_for(&pin.id) else {
+        let Some(scope) = self.session.read(cx).pin_scope_for(&pin.id) else {
             return;
         };
         let known = self.holds(&pin, cx);
@@ -291,25 +285,25 @@ impl Pins {
             None if known => return,
             None => {}
         }
-        let slugs = self.session.read(cx).active_slugs();
+        let scopes = self.session.read(cx).active_pin_scopes();
         self.settings.update(cx, |settings, cx| {
-            settings.pin(slug, pin.clone(), gap, &slugs, cx)
+            settings.pin(&scope, pin.clone(), gap, &scopes, cx)
         });
         if !known {
-            self.tell(&pin, true, cx);
+            self.tell(scope, &pin, true, cx);
         }
         self.changed(cx);
     }
 
     /// Unpins and reports it in a toast whose Undo pins it back into the same slot.
     pub fn unpin(&mut self, pin: Pin, cx: &mut Context<Self>) {
-        let Some(slug) = self.session.read(cx).slug_for(&pin.id) else {
+        let Some(scope) = self.session.read(cx).pin_scope_for(&pin.id) else {
             return;
         };
-        let parted = self.part(slug, &pin, cx);
+        let parted = self.part(&scope, &pin, cx);
         self.settings
-            .update(cx, |settings, cx| settings.unpin(slug, &pin, cx));
-        self.tell(&pin, false, cx);
+            .update(cx, |settings, cx| settings.unpin(&scope, &pin, cx));
+        self.tell(scope, &pin, false, cx);
         self.changed(cx);
 
         let Some(parted) = parted else {
@@ -328,11 +322,11 @@ impl Pins {
     }
 
     /// The stored pin matching `pin` with the slot it holds, or `None` when it is not pinned.
-    fn part(&self, slug: &'static str, pin: &Pin, cx: &App) -> Option<Parted> {
+    fn part(&self, scope: &str, pin: &Pin, cx: &App) -> Option<Parted> {
         let dragged = self.dragged(cx);
         let gap = dragged.iter().position(|held| held.same(pin))?;
         Some(Parted {
-            slug,
+            scope: scope.to_owned(),
             pin: dragged[gap].clone(),
             gap,
         })
@@ -341,26 +335,26 @@ impl Pins {
     /// Pins a parted pin back into its slot, as an Undo does. Nothing happens when it is pinned
     /// already or its provider is no longer the live one.
     fn restore(&mut self, parted: Parted, cx: &mut Context<Self>) {
-        let Parted { slug, pin, gap } = parted;
+        let Parted { scope, pin, gap } = parted;
         if self.holds(&pin, cx) {
             return;
         }
         let session = self.session.read(cx);
-        let slugs = session.active_slugs();
-        if session.slug_for(&pin.id) != Some(slug) || !slugs.contains(&slug) {
+        if session.pin_scope_for(&pin.id).as_ref() != Some(&scope) {
             return;
         }
+        let scopes = session.active_pin_scopes();
         self.settings.update(cx, |settings, cx| {
-            settings.pin(slug, pin.clone(), Some(gap), &slugs, cx)
+            settings.pin(&scope, pin.clone(), Some(gap), &scopes, cx)
         });
-        self.tell(&pin, true, cx);
+        self.tell(scope, &pin, true, cx);
         self.changed(cx);
     }
 
     /// Mirrors a change into the provider's own pins. Nothing happens for a provider that keeps
     /// none, or for an item it does not carry in its library.
-    fn tell(&mut self, pin: &Pin, pinned: bool, cx: &mut Context<Self>) {
-        let Some(uri) = self.remote(pin, cx) else {
+    fn tell(&mut self, scope: String, pin: &Pin, pinned: bool, cx: &mut Context<Self>) {
+        let Some(uri) = self.remote(&scope, pin, cx) else {
             return;
         };
         let mine = cx.entity();
@@ -373,7 +367,7 @@ impl Pins {
                     if kept {
                         return;
                     }
-                    mine.update(cx, |this, cx| this.revert(pin, pinned, cx));
+                    mine.update(cx, |this, cx| this.revert(pin, pinned, scope, cx));
                 },
                 cx,
             );
@@ -387,9 +381,9 @@ impl Pins {
             return;
         }
         let shown = self.entries(cx);
-        let slugs = self.session.read(cx).active_slugs();
+        let scopes = self.session.read(cx).active_pin_scopes();
         self.settings.update(cx, |settings, cx| {
-            settings.rearrange(&shown, &slugs, cx);
+            settings.rearrange(&shown, &scopes, cx);
             settings.set_sidebar_pin_sort(None, false, cx);
         });
         self.forget();
@@ -397,20 +391,20 @@ impl Pins {
 
     /// Puts the local list back after the provider refused the change, and takes down the
     /// toast that reported an unpin the provider turned away.
-    fn revert(&mut self, pin: Pin, attempted: bool, cx: &mut Context<Self>) {
-        let Some(slug) = self.session.read(cx).slug_for(&pin.id) else {
+    fn revert(&mut self, pin: Pin, attempted: bool, scope: String, cx: &mut Context<Self>) {
+        if self.session.read(cx).pin_scope_for(&pin.id).as_ref() != Some(&scope) {
             return;
-        };
+        }
         if !attempted && let Some((toast, unpinned)) = self.unpinned.take() {
             match unpinned.same(&pin) {
                 true => Toasts::close(toast, cx),
                 false => self.unpinned = Some((toast, unpinned)),
             }
         }
-        let slugs = self.session.read(cx).active_slugs();
+        let scopes = self.session.read(cx).active_pin_scopes();
         self.settings.update(cx, |settings, cx| match attempted {
-            true => settings.unpin(slug, &pin, cx),
-            false => settings.pin(slug, pin, None, &slugs, cx),
+            true => settings.unpin(&scope, &pin, cx),
+            false => settings.pin(&scope, pin, None, &scopes, cx),
         });
         self.changed(cx);
     }
@@ -419,7 +413,7 @@ impl Pins {
     /// keeps the uri it was listed with, and the provider builds one for anything else. A
     /// provider that keeps no pins, as YouTube does, answers `None`, so the pin stays a local
     /// one rather than failing on a call it cannot make.
-    fn remote(&self, pin: &Pin, cx: &App) -> Option<String> {
+    fn remote(&self, scope: &str, pin: &Pin, cx: &App) -> Option<String> {
         let session = self.session.read(cx);
         if !session.capabilities().pins || music::is_local_id(&pin.id) {
             return None;
@@ -427,9 +421,12 @@ impl Pins {
         let listed = self
             .library
             .read(cx)
-            .pin_targets()?
-            .iter()
-            .find(|item| pin_of(item).is_some_and(|listed| listed.same(pin)))
+            .pin_targets(scope)
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|item| pin_of(item).is_some_and(|listed| listed.same(pin)))
+            })
             .map(|item| item.uri.clone());
         listed.or_else(|| {
             session
@@ -438,56 +435,25 @@ impl Pins {
         })
     }
 
-    /// Follows the provider's own pins: one it pinned elsewhere joins the local list, one it
-    /// dropped elsewhere leaves it. Only a change since the last look counts, so a local pin the
-    /// provider never held stays put, and the first look after signing in imports what is there.
-    /// A dropped pin is found in `mirrored`, since a provider may stop listing it altogether.
+    /// Applies a completed remote pin list to the signed-in streaming account.
     fn absorb(&mut self, cx: &mut Context<Self>) {
-        if self.library.read(cx).pin_pending() {
+        let library = self.library.read(cx);
+        if library.pin_pending() {
             return;
         }
-        let Some(items) = self.library.read(cx).pin_targets() else {
-            self.mirrored.clear();
+        let Some(scope) = self.session.read(cx).streaming_pin_scope() else {
             return;
         };
-        let now: Vec<(String, Pin)> = items
+        let Some(items) = library.pin_targets(&scope) else {
+            return;
+        };
+        let remote = items
             .iter()
             .filter(|item| item.pinned)
-            .filter_map(|item| Some((item.uri.clone(), pin_of(item)?)))
+            .filter_map(pin_of)
             .collect();
-        if now.len() == self.mirrored.len()
-            && now.iter().all(|(uri, _)| self.mirrored.contains_key(uri))
-        {
-            return;
-        }
-        let session = self.session.read(cx);
-        let slugs = session.active_slugs();
-        let held = self.settings.read(cx).pinned(&slugs);
-        let known = |pin: &Pin| held.iter().any(|known| known.same(pin));
-        let arrived: Vec<_> = now
-            .iter()
-            .filter(|(uri, pin)| !self.mirrored.contains_key(uri) && !known(pin))
-            .filter_map(|(uri, pin)| Some((session.slug_for(uri)?, pin.clone())))
-            .collect();
-        let left: Vec<_> = self
-            .mirrored
-            .iter()
-            .filter(|(uri, pin)| !now.iter().any(|(held, _)| held == *uri) && known(pin))
-            .filter_map(|(uri, pin)| Some((session.slug_for(uri)?, pin.clone())))
-            .collect();
-        self.mirrored = now.into_iter().collect();
-        if arrived.is_empty() && left.is_empty() {
-            return;
-        }
-        self.settings.update(cx, |settings, cx| {
-            for (slug, pin) in left {
-                settings.unpin(slug, &pin, cx);
-            }
-            for (slug, pin) in arrived {
-                settings.pin(slug, pin, None, &slugs, cx);
-            }
-        });
-        self.changed(cx);
+        self.settings
+            .update(cx, |settings, cx| settings.sync_pins(&scope, remote, cx));
     }
 }
 

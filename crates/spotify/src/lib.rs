@@ -21,9 +21,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::playback::Factory;
-use music::{
-    Capabilities, MusicApi as _, MusicProvider, PlaybackFactory, ProviderSession, RadioSeed, Shape,
-};
+use music::{Capabilities, MusicApi as _, MusicProvider, ProviderSession, RadioSeed, Shape};
 
 pub use auth::AuthConfig;
 pub use client::SpotifyClient;
@@ -78,6 +76,7 @@ impl SpotifyProvider {
                 playlist_covers: true,
                 playlist_order: true,
                 download_gap: playback::DOWNLOAD_GAP,
+                downloads: false,
                 qualities: playback::QUALITIES,
                 ..Capabilities::ALL
             },
@@ -103,6 +102,10 @@ impl MusicProvider for SpotifyProvider {
         true
     }
 
+    fn protected(&self) -> bool {
+        true
+    }
+
     fn link(&self, link: &str) -> Option<music::link::Linked> {
         links::read(link)
     }
@@ -117,14 +120,6 @@ impl MusicProvider for SpotifyProvider {
 
     fn stored(&self) -> bool {
         self.account.config.stored()
-    }
-
-    /// Plays vault downloads directly through Sonora's shared audio engine.
-    fn offline_playback(&self) -> Option<Arc<dyn PlaybackFactory>> {
-        if !self.stored() {
-            return None;
-        }
-        Some(Arc::new(playback::OfflineFactory))
     }
 
     async fn restore(&self) -> Result<Option<ProviderSession>> {

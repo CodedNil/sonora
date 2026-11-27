@@ -5,7 +5,7 @@ use anyhow::{Context as _, Result};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::Deserialize;
-use spotifyapis::access_point::AudioKeyError;
+use spotifyapis::access_point::AccessPointError;
 use spotifyapis::auth::{AuthError, OAuth};
 use tokio::sync::Mutex;
 
@@ -229,15 +229,13 @@ async fn carry_over(config: &AuthConfig) -> Result<Option<Session>> {
 
 /// Maps Spotify OAuth failures to the app's existing sign-in outcomes.
 pub(super) fn sign_in_error(error: anyhow::Error) -> anyhow::Error {
-    if let Some(problem) = error.downcast_ref::<AudioKeyError>() {
+    if let Some(problem) = error.downcast_ref::<AccessPointError>() {
         let problem = match problem {
-            AudioKeyError::Throttled => return error.context(music::Throttled),
-            AudioKeyError::Denied => return error,
-            AudioKeyError::Premium => SignInProblem::Premium,
-            AudioKeyError::Region => SignInProblem::Region,
-            AudioKeyError::Credentials => SignInProblem::Credentials,
-            AudioKeyError::Refused => SignInProblem::Refused,
-            AudioKeyError::Network => SignInProblem::Network,
+            AccessPointError::Premium => SignInProblem::Premium,
+            AccessPointError::Region => SignInProblem::Region,
+            AccessPointError::Credentials => SignInProblem::Credentials,
+            AccessPointError::Refused => SignInProblem::Refused,
+            AccessPointError::Network => SignInProblem::Network,
         };
         return error.context(SignInFailure(problem));
     }

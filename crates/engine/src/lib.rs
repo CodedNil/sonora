@@ -7,15 +7,16 @@
 //! the preload, the gapless join, where a position is reported from, and what a lost output
 //! device does.
 //!
-//! A provider supplies [`Fetch`]: how to get a track and how to open a decoder over it. Every
-//! provider does, Spotify included: it fetches through spotifyapis and decrypts its Vorbis files as
-//! they arrive. Local reads a file from disk, YouTube asks for the file a range at a time, Subsonic
-//! hands over a plain response, Deezer decrypts Blowfish stripes as they arrive, Tidal fetches DASH
-//! segments one after another, and Apple Music indexes CENC fragments and decrypts each sample
-//! through a CDM as the decoder reaches it.
+//! A provider supplies [`Fetch`]: how to get a track and how to open a decoder over it.
+//! Local reads a file from disk, YouTube asks for the file a range at a time, Subsonic
+//! hands over a plain response, Deezer decrypts Blowfish stripes as they arrive, and Tidal
+//! fetches DASH segments one after another. Spotify and Apple Music use the shared
+//! CENC reader to decrypt each sample through a CDM as the decoder reaches it.
 //!
 //! Loudness normalisation lives here too. A provider only reports how loud a track is, and the
 //! engine decides what gain that earns.
+
+pub mod cenc;
 
 use std::mem::DropGuard;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, channel};

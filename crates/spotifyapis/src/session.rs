@@ -68,7 +68,7 @@ impl Session {
         self.oauth.token().await
     }
 
-    /// Discovered access-point addresses for native Spotify audio connections.
+    /// Discovered access-point addresses for Spotify account attribute lookups.
     pub(crate) async fn access_points(&self) -> Result<&[String]> {
         Ok(&self.endpoints().await?.endpoints.accesspoint)
     }

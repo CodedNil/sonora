@@ -1,6 +1,3 @@
-use std::collections::HashMap;
-use std::mem::DropGuard;
-use std::sync::Arc;
 use std::time::Duration;
 use std::{fmt, io};
 
@@ -17,12 +14,9 @@ use ring::{
 use shannon::Shannon;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, mpsc, oneshot, watch};
-use tokio::task::JoinHandle;
-use tokio::time::{Instant, timeout, timeout_at};
+use tokio::time::timeout;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 
-use crate::Session;
 use crate::proto::access_point::{
     APLoginFailed, APResponseMessage, APWelcome, AuthenticationType, BuildInfo, ClientHello,
     ClientProof, ClientResponseEncrypted, CpuFamily, Cryptosuite, ErrorCode, LoginCredentials,
@@ -35,18 +29,10 @@ const PONG: u8 = 0x49;
 const LOGIN: u8 = 0xab;
 const WELCOME: u8 = 0xac;
 const LOGIN_FAILED: u8 = 0xad;
-const REQUEST_KEY: u8 = 0x0c;
-const KEY: u8 = 0x0d;
-const KEY_FAILED: u8 = 0x0e;
 const COUNTRY: u8 = 0x1b;
-const PRODUCT: u8 = 0x50;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const KEY_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
-const PRODUCT_WAIT: Duration = Duration::from_secs(5);
-const KEY_CACHE: usize = 128;
 
 const PROTOCOL_VERSION: u64 = 124200290;
 const MAX_EXCHANGE: usize = 64 * 1024;
@@ -81,67 +67,9 @@ const PRIME: &[u8] = &[
     0xf4, 0x4c, 0x42, 0xe9, 0xa6, 0x3a, 0x36, 0x20, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 ];
 
-type MediaKey = ([u8; 16], [u8; 20]);
-
-/// Lazily opens the account's audio-key connection and records key throttling.
-pub struct AudioKeys {
-    session: Arc<Session>,
-    device_id: String,
-    connection: Mutex<Option<AccessPoint>>,
-}
-
-impl AudioKeys {
-    /// Binds a lazy audio-key connection to one account and device.
-    pub fn new(session: Arc<Session>, device_id: String) -> Self {
-        Self {
-            session,
-            device_id,
-            connection: Mutex::default(),
-        }
-    }
-
-    /// Opens the access point on the first native key request and reconnects after closure.
-    pub async fn get(&self, track: [u8; 16], file: [u8; 20]) -> Result<[u8; 16]> {
-        let point = {
-            let mut held = self.connection.lock().await;
-            if let Some(point) = held.as_ref().filter(|point| !point.is_closed()) {
-                point.clone()
-            } else {
-                let session = &self.session;
-                let (addresses, token) =
-                    tokio::try_join!(session.access_points(), session.access_token())?;
-                let point =
-                    AccessPoint::connect(addresses, &token, session.username(), &self.device_id)
-                        .await?;
-                held.insert(point).clone()
-            }
-        };
-        point.audio_key(track, file).await
-    }
-}
-
-/// A Spotify-authorized connection for audio keys and account attributes.
-#[derive(Clone)]
-struct AccessPoint(Arc<Inner>);
-
-struct Inner {
-    requests: mpsc::Sender<Request>,
-    account: watch::Receiver<Option<bool>>,
-    /// Aborts the connection task when the last handle is dropped.
-    _task: DropGuard<JoinHandle<()>, fn(JoinHandle<()>)>,
-}
-
-struct Request {
-    media: MediaKey,
-    reply: oneshot::Sender<Result<[u8; 16]>>,
-    deadline: Instant,
-}
-
-/// Spotify's rejection of an access-point login or audio-key request.
+/// A Spotify access-point account lookup failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AudioKeyError {
-    Denied,
-    Throttled,
+pub enum AccessPointError {
     Premium,
     Region,
     Credentials,
@@ -149,11 +77,9 @@ pub enum AudioKeyError {
     Network,
 }
 
-impl fmt::Display for AudioKeyError {
+impl fmt::Display for AccessPointError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Denied => "Spotify denied the audio key",
-            Self::Throttled => "Spotify throttled the audio-key request",
             Self::Premium => "Spotify requires a premium account",
             Self::Region => "Spotify restricted access in this region",
             Self::Credentials => "Spotify rejected the access-point credentials",
@@ -163,65 +89,7 @@ impl fmt::Display for AudioKeyError {
     }
 }
 
-impl std::error::Error for AudioKeyError {}
-
-impl AccessPoint {
-    async fn connect(
-        addresses: &[String],
-        token: &str,
-        username: &str,
-        device: &str,
-    ) -> Result<Self> {
-        let (socket, canonical) = open_session(addresses, token, device).await?;
-        if !canonical.eq_ignore_ascii_case(username) {
-            return Err(AudioKeyError::Credentials.into());
-        }
-        let (write, read) = mpsc::channel(32);
-        let (account, mut latest) = watch::channel(None);
-        let task = tokio::spawn(async move {
-            if let Err(error) = serve(socket, read, account).await {
-                log::debug!("spotify: access point closed: {error:#}");
-            }
-        });
-        let point = Self(Arc::new(Inner {
-            requests: write,
-            account: latest.clone(),
-            _task: DropGuard::new(task, |task| task.abort()),
-        }));
-        match timeout(PRODUCT_WAIT, latest.wait_for(|state| state.is_some())).await {
-            Ok(Ok(account)) if *account == Some(false) => Err(AudioKeyError::Premium.into()),
-            Ok(Err(_)) => Err(AudioKeyError::Network.into()),
-            _ => Ok(point),
-        }
-    }
-
-    fn is_closed(&self) -> bool {
-        self.0.requests.is_closed()
-    }
-
-    /// Requests the key from the signed-in access point without sending it to the CDN.
-    async fn audio_key(&self, track: [u8; 16], file: [u8; 20]) -> Result<[u8; 16]> {
-        if *self.0.account.borrow() == Some(false) {
-            return Err(AudioKeyError::Denied.into());
-        }
-        let (send, reply) = oneshot::channel();
-        let deadline = Instant::now() + KEY_TIMEOUT;
-        timeout_at(deadline, async {
-            self.0
-                .requests
-                .send(Request {
-                    media: (track, file),
-                    reply: send,
-                    deadline,
-                })
-                .await
-                .map_err(|_| anyhow::anyhow!("Spotify access point closed"))?;
-            reply.await.context("Spotify access point closed")?
-        })
-        .await
-        .context("Spotify did not return an audio key in time")?
-    }
-}
+impl std::error::Error for AccessPointError {}
 
 /// Reads the canonical account ID from an authenticated access-point welcome.
 pub(crate) async fn account_username(token: &str) -> Result<String> {
@@ -242,14 +110,18 @@ pub(crate) async fn account_market(
     let (mut socket, canonical) = open_session(addresses, token, &device).await?;
     anyhow::ensure!(
         canonical.eq_ignore_ascii_case(username),
-        AudioKeyError::Credentials
+        AccessPointError::Credentials
     );
     while let Some(packet) = socket.next().await {
         match packet? {
             (COUNTRY, body) if body.len() == 2 && body.iter().all(u8::is_ascii_alphabetic) => {
                 return Ok(std::str::from_utf8(&body)?.to_ascii_uppercase());
             }
-            (PING, _) => write_packet(&mut socket, (PONG, vec![0; 4]), None).await?,
+            (PING, _) => {
+                timeout(WRITE_TIMEOUT, socket.send((PONG, vec![0; 4])))
+                    .await
+                    .context("Spotify access-point write timed out")??;
+            }
             _ => {}
         }
     }
@@ -274,13 +146,13 @@ async fn open_session(addresses: &[String], token: &str, device: &str) -> Result
         }
         match timeout(CONNECT_TIMEOUT, login(host, port, token, device)).await {
             Ok(Ok(session)) => return Ok(session),
-            Ok(Err(error)) if error.is::<AudioKeyError>() => return Err(error),
+            Ok(Err(error)) if error.is::<AccessPointError>() => return Err(error),
             Ok(Err(error)) => last = Some(error),
             Err(error) => last = Some(error.into()),
         }
     }
     Err(last.unwrap_or_else(|| anyhow::anyhow!("Spotify returned no access point")))
-        .context(AudioKeyError::Network)
+        .context(AccessPointError::Network)
 }
 
 async fn login(host: &str, port: u16, token: &str, device: &str) -> Result<(Socket, String)> {
@@ -329,130 +201,14 @@ fn failure(code: ErrorCode) -> anyhow::Error {
         ErrorCode::TryAnotherAP => {
             return anyhow::anyhow!("Spotify requested another access point");
         }
-        ErrorCode::TravelRestriction => AudioKeyError::Region,
-        ErrorCode::PremiumAccountRequired => AudioKeyError::Premium,
+        ErrorCode::TravelRestriction => AccessPointError::Region,
+        ErrorCode::PremiumAccountRequired => AccessPointError::Premium,
         ErrorCode::BadCredentials | ErrorCode::CouldNotValidateCredentials => {
-            AudioKeyError::Credentials
+            AccessPointError::Credentials
         }
-        _ => AudioKeyError::Refused,
+        _ => AccessPointError::Refused,
     };
     problem.into()
-}
-
-async fn serve(
-    mut socket: Socket,
-    mut requests: mpsc::Receiver<Request>,
-    account: watch::Sender<Option<bool>>,
-) -> Result<()> {
-    let mut cache = HashMap::new();
-    let mut next = 0_u32;
-    let mut pending: Option<(u32, Request)> = None;
-    let idle = tokio::time::sleep(IDLE_TIMEOUT);
-    tokio::pin!(idle);
-
-    loop {
-        let expiry = pending.as_ref().map(|(_, request)| request.deadline);
-        tokio::select! {
-            frame = socket.next() => {
-                let (command, body) = frame.context("Spotify closed the access point")??;
-                idle.as_mut().reset(Instant::now() + IDLE_TIMEOUT);
-                match command {
-                    PING => write_packet(&mut socket, (PONG, vec![0; 4]), expiry).await?,
-                    PRODUCT => {
-                        if let Some(premium) = product(&body) {
-                            account.send_replace(Some(premium));
-                            if !premium {
-                                cache.clear();
-                            }
-                        }
-                    }
-                    KEY | KEY_FAILED => {
-                        let Some(sequence) = body.get(..4).and_then(|bytes| bytes.try_into().ok()).map(u32::from_be_bytes) else { continue };
-                        if pending.as_ref().is_none_or(|(expected, _)| *expected != sequence) {
-                            continue;
-                        }
-                        let (_, request) = pending.take().expect("matching pending audio key");
-                        let result = match command {
-                            KEY => body.get(4..20).and_then(|key| <[u8; 16]>::try_from(key).ok())
-                                .context("Spotify returned an invalid audio key"),
-                            _ if body.get(4..6) == Some([0, 1].as_slice()) => Err(AudioKeyError::Denied.into()),
-                            _ => Err(AudioKeyError::Throttled.into()),
-                        };
-                        if let Ok(key) = &result {
-                            if cache.len() >= KEY_CACHE {
-                                cache.clear();
-                            }
-                            cache.insert(request.media, *key);
-                        }
-                        let _ = request.reply.send(result);
-                    }
-                    _ => {}
-                }
-            }
-            request = requests.recv(), if pending.is_none() => {
-                let Some(request) = request else { return Ok(()) };
-                if request.reply.is_closed() || Instant::now() >= request.deadline {
-                    continue;
-                }
-                if *account.borrow() == Some(false) {
-                    let _ = request.reply.send(Err(AudioKeyError::Denied.into()));
-                    continue;
-                }
-                if let Some(key) = cache.get(&request.media) {
-                    let _ = request.reply.send(Ok(*key));
-                    continue;
-                }
-                let (track, file) = request.media;
-                let mut body = Vec::with_capacity(42);
-                body.extend_from_slice(&file);
-                body.extend_from_slice(&track);
-                body.extend_from_slice(&next.to_be_bytes());
-                body.extend_from_slice(&[0; 2]);
-                write_packet(&mut socket, (REQUEST_KEY, body), Some(request.deadline)).await?;
-                pending = Some((next, request));
-                next = next.wrapping_add(1);
-            }
-            () = async {
-                if let Some(expiry) = expiry {
-                    tokio::time::sleep_until(expiry).await;
-                }
-            }, if expiry.is_some() => {
-                if let Some((_, request)) = pending.take() {
-                    let _ = request.reply.send(Err(anyhow::anyhow!("Spotify audio-key request timed out")));
-                }
-            }
-            () = &mut idle => anyhow::bail!("Spotify access point stopped responding"),
-        }
-    }
-}
-
-/// A stalled write invalidates the connection so a later key request can reconnect.
-async fn write_packet(
-    socket: &mut Socket,
-    packet: (u8, Vec<u8>),
-    deadline: Option<Instant>,
-) -> Result<()> {
-    let limit = Instant::now() + WRITE_TIMEOUT;
-    timeout_at(
-        deadline.map_or(limit, |deadline| limit.min(deadline)),
-        socket.send(packet),
-    )
-    .await
-    .context("Spotify access-point write timed out")??;
-    Ok(())
-}
-
-fn product(bytes: &[u8]) -> Option<bool> {
-    let xml = std::str::from_utf8(bytes)
-        .ok()?
-        .trim_matches(|c: char| c.is_whitespace() || c == '\0');
-    let document = roxmltree::Document::parse(xml).ok()?;
-    let product = document
-        .descendants()
-        .find(|node| node.has_tag_name("type"))?
-        .text()?
-        .trim();
-    (!product.is_empty()).then_some(product == "premium")
 }
 
 struct Codec {

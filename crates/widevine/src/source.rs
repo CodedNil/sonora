@@ -299,6 +299,9 @@ fn places() -> Vec<Place> {
         places.push(pointer(&flatpak, vendor));
     }
     for root in [
+        dirs::config_dir()
+            .unwrap_or_else(|| config.clone())
+            .join("mozilla/firefox"),
         home.join(".mozilla/firefox"),
         home.join(".librewolf"),
         home.join(".zen"),

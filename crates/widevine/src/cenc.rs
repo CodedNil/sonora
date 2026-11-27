@@ -60,9 +60,13 @@ struct Bx {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Encrypted {
     pub track: u32,
+    /// One-based index of the encrypted entry in the track's sample descriptions.
+    pub description: usize,
     /// The per-sample IV size `tenc` declares. `senc` is read against it first and against the
     /// other sizes in use if that does not account for the box exactly.
     pub iv_size: u8,
+    /// Default key ID from the track encryption box, when present.
+    pub key_id: Option<[u8; 16]>,
 }
 
 /// The init segment: where it ends, which sample entries claim encryption, and what each
@@ -74,6 +78,8 @@ pub struct Init {
     /// Offsets of the `enca` boxes, so they can be relabelled `mp4a` once the samples under
     /// them are cleartext.
     pub entries: Vec<usize>,
+    /// Sample description counts to reduce once the equivalent AAC entries are clear.
+    aac_description_counts: Vec<usize>,
     pub tracks: Vec<Encrypted>,
     /// Ticks per second of the media timeline, from `mdhd`. Every fragment's decode time is in
     /// these, so without it a position cannot be turned into a place in the file.
@@ -218,9 +224,7 @@ pub fn read_init(data: &[u8]) -> Option<Init> {
 
     let mut init = Init {
         end: moov.end,
-        entries: Vec::new(),
-        tracks: Vec::new(),
-        timescale: 0,
+        ..Init::default()
     };
     for (_, trak) in children(data, moov.body, moov.end).filter(|(_, bx)| &bx.kind == b"trak") {
         let track = track_id(data, trak.body, trak.end).unwrap_or(0);
@@ -230,15 +234,24 @@ pub fn read_init(data: &[u8]) -> Option<Init> {
         let Some(stsd) = descendant(data, trak.body, trak.end, b"stsd") else {
             continue;
         };
+        if equivalent_aac_descriptions(data, &stsd) {
+            init.aac_description_counts.push(stsd.body + 4);
+        }
         // stsd body: version and flags, an entry count, then the sample entries.
-        for (at, entry) in children(data, stsd.body + 8, stsd.end) {
+        for (index, (at, entry)) in children(data, stsd.body + 8, stsd.end).enumerate() {
             if &entry.kind != ENCA {
                 continue;
             }
             // An audio sample entry carries 28 bytes of its own before its children.
-            let iv_size = iv_size(data, entry.body + 28, entry.end).unwrap_or(16);
+            let (iv_size, key_id) =
+                encryption_defaults(data, entry.body + 28, entry.end).unwrap_or((16, None));
             init.entries.push(at);
-            init.tracks.push(Encrypted { track, iv_size });
+            init.tracks.push(Encrypted {
+                track,
+                description: index + 1,
+                iv_size,
+                key_id,
+            });
         }
     }
     Some(init)
@@ -268,23 +281,55 @@ fn timescale(data: &[u8], body: usize, end: usize) -> Option<u32> {
         .filter(|ticks| *ticks > 0)
 }
 
-/// The default per-sample IV size, from `sinf/schi/tenc`.
-fn iv_size(data: &[u8], body: usize, end: usize) -> Option<u8> {
+/// Reads the default per-sample IV size and key ID from `sinf/schi/tenc`.
+fn encryption_defaults(data: &[u8], body: usize, end: usize) -> Option<(u8, Option<[u8; 16]>)> {
     let sinf = child(data, body, end, b"sinf")?;
     let schi = child(data, sinf.body, sinf.end, b"schi")?;
     let tenc = child(data, schi.body, schi.end, b"tenc")?;
-    // tenc body: version and flags, a reserved byte, default_isProtected, then the IV size.
-    (tenc.body + 8 <= tenc.end)
-        .then(|| data.get(tenc.body + 7).copied())
-        .flatten()
+    // Version and flags, reserved/pattern bytes, isProtected, IV size, then KID.
+    let body = data.get(tenc.body..tenc.end)?;
+    let iv_size = *body.get(7)?;
+    let key_id = body.get(8..24).and_then(|bytes| bytes.try_into().ok());
+    Some((iv_size, key_id))
+}
+
+/// Recognizes an encrypted AAC entry followed by its clear equivalent. A decoder can use
+/// the first entry for both once the CENC reader has decrypted the samples.
+fn equivalent_aac_descriptions(data: &[u8], stsd: &Bx) -> bool {
+    if be32(data, stsd.body + 4) != Some(2) {
+        return false;
+    }
+    let mut entries = children(data, stsd.body + 8, stsd.end);
+    let (Some((_, encrypted)), Some((_, clear))) = (entries.next(), entries.next()) else {
+        return false;
+    };
+    if &encrypted.kind != ENCA || &clear.kind != MP4A {
+        return false;
+    }
+    let encrypted_head = encrypted.body + 28;
+    let clear_head = clear.body + 28;
+    let (Some(encrypted_esds), Some(clear_esds)) = (
+        child(data, encrypted_head, encrypted.end, b"esds"),
+        child(data, clear_head, clear.end, b"esds"),
+    ) else {
+        return false;
+    };
+    data[encrypted.body..encrypted_head] == data[clear.body..clear_head]
+        && data[encrypted_esds.body..encrypted_esds.end] == data[clear_esds.body..clear_esds.end]
 }
 
 /// Relabels every `enca` sample entry as `mp4a`, so a decoder reads the now cleartext track as
-/// plain AAC. Only the four-byte kind changes, so every offset in the file survives.
+/// plain AAC. Equivalent encrypted and clear entries are presented as one AAC description.
+/// The box sizes stay fixed, so every offset in the file survives.
 pub fn unlock(buf: &mut [u8], init: &Init) {
     for at in &init.entries {
         if let Some(kind) = buf.get_mut(at + 4..at + 8) {
             kind.copy_from_slice(MP4A);
+        }
+    }
+    for &at in &init.aac_description_counts {
+        if let Some(count) = buf.get_mut(at..at + 4) {
+            count.copy_from_slice(&1u32.to_be_bytes());
         }
     }
 }
@@ -367,12 +412,23 @@ fn read_traf(
 ) -> Vec<Sample> {
     let head = child(data, traf.body, traf.end, b"tfhd");
     let track = head.and_then(|tfhd| be32(data, tfhd.body + 4)).unwrap_or(0);
+    let tfhd = head.map(|tfhd| read_tfhd(data, &tfhd)).unwrap_or_default();
     // A single-track asset is matched whatever its ids say, since an audio-only encode has
     // nowhere else for the samples to belong.
+    let matches_description = |known: &&Encrypted| {
+        tfhd.description
+            .is_none_or(|index| index == known.description)
+    };
     let Some(encrypted) = tracks
         .iter()
+        .filter(matches_description)
         .find(|known| known.track == track)
-        .or_else(|| tracks.first().filter(|_| tracks.len() == 1))
+        .or_else(|| {
+            tracks
+                .first()
+                .filter(|_| tracks.len() == 1)
+                .filter(matches_description)
+        })
     else {
         return Vec::new();
     };
@@ -380,7 +436,6 @@ fn read_traf(
     let Some(trun) = child(data, traf.body, traf.end, b"trun") else {
         return Vec::new();
     };
-    let tfhd = head.map(|tfhd| read_tfhd(data, &tfhd)).unwrap_or_default();
     let Some(run) = read_trun(data, &trun, &tfhd) else {
         return Vec::new();
     };
@@ -434,15 +489,15 @@ fn read_traf(
     samples
 }
 
-/// The `tfhd` fields this needs: an explicit data base, and a default sample size for a `trun`
-/// that lists none.
+/// The fragment's media base, sample description override, and default sample size.
 #[derive(Clone, Copy, Debug, Default)]
 struct Tfhd {
     base: Option<u64>,
+    description: Option<usize>,
     default_size: Option<u32>,
 }
 
-/// Reads the two `tfhd` fields this needs, stepping over the ones in front of them. The box
+/// Reads the `tfhd` fields this needs, stepping over the ones in front of them. The box
 /// body is the flag word and the track id, then whichever optional fields the flags named.
 fn read_tfhd(data: &[u8], tfhd: &Bx) -> Tfhd {
     let Some(flags) = be32(data, tfhd.body).map(|word| word & FLAGS) else {
@@ -455,6 +510,7 @@ fn read_tfhd(data: &[u8], tfhd: &Bx) -> Tfhd {
         at += 8;
     }
     if flags & TFHD_SAMPLE_DESCRIPTION_INDEX != 0 {
+        found.description = be32(data, at).map(|index| index as usize);
         at += 4;
     }
     if flags & TFHD_DEFAULT_SAMPLE_DURATION != 0 {
@@ -606,7 +662,9 @@ mod tests {
     /// An `enca` sample entry with a `tenc` declaring `iv_size`, inside the boxes `read_init`
     /// walks to reach it.
     fn init_segment(track: u32, iv_size: u8) -> Vec<u8> {
-        let tenc = boxed(b"tenc", &[0, 0, 0, 0, 0, 0, 1, iv_size, 0]);
+        let mut tenc_body = vec![0, 0, 0, 0, 0, 0, 1, iv_size];
+        tenc_body.extend_from_slice(&[42; 16]);
+        let tenc = boxed(b"tenc", &tenc_body);
         let schi = boxed(b"schi", &tenc);
         let sinf = boxed(b"sinf", &schi);
         let mut entry = vec![0u8; 28];
@@ -685,7 +743,9 @@ mod tests {
             init.tracks,
             vec![Encrypted {
                 track: 7,
-                iv_size: 16
+                description: 1,
+                iv_size: 16,
+                key_id: Some([42; 16]),
             }]
         );
         assert_eq!(init.entries.len(), 1);

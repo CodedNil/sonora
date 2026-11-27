@@ -20,7 +20,7 @@
 | Search | `GET /searchview/v3/search` · `entity_types=album` | Searches albums. |
 | Search | `GET /searchview/v3/search` · `entity_types=artist` | Searches artists. |
 | Search | `GET /searchview/v3/search` · `entity_types=playlist` | Searches playlists. The full Search page sends all four kinds at once. |
-| Metadata | `POST /extended-metadata/v0/extended-metadata` | Loads catalogue metadata, compact profiles, Home and Browse cards, and track audio file IDs for playback and downloads. |
+| Metadata | `POST /extended-metadata/v0/extended-metadata` | Loads catalogue metadata, compact profiles, and Home and Browse cards. |
 | Browse | `GET /browsita/v1/browse` | Supplies music categories and directory links for the flat Browse grid. Category contents come from GetLists. |
 | Home | `GET /casita/v1/home/default?timezone={tz}` | Loads Home shelves and shortcuts. The Made For You shelves added to Home come from GetLists. |
 | Lyrics | `GET /color-lyrics/v3/track/{id}` | Loads lyrics and timing for a Spotify track, or for the closest track matches of a title and artist search. |
@@ -34,7 +34,9 @@
 | Playlists | `POST /playlist/v2/playlist/{id}/changes` | Applies edits. Appends batch tracks without reading a revision. Name and cover can change together. |
 | Playlist cover registration | `POST /playlist/v2/playlist/{id}/register-image` | Registers the uploaded image and returns its picture ID. |
 | Playlists | `POST /playlist/v2/user/{user}/rootlist/changes` | Updates the playlist library. Appends need no prior read. |
-| Audio storage | `GET /storage-resolve/files/audio/interactive/{file-id}` | Finds signed CDN URLs for playback and downloads. |
+| Audio manifest | `GET /track-playback/v1/media/{uri}` | Lists the track's web AAC files and duration. |
+| Audio storage | `GET /storage-resolve/v2/files/audio/interactive/{format}/{file-id}` | Resolves signed CDN URLs for the chosen MP4. |
+| Audio licensing | `GET /melody/v1/license_url` and `POST /widevine-license/v1/audio/license` | Discovers the endpoint and exchanges the CDM challenge for a Widevine license. |
 | Connect device state | `PUT /connect-state/v1/devices/{device}` | Publishes device state, including the smart shuffle mode and its lens while it is on, and receives the account cluster. The capabilities say the device supports smart shuffle. |
 | Connect device state | `PUT /connect-state/v1/devices/{device}/inactive?notify=false` | Marks the device inactive. |
 | Connect device state | `DELETE /connect-state/v1/devices/{device}` | Unregisters the device. |
@@ -68,7 +70,9 @@
 | Browser sign-in | `accounts.spotify.com/authorize` and a local callback | Browser pages and an HTTP loopback callback. |
 | Artwork display | `i.scdn.co`, `image-cdn-{fa,ak}.spotifycdn.com`, `mosaic.scdn.co` and `misc.scdn.co` | Image bytes for covers, artist images, playlist mosaics and the Liked Songs cover. |
 | Share links | `open.spotify.com/{kind}/{id}` and `open.spotify.com/socialsession/{token}` | Built for copied links and Jam invitations, and parsed from pasted ones. Never fetched. |
-| Audio playback and downloads | `GET` signed audio CDN URL | Fetches encrypted Vorbis in byte ranges, including a range near the target when playback seeks ahead. |
-| Native audio sign-in | Spotify access point over TCP | Uses a protobuf handshake and authenticates with the OAuth access token. |
-| Audio decryption keys | Spotify access point over TCP | Requests the key for the selected track and audio file over the authenticated connection. |
+| Audio playback | `GET` signed audio CDN URL | Fetches the AAC MP4 in byte ranges. |
+| Audio seek table | `GET seektables.spotifycdn.com/v1/seektable/{file-id}` | Provides the Widevine initialization data. |
+| Playback client grant | `POST clienttoken.spotify.com/v1/clienttoken` | Grants a short-lived client token for the web player client ID. |
+| Widevine certificate | `GET spclient.wg.spotify.com/widevine-license/v1/application-certificate` | Supplies the application certificate for Spotify's CDM session. |
+| Account identity and market | Spotify access point over TCP | Reads the canonical account name and market for sign-in and catalogue lookups. |
 | Short links | `GET spotify.link/{code}` | Follows redirects through the shared link helper in `music` to resolve shared links. |

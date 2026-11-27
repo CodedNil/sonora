@@ -549,15 +549,14 @@ async fn current_pins(session: &Session) -> Result<Vec<CollectionItem>> {
         .checked_sub(PIN_DELTA_REACH)
         .and_then(|since| since.duration_since(UNIX_EPOCH).ok())
         .context("cannot read the current time")?;
+    let request = DeltaRequest {
+        username: session.username().to_owned(),
+        set: PINS.to_owned(),
+        last_sync_token: since.as_millis().to_string(),
+    };
     let delta = session
-        .api()
-        .collection_delta(&DeltaRequest {
-            username: session.username().to_owned(),
-            set: PINS.to_owned(),
-            last_sync_token: since.as_millis().to_string(),
-        })
+        .call(|api| api.collection_delta(&request))
         .await
-        .map_err(sign_in_error)
         .context("cannot read the latest Spotify pins")?;
     if !delta.delta_update_possible {
         return Ok(items);

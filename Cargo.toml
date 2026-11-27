@@ -13,8 +13,6 @@ repository = "https://github.com/sonorahq/sonora"
 num-bigint = "0.5"
 shannon = "0.2"
 tokio-util = { version = "0.7", features = ["codec"] }
-aes = "0.9"
-ctr = "0.10"
 apple = { path = "crates/apple" }
 artwork = { path = "crates/artwork" }
 cli = { path = "crates/cli" }

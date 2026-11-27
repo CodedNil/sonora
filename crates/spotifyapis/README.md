@@ -14,7 +14,7 @@
 | Connect | Publish device state, deactivate or unregister a device, set remote volume, transfer playback, and send playback or queue commands. |
 | Jam | Read the current session or an invitation, start or join a session, leave or end it, and remove a member. |
 | Dealer | Receive state updates, library changes, Jam notifications, and playback commands. Reply to commands on the connection that received them. |
-| Playback | Resolve contexts and SequenceProxy pages, resolve signed audio CDN URLs, and retrieve audio keys from a Spotify access point. |
+| Playback | Resolve contexts and SequenceProxy pages, find web AAC files, resolve signed CDN URLs, and exchange Widevine licenses. |
 | Identifiers | Convert between binary catalogue IDs and their 22-character base62 form. |
 
 ## Sign-in and requests
@@ -50,7 +50,7 @@ For projected list reads, pass list, entry, or referenced-list fields to `Sessio
 
 ## Using the audio APIs
 
-Resolve a context with `Session::resolve_sequence` when you need the ordered tracks for playback. After selecting an audio file from track metadata, use `Session::audio_urls` to obtain its signed URLs and [`AudioKeys`](src/access_point.rs) to get the key for the binary track and file IDs. Resolve the URLs again when they expire.
+Resolve a context with `Session::resolve_sequence` when you need the ordered tracks for playback. Construct [`Playback`](src/playback.rs) with a signed-in session and a stable device ID. It obtains its own client token, resolves AAC files and CDN URLs, and exchanges a CDM challenge for a Widevine license.
 
 The application handles downloading, decryption, decoding, seeking, output, and offline storage. It also owns queue policy and how Connect or Jam events affect its player.
 

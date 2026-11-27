@@ -16,7 +16,7 @@ use widevine::{self, Cdm};
 
 use crate::auth::{self, AGENT};
 use crate::client::AppleClient;
-use crate::progressive::Media;
+use engine::cenc::Media;
 
 /// Where the web player asks what it may play.
 const PLAYBACK: &str = "https://play.music.apple.com/WebObjects/MZPlay.woa/wa/webPlayback";

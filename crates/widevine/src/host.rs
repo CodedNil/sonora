@@ -65,6 +65,7 @@ pub fn serve(module: &Path) -> Result<()> {
 /// Runs one request against the module.
 fn answer(shim: &Shim, op: u8, payload: &[u8], subs: &mut Vec<u32>) -> Result<Vec<u8>> {
     match op {
+        wire::CERTIFICATE => shim.set_certificate(payload).map(|()| Vec::new()),
         wire::CHALLENGE => shim.challenge(payload),
         wire::UPDATE => shim.update(payload).map(|()| Vec::new()),
         wire::DECRYPT => {

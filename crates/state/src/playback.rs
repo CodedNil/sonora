@@ -20,8 +20,8 @@ use ui::{Pin, PinKind};
 /// without asking the engine again.
 #[derive(Clone, Copy, PartialEq)]
 enum Refusal {
-    /// Spotify denied an audio key for the account.
-    Keys,
+    /// Spotify refused the Widevine license request.
+    License,
     /// The provider streams only to a signed-in listener.
     SignIn,
 }
@@ -127,7 +127,6 @@ const SIGNALS: usize = 4;
 const WARM_DWELL: Duration = Duration::from_millis(40);
 /// How long a fetched collection may start a press without being asked for again.
 const WARM_TTL: Duration = Duration::from_secs(120);
-const KEYS_FAQ: &str = "https://sonorahq.org/faq#spotify-playback-keys";
 
 /// A collection fetched for a play button, so a press on it need not wait for its tracks.
 struct Warm {
@@ -1233,7 +1232,7 @@ impl Playback {
         let is_local = music::is_local_id(&id);
         if !is_local {
             match self.refused {
-                Some(Refusal::Keys) => return self.refuse(cx),
+                Some(Refusal::License) => return self.refuse(cx),
                 Some(Refusal::SignIn) => return self.gate(cx),
                 None => {}
             }
@@ -3963,26 +3962,25 @@ impl Playback {
         cx.notify();
     }
 
-    /// Records that Spotify denied an audio key and stops for the rest of the session, with a
+    /// Records that Spotify refused a Widevine license and stops for the rest of the session, with a
     /// toast that explains the refusal.
     fn refuse(&mut self, cx: &mut Context<Self>) {
         let first = self.refused.is_none();
-        self.refused = Some(Refusal::Keys);
+        self.refused = Some(Refusal::License);
         self.track = None;
         self.blocked_until = None;
         self.state = PlaybackState::Failed(
-            "spotify denied an audio key for this account; nothing will play in this session"
+            "spotify refused the Widevine license request; nothing will play in this session"
                 .to_owned(),
         );
         if first {
             log::error!(
-                "playback: spotify denied an audio key for this account; nothing will play in \
+                "playback: spotify refused the Widevine license request; nothing will play in \
                  this session"
             );
         }
-        let toast = Toast::new(Outcome::Failed, "toast-keys-error")
-            .note("toast-keys-refused")
-            .visit("toast-why", KEYS_FAQ);
+        let toast = Toast::new(Outcome::Failed, "toast-spotify-license-error")
+            .note("toast-spotify-license-refused");
         Toasts::post(toast, cx);
         cx.notify();
     }

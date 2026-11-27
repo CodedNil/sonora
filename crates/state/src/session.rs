@@ -493,6 +493,39 @@ impl Session {
         self.provider_for(id).map(|provider| provider.slug())
     }
 
+    /// The store key for the streaming account's sidebar pins.
+    pub(crate) fn streaming_pin_scope(&self) -> Option<String> {
+        let slug = self.provider_slug()?;
+        self.client.as_ref()?;
+        if slug == "spotify" {
+            let SessionState::SignedIn(profile) = &self.state else {
+                return None;
+            };
+            return (!profile.id.is_empty()).then(|| format!("{slug}:{}", profile.id));
+        }
+        Some(slug.to_owned())
+    }
+
+    /// The store keys for the pins visible across the active shelves.
+    pub(crate) fn active_pin_scopes(&self) -> Vec<String> {
+        let mut scopes: Vec<_> = self.streaming_pin_scope().into_iter().collect();
+        if self.local_client.is_some() {
+            scopes.push(self.local_slug().to_owned());
+        }
+        scopes
+    }
+
+    /// The pin store key for the shelf that owns the item.
+    pub(crate) fn pin_scope_for(&self, id: &str) -> Option<String> {
+        match music::is_local_id(id) {
+            true => self
+                .local_client
+                .as_ref()
+                .map(|_| self.local_slug().to_owned()),
+            false => self.streaming_pin_scope(),
+        }
+    }
+
     /// The provider an id belongs to, whichever shelf it sits on.
     pub fn provider_for(&self, id: &str) -> Option<&dyn MusicProvider> {
         match music::is_local_id(id) {

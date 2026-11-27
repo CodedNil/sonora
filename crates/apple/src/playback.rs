@@ -24,8 +24,8 @@ use sound::decode::{self, Decoded};
 use sound::trim;
 
 use crate::client::AppleClient;
-use crate::progressive::Media;
 use crate::stream;
+use engine::cenc::Media;
 
 /// Priming frames at the head of an Apple AAC encode, before the first frame of music.
 ///

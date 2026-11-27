@@ -1299,6 +1299,7 @@ pub struct Library {
     pending_relist: Option<HashMap<String, Option<Vec<u8>>>>,
     pin_targets_task: Option<Task<()>>,
     pin_task: Option<Task<()>>,
+    pin_scope: Option<String>,
     pin_targets: Option<Vec<music::PinTarget>>,
     pending: HashMap<String, Task<()>>,
     pending_albums: HashMap<String, Task<()>>,
@@ -1349,6 +1350,7 @@ impl Library {
                 this.smart_opening += 1;
                 this.smart_editing = None;
                 this.pin_task = None;
+                this.pin_scope = session.read(cx).streaming_pin_scope();
                 this.relisting = None;
                 this.pending_relist = None;
                 if !session.read(cx).authenticated() {
@@ -1387,6 +1389,7 @@ impl Library {
                 this.forget(Shelf::Streaming, cx);
                 this.pin_task = None;
                 this.pin_targets_task = None;
+                this.pin_scope = None;
                 this.pin_targets = None;
                 this.contents.clear();
                 this.reading.clear();
@@ -1441,6 +1444,7 @@ impl Library {
             pending_relist: None,
             pin_targets_task: None,
             pin_task: None,
+            pin_scope: None,
             pin_targets: None,
             pending: HashMap::new(),
             pending_albums: HashMap::new(),
@@ -1602,8 +1606,11 @@ impl Library {
         }
     }
 
-    pub fn pin_targets(&self) -> Option<&[music::PinTarget]> {
-        self.pin_targets.as_deref()
+    /// Returns a completed pin snapshot only for the account that requested it.
+    pub(crate) fn pin_targets(&self, scope: &str) -> Option<&[music::PinTarget]> {
+        self.pin_targets
+            .as_deref()
+            .filter(|_| self.pin_scope.as_deref() == Some(scope))
     }
 
     pub fn pin_pending(&self) -> bool {

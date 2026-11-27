@@ -63,6 +63,7 @@ class Session {
   virtual ~Session() = default;
 
   virtual void initialize() = 0;
+  virtual void set_certificate(const uint8_t* certificate, uint32_t len) = 0;
   virtual void generate(const uint8_t* init_data, uint32_t len) = 0;
   virtual void update(const uint8_t* license, uint32_t len) = 0;
   virtual Status decrypt(const InputBuffer_2& in, DecryptedBlock* out) = 0;
@@ -115,6 +116,9 @@ class Host : public Metrics<typename Cdm::Host>, public Session {
   void generate(const uint8_t* init_data, uint32_t len) override {
     cdm->CreateSessionAndGenerateRequest(1, SessionType::kTemporary, InitDataType::kCenc,
                                          init_data, len);
+  }
+  void set_certificate(const uint8_t* certificate, uint32_t len) override {
+    cdm->SetServerCertificate(3, certificate, len);
   }
   void update(const uint8_t* license, uint32_t len) override {
     cdm->UpdateSession(2, session_id.c_str(), static_cast<uint32_t>(session_id.size()),
@@ -250,6 +254,18 @@ int ch_open(const char* path) {
 
 // The loader's reason for the last ch_open that answered 1. Valid until the next ch_open.
 const char* ch_load_error() { return g_load_error.c_str(); }
+
+// Install the service certificate before opening the first license session.
+int ch_set_certificate(const uint8_t* certificate, uint32_t len) {
+  Session* s = g_session;
+  if (!s) return 40;
+  s->resolved = false;
+  s->rejected = false;
+  s->set_certificate(certificate, len);
+  for (int i = 0; i < 500 && !s->resolved && !s->rejected; ++i) s->fire_timers();
+  if (s->rejected) return 41;
+  return s->resolved ? 0 : 42;
+}
 
 // init_data = the CENC pssh box. Returns the license challenge in *out (malloc'd).
 int ch_challenge(const uint8_t* init_data, uint32_t len, uint8_t** out, uint32_t* out_len) {

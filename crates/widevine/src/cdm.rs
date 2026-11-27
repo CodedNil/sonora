@@ -146,6 +146,21 @@ mod host {
             Ok(Self { link })
         }
 
+        /// Starts a private CDM host and installs a provider certificate before licensing.
+        /// Its certificate does not affect the shared host used by other providers.
+        pub fn open_certified(certificate: &[u8]) -> Result<Self> {
+            anyhow::ensure!(!certificate.is_empty(), "the widevine certificate is empty");
+            let link = start()?;
+            link.call(
+                wire::CERTIFICATE,
+                certificate.len(),
+                |to| to.write_all(certificate),
+                drain,
+            )
+            .context("the widevine cdm refused the service certificate")?;
+            Ok(Self { link })
+        }
+
         /// The license challenge for `init`, a `pssh` box. What comes back goes to the
         /// provider's license endpoint untouched.
         pub fn challenge(&self, init: &[u8]) -> Result<Vec<u8>> {
@@ -585,6 +600,11 @@ mod host {
 
     impl Cdm {
         pub fn open() -> Result<Self> {
+            bail!("this build carries no widevine host")
+        }
+
+        /// Certified sessions also require the CDM host.
+        pub fn open_certified(_certificate: &[u8]) -> Result<Self> {
             bail!("this build carries no widevine host")
         }
 

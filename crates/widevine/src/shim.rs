@@ -12,6 +12,7 @@ use anyhow::{Result, bail};
 unsafe extern "C" {
     fn ch_open(path: *const c_char) -> c_int;
     fn ch_load_error() -> *const c_char;
+    fn ch_set_certificate(certificate: *const u8, len: u32) -> c_int;
     fn ch_challenge(init_data: *const u8, len: u32, out: *mut *mut u8, out_len: *mut u32) -> c_int;
     fn ch_update(license: *const u8, len: u32) -> c_int;
     fn ch_decrypt(
@@ -67,6 +68,14 @@ impl Shim {
             2 => bail!("the module exports no cdm entry points"),
             3 => bail!("the module gave no cdm instance"),
             code => bail!("the cdm did not initialize (code {code})"),
+        }
+    }
+
+    /// Installs a provider certificate before the first license session.
+    pub fn set_certificate(&self, certificate: &[u8]) -> Result<()> {
+        match unsafe { ch_set_certificate(certificate.as_ptr(), certificate.len().try_into()?) } {
+            0 => Ok(()),
+            code => bail!("ch_set_certificate failed (code {code})"),
         }
     }
 

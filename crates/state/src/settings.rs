@@ -368,11 +368,12 @@ pub const LYRICS_SOURCES: [&str; 11] = [
     "NetEase",
 ];
 
-/// A pin together with the provider it belongs to. The pin is flattened so the stored JSON
-/// reads as a pin with one extra `slug` key.
+/// A pin together with its provider or account store key and its sync status.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Held {
     slug: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    mirrored: bool,
     #[serde(flatten)]
     pin: Pin,
 }
@@ -2257,8 +2258,8 @@ impl AppSettings {
         self.schedule_state_save(cx);
     }
 
-    pub fn pinned(&self, slugs: &[&str]) -> Vec<Pin> {
-        gather(&self.state.pinned, slugs)
+    pub(crate) fn pinned(&self, scopes: &[String]) -> Vec<Pin> {
+        gather(&self.state.pinned, scopes)
     }
 
     pub fn resume(&self) -> Option<&Resume> {
@@ -2297,10 +2298,10 @@ impl AppSettings {
         slug: &str,
         pin: Pin,
         gap: Option<usize>,
-        slugs: &[&str],
+        scopes: &[String],
         cx: &mut Context<Self>,
     ) {
-        if !place(&mut self.state.pinned, slug, pin, gap, slugs) {
+        if !place(&mut self.state.pinned, slug, pin, gap, scopes) {
             return;
         }
         self.schedule_state_save(cx);
@@ -2311,6 +2312,36 @@ impl AppSettings {
             return;
         }
         self.schedule_state_save(cx);
+    }
+
+    /// Reconciles a successful provider snapshot with the current account's pins.
+    /// Pins kept only in Sonora survive, including when the service returns an empty list.
+    pub(crate) fn sync_pins(&mut self, scope: &str, remote: Vec<Pin>, cx: &mut Context<Self>) {
+        let pinned = &mut self.state.pinned;
+        let before = pinned.len();
+        pinned.retain(|held| {
+            held.slug != scope || !held.mirrored || remote.iter().any(|pin| held.pin.same(pin))
+        });
+        let mut changed = before != pinned.len();
+        for pin in remote {
+            if let Some(held) = pinned
+                .iter_mut()
+                .find(|held| held.slug == scope && held.pin.same(&pin))
+            {
+                changed |= !held.mirrored;
+                held.mirrored = true;
+                continue;
+            }
+            pinned.push(Held {
+                slug: scope.to_owned(),
+                mirrored: true,
+                pin,
+            });
+            changed = true;
+        }
+        if changed {
+            self.schedule_state_save(cx);
+        }
     }
 
     pub fn set_sidebar(&mut self, width: f32, open: bool, rail: bool, cx: &mut Context<Self>) {
@@ -2457,23 +2488,21 @@ impl AppSettings {
 
     /// Rewrites the pins of `slugs` into `order`, leaving another provider's pins in their slots.
     /// Nothing happens unless `order` holds exactly the pins already there.
-    pub fn rearrange(&mut self, order: &[Pin], slugs: &[&str], cx: &mut Context<Self>) {
-        let slots: Vec<usize> = shown(&self.state.pinned, slugs)
-            .map(|(index, _)| index)
-            .collect();
+    pub(crate) fn rearrange(&mut self, order: &[Pin], scopes: &[String], cx: &mut Context<Self>) {
+        let visible: Vec<_> = shown(&self.state.pinned, scopes).collect();
         let moved: Vec<Held> = order
             .iter()
             .filter_map(|pin| {
-                self.state
-                    .pinned
+                visible
                     .iter()
-                    .find(|held| held.pin.same(pin))
-                    .cloned()
+                    .find(|(_, held)| held.pin.same(pin))
+                    .map(|(_, held)| (*held).clone())
             })
             .collect();
-        if moved.len() != slots.len() {
+        if moved.len() != visible.len() {
             return;
         }
+        let slots: Vec<_> = visible.into_iter().map(|(index, _)| index).collect();
         for (slot, held) in slots.into_iter().zip(moved) {
             self.state.pinned[slot] = held;
         }
@@ -3402,7 +3431,7 @@ fn settings_path() -> PathBuf {
 }
 
 /// The pins of the given providers, in stored order.
-fn gather(pinned: &[Held], slugs: &[&str]) -> Vec<Pin> {
+fn gather(pinned: &[Held], slugs: &[impl AsRef<str>]) -> Vec<Pin> {
     shown(pinned, slugs)
         .map(|(_, held)| held.pin.clone())
         .collect()
@@ -3412,12 +3441,12 @@ fn gather(pinned: &[Held], slugs: &[&str]) -> Vec<Pin> {
 /// removed, so they keep their place.
 fn shown<'a>(
     pinned: &'a [Held],
-    slugs: &'a [&str],
+    slugs: &'a [impl AsRef<str> + 'a],
 ) -> impl Iterator<Item = (usize, &'a Held)> + 'a {
     pinned
         .iter()
         .enumerate()
-        .filter(move |(_, held)| slugs.contains(&held.slug.as_str()))
+        .filter(move |(_, held)| slugs.iter().any(|slug| slug.as_ref() == held.slug))
 }
 
 /// Removes one pin and reports whether it was there.
@@ -3444,7 +3473,13 @@ fn carry(previous: Option<&Resume>, next: &mut Resume) {
 
 /// Inserts or moves `pin` into the `gap`th slot among the pins of `slugs`. `None` or a gap past
 /// the end means the end. Returns false when nothing moved.
-fn place(pinned: &mut Vec<Held>, slug: &str, pin: Pin, gap: Option<usize>, slugs: &[&str]) -> bool {
+fn place(
+    pinned: &mut Vec<Held>,
+    slug: &str,
+    pin: Pin,
+    gap: Option<usize>,
+    slugs: &[impl AsRef<str>],
+) -> bool {
     let visible: Vec<usize> = shown(pinned, slugs).map(|(index, _)| index).collect();
     let gap = gap.unwrap_or(visible.len()).min(visible.len());
     let target = match gap {
@@ -3452,11 +3487,15 @@ fn place(pinned: &mut Vec<Held>, slug: &str, pin: Pin, gap: Option<usize>, slugs
         gap => visible[gap - 1] + 1,
     };
 
-    let Some(from) = pinned.iter().position(|held| held.pin.same(&pin)) else {
+    let Some(from) = pinned
+        .iter()
+        .position(|held| held.slug == slug && held.pin.same(&pin))
+    else {
         pinned.insert(
             target,
             Held {
                 slug: slug.to_owned(),
+                mirrored: false,
                 pin,
             },
         );
@@ -3822,6 +3861,7 @@ mod tests {
     fn held(slug: &str, id: &str) -> Held {
         Held {
             slug: slug.to_owned(),
+            mirrored: false,
             pin: pin(id),
         }
     }

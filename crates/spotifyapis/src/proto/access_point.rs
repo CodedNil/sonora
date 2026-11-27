@@ -1,6 +1,6 @@
 //! Native audio access-point authentication.
 //!
-//! These login messages authenticate the TCP session for audio keys.
+//! These login messages authenticate the TCP session for account lookups.
 
 #[derive(prost::Message)]
 pub struct ClientResponseEncrypted {

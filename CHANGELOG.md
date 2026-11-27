@@ -64,7 +64,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Sonora renews the Spotify sign-in automatically and keeps Soloist paired when you sign out.
 - Spotify Browse focuses on music. Home, Browse, large playlists, artist discographies and wide Search can show results as they load.
 - Reopening a Spotify playlist or Browse category fetches its latest contents.
-- Built-in Spotify playback can reuse cached tracks for offline downloads. Spotify downloads adjust their pace when the service asks them to slow down, and the downloads list counts down to when they go on.
+- Spotify playback uses AAC and Widevine. Spotify downloads are unavailable.
 - Scrollbars fade in as you scroll and fade out once you stop, instead of popping in and out.
 - The settings search suggests matching settings in a panel under the field as you type, like the Search page does. Pick one with the arrow keys or a click to jump to it and light it up for a moment, or press Enter to list every match.
 - Settings name each group of options in a column beside it, with a thin line between groups instead of headings and wide gaps.
@@ -89,6 +89,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Skipping ahead in a song no longer counts toward its scrobble, so a song is scrobbled only once you have actually listened to half of it or four minutes.
 - The page's frame and the sidebar's edge fade with the window's opacity instead of staying bright on a see-through window.
 - The player bar draws the same at every window height under fractional display scaling, instead of its seek line and times shifting by a pixel as you resize.
+- Spotify sidebar pins stay with the account that pinned them when you switch accounts or restart Sonora.
 - The Italian and Korean translations are complete, so no screen falls back to English.
 - Japanese, Chinese and Korean text on Linux is drawn at the weight the rest of the interface uses, instead of looking bold everywhere.
 - Opening the font or language picker in Settings no longer crashes while keyboard focus moves to its search field.

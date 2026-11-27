@@ -8,10 +8,8 @@ use music::{LyricsProvider as _, LyricsQuery, MusicApi as _, TrackKey};
 use spotify::{AuthConfig, SpotifyClient, SpotifyLyrics, auth};
 use spotifyapis::{
     Session,
-    access_point::AudioKeys,
     dealer::{Dealer, Event},
-    id::raw_id,
-    proto::extended_metadata::{ExtensionKind, Track},
+    playback::Playback,
 };
 use std::sync::Arc;
 
@@ -332,7 +330,7 @@ async fn main() -> Result<()> {
     );
     drop(dealer);
 
-    measure!("audio_read", audio_read(api.clone(), device).await);
+    measure!("audio_cdn", audio_cdn(api.clone(), device).await);
     Ok(())
 }
 
@@ -362,34 +360,11 @@ fn jam_result(result: Result<Option<spotifyapis::proto::social_connect::SocialSe
     }
 }
 
-async fn audio_read(api: Arc<Session>, device: &str) -> Result<usize> {
-    let key = (ExtensionKind::TrackV4, spotifyapis::id::track_uri(AUDIO_TRACK));
-    let track: Track = api
-        .extended_metadata([(key.1.as_str(), key.0)])
-        .await?
-        .remove(&key)
-        .context("missing audio metadata")?
-        .decode()?;
-    let file: [u8; 20] = [1, 2, 0]
-        .into_iter()
-        .find_map(|format| {
-            track
-                .file
-                .iter()
-                .find(|file| file.format == Some(format))
-                .and_then(|file| file.file_id().try_into().ok())
-        })
-        .context("missing Vorbis file")?;
-    let file_id = file
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let url = api
-        .audio_urls(&file_id)
-        .await?
-        .into_iter()
-        .next()
-        .context("missing CDN URL")?;
+async fn audio_cdn(api: Arc<Session>, device: &str) -> Result<usize> {
+    let web = Playback::new(api, device.to_owned());
+    let track = web.track(AUDIO_TRACK).await?;
+    let file = track.files.first().context("missing web AAC file")?;
+    let url = web.audio_urls(file).await?.into_iter().next().context("missing CDN URL")?;
     println!("HTTP signed CDN range");
     let response = spotifyapis::media_client()?
         .get(url)
@@ -402,8 +377,5 @@ async fn audio_read(api: Arc<Session>, device: &str) -> Result<usize> {
         "CDN did not serve a range"
     );
     let bytes = response.bytes().await?;
-    AudioKeys::new(api, device.to_owned())
-        .get(raw_id(AUDIO_TRACK).context("invalid track ID")?, file)
-        .await?;
     Ok(bytes.len())
 }

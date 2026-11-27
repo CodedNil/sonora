@@ -71,8 +71,8 @@ toast-open-all-failed = { $count ->
    *[other] { $count } files could not be opened
 }
 toast-open-some-failed = Some files could not be opened
-toast-keys-error = Playback key error
-toast-keys-refused = Spotify may not work here
+toast-spotify-license-error = Spotify license error
+toast-spotify-license-refused = Spotify refused the Widevine license request.
 toast-why = Why?
 toast-sign-in-to-play = { $name } only streams to a signed-in listener
 toast-restore-failed = { $name } could not sign back in, so Sonora carried on without it

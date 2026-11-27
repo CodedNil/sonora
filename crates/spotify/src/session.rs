@@ -5,16 +5,16 @@ use tokio::sync::OnceCell;
 
 use spotifyapis::auth::OAuth;
 
-use spotifyapis::access_point::AudioKeys;
+use spotifyapis::playback::Playback;
 
 /// An OAuth-authenticated Spotify account shared by API and playback consumers.
 #[derive(Clone)]
 pub struct Session(Arc<Inner>);
 
-/// Account state, service discovery and the optional native audio connection.
+/// Account state, service discovery, and web playback.
 struct Inner {
     api: Arc<spotifyapis::Session>,
-    audio_keys: AudioKeys,
+    playback: Playback,
     device_id: String,
     session_id: String,
     connection_id: RwLock<Arc<str>>,
@@ -26,7 +26,7 @@ impl Session {
     pub(super) fn new(oauth: Arc<OAuth>, device_id: String) -> Self {
         let api = Arc::new(spotifyapis::Session::new(oauth));
         Self(Arc::new(Inner {
-            audio_keys: AudioKeys::new(api.clone(), device_id.clone()),
+            playback: Playback::new(api.clone(), device_id.clone()),
             api,
             device_id,
             session_id: uuid::Uuid::new_v4().simple().to_string(),
@@ -36,8 +36,8 @@ impl Session {
         }))
     }
 
-    pub(super) fn audio_keys(&self) -> &AudioKeys {
-        &self.0.audio_keys
+    pub(super) fn playback(&self) -> &Playback {
+        &self.0.playback
     }
 
     /// Records the revision of the complete playlist library, if every page agreed on it.
