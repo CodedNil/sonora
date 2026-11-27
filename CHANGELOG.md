@@ -82,6 +82,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Karaoke lyrics, the fullscreen player and scrolling long lists use less CPU.
 - Guest mode for YouTube Music is in its sign-in dialog, next to signing in and connecting manually.
 - Favoriting an Apple Music song or album adds it to your library, as the Apple Music app does.
+- Soloist, Spotify's own player, is gone. Spotify plays through Sonora's own player, and the Soloist setup is removed from Settings, Playback.
 
 ### Fixed
 
@@ -95,7 +96,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Removing a YouTube Music favorite you liked as a music video now takes it out of your likes, instead of the heart filling again on the next reload.
 
 - YouTube Music tracks start right away again for a signed-in account, in the 256 kbps stream on Premium, instead of waiting several seconds or failing with "could not be played".
-- Interrupted or failed app updates, Soloist installs, theme saves and offline downloads no longer leave partial files behind.
+- Interrupted or failed app updates, theme saves and offline downloads no longer leave partial files behind.
 - Liking, saving or creating a playlist as a YouTube Music guest now asks you to sign in, with a button that takes you there, instead of saying the change could not be saved.
 - Playback handed to Sonora through Spotify Connect starts at once, and the rest of its queue fills in as it loads.
 - Opening a menu no longer thickens the haze under the Settings header, so the page scrolling beneath it looks the same with the menu open as without.
@@ -115,8 +116,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Apple Music songs on networks that cannot reach some of Apple's playback servers start after a short pause instead of failing to play after 40 seconds.
 - Previous goes back to the last song again when SponsorBlock skips the opening of a YouTube Music track, instead of starting the same track over.
 - Seeking many times in a row, with the arrow keys or while a song is still starting, lands once on the last position instead of the song jumping on by itself afterwards.
-- Synced lyrics catch up right away when the playing song turns out to be somewhere other than where Sonora showed it, as could happen with Spotify through Soloist after launch or a song change, instead of standing still until you click a line.
-- Spotify's other apps show what plays next while Soloist plays an album or playlist, instead of an empty queue.
+- Synced lyrics catch up right away when the playing song turns out to be somewhere other than where Sonora showed it, as could happen with Spotify after launch or a song change, instead of standing still until you click a line.
 - In a Sonora Session, a song change no longer sends the new song to where the last one was, or rocks playback back and forth for a few seconds.
 - In a Sonora Session, songs you queue by hand stay in the queue as yours when others skip or change the queue, instead of turning into part of the playlist.
 - Moving the pointer over the fullscreen player brings its controls back even when the window is not focused.
@@ -124,7 +124,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - TIDAL genres such as Pop or R&B / Soul show once in Browse instead of twice.
 - Space pauses and resumes right after you click to play something on the search page, instead of typing a space into the search field.
 - Escape closes the search suggestions and leaves the search field in one press.
-- Sonora keeps your Spotify API key out of the process list whenever Soloist 1.4.0 or newer can store it.
 - Highlighted menu entries round their corners in step with the menu's own, instead of half a pixel sharper.
 - Holding down the heart or another button on a song no longer tints the frosted column headers above it with the row's color.
 - A see-through window keeps its theme: the sidebars and bars stay their own colour beside the page, and buttons and the player bar no longer change shade the moment opacity drops below 100%.
@@ -145,8 +144,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - On Linux, "Continue with Google" and the other buttons of a sign-in page that open a window of their own now open it instead of doing nothing.
-- With Soloist off, you can seek ahead in Spotify tracks while they download.
-- Spotify Connect follows Soloist playback and queue changes, keeps your position when switching players, and lets you jump to a specific queue entry on another device, including duplicates. Shuffled albums and playlists keep their context.
+- You can seek ahead in Spotify tracks while they download.
+- Spotify Connect keeps your position when switching players, and lets you jump to a specific queue entry on another device, including duplicates. Shuffled albums and playlists keep their context.
 - Spotify Home credits Liked Songs to your account and marks the playlist playing on the active device.
 - Spotify sidebar pins can include items outside the main library. Deleting a playlist no longer reports a false failure, and a Jam stays visible if ending or leaving it fails.
 - Album covers stay visible while higher-resolution artwork loads, and Sonora cleans up its instance socket on normal exit on Unix.

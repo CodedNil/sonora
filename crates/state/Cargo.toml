@@ -29,7 +29,6 @@ rusqlite.workspace = true
 scrobble.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-soloist.workspace = true
 sha2.workspace = true
 storage.workspace = true
 tempfile.workspace = true

@@ -105,8 +105,6 @@ pub struct Devices {
     io: Io,
     link: Option<Arc<Connect>>,
     mode: Mode,
-    /// The last transport intent sent to Soloist before it reported a current track.
-    local_intent: Option<bool>,
     /// The name last handed to the link.
     named: Option<Naming>,
     roster: Roster,
@@ -202,7 +200,6 @@ impl Devices {
             io,
             link: None,
             mode: Mode::Off,
-            local_intent: None,
             named: None,
             roster: Roster::default(),
             jam: None,
@@ -492,11 +489,6 @@ impl Devices {
         }
     }
 
-    /// The independently registered player on this computer, when one is available.
-    pub fn local_device(&self) -> Option<&Device> {
-        self.roster.local.as_ref()
-    }
-
     /// Whether Sonora itself is registered as a transfer target.
     pub fn can_transfer_here(&self) -> bool {
         self.mode == Mode::Publish
@@ -555,42 +547,6 @@ impl Devices {
         if let Some(link) = &self.link {
             link.send(Request::Control(device.to_owned(), command));
         }
-    }
-
-    /// Routes playback to the configured external engine, even while it registers.
-    pub(crate) fn controls_local_device(&self) -> bool {
-        self.mode == Mode::Observe
-    }
-
-    /// Whether pending playback should begin when Soloist becomes ready.
-    pub(crate) fn local_playing_intent(&self) -> Option<bool> {
-        self.local_intent
-    }
-
-    /// Sends a command to Soloist and remembers its transport intent until a track is reported.
-    pub(crate) fn control_local_device(&mut self, command: Command) {
-        if let Some(link) = &self.link {
-            self.local_intent = match &command {
-                Command::Start(start) => Some(start.state.playing),
-                Command::Play => Some(true),
-                Command::Pause => Some(false),
-                _ => self.local_intent,
-            };
-            link.send(Request::ControlLocal(command));
-        }
-    }
-
-    /// Captures the active Soloist queue before its daemon stops.
-    pub(crate) fn local_device_playback(&self) -> Option<Start> {
-        let remote = self.steered()?;
-        if self.roster.local.as_ref()?.id != remote.device.id || remote.state.track.is_none() {
-            return None;
-        }
-        Some(Start {
-            state: remote.state,
-            preserve_queue: true,
-            restart: true,
-        })
     }
 
     /// Changes the device's volume and shows the requested level until its next report arrives.
@@ -788,7 +744,6 @@ impl Devices {
     fn reset(&mut self, link: Option<Arc<Connect>>) {
         self.link = link;
         self.mode = Mode::Off;
-        self.local_intent = None;
         self.named = None;
         self.roster = Roster::default();
         self.jam = None;
@@ -814,24 +769,15 @@ impl Devices {
         self.held_playing = None;
     }
 
-    /// Follows the device network, with Soloist handling local device registration when active.
+    /// Follows the device network as the settings say.
     pub(crate) fn apply(&mut self, cx: &mut Context<Self>) {
         let Some(link) = self.link.clone() else {
             return;
         };
         let settings = self.settings.read(cx);
-        let wanted = if link.jams()
-            && self
-                .session
-                .read(cx)
-                .soloist_account()
-                .is_some_and(soloist::ready_for)
-        {
-            Mode::Observe
-        } else if !settings.spotify_connect() {
-            Mode::Off
-        } else {
-            Mode::Publish
+        let wanted = match settings.spotify_connect() {
+            true => Mode::Publish,
+            false => Mode::Off,
         };
         let naming = match settings.spotify_connect_name() {
             ConnectName::Sonora => Naming::App,
@@ -855,12 +801,8 @@ impl Devices {
             self.named = named;
             self.events = events;
         }
-        if wanted == Mode::Observe {
-            self.claimed = false;
-        }
         self.sent = None;
         self.mode = wanted;
-        self.local_intent = None;
         link.send(Request::Mode(wanted));
         if wanted == Mode::Publish {
             self.publish(cx);
@@ -992,12 +934,6 @@ impl Devices {
                         before.state.playing && before.device.id == now.device.id
                     })
             });
-        if let (Some(local), Some(remote)) = (&roster.local, &roster.elsewhere)
-            && local.id == remote.device.id
-            && remote.state.track.is_some()
-        {
-            self.local_intent = None;
-        }
         self.roster = roster;
         let taken = match (&self.connecting, &self.roster.elsewhere) {
             (Some(connecting), Some(elsewhere)) => {
@@ -1434,16 +1370,6 @@ impl Devices {
 
     /// Tells the account's other apps what plays, when something does that this app took.
     fn publish(&mut self, cx: &mut Context<Self>) {
-        if self.mode == Mode::Observe {
-            if !self.claimed
-                && self.playback.read(cx).local_active()
-                && self.playback.read(cx).wants_playing()
-            {
-                self.claimed = true;
-                self.pause_elsewhere();
-            }
-            return;
-        }
         if self.changing.is_some() || self.mode != Mode::Publish {
             return;
         }

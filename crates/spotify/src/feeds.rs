@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context as _, Result, ensure};
+use spotifyapis::id::{PLAYLIST_PREFIX, USER_PREFIX};
 
-use super::{albums, artists, auth::sign_in_error, collection, playlists, session::Session, wire};
+use super::{albums, artists, collection, playlists, session::Session, wire};
 use music::{Genre, GenreDetail, GenreItem, GenreSection, HomeFeed, Playlist};
 use spotifyapis::proto::{
     casita::{Heading, Shelf},
@@ -20,13 +21,14 @@ const SPOKEN_WORD_DIRECTORIES: [&str; 2] = [
     "spotify:genre:0JQ5DArNBzkmxXHCqFLx3j", // Podcasts
     "spotify:genre:0JQ5DArNBzkmxXHCqFLx3q", // Audiobooks
 ];
+const GENRE_PREFIX: &str = "spotify:genre:";
 const MADE_FOR_YOU: &str = "0JQ5DAt0tbjZptfcdMSKl3";
 const ITEMS_PER_SHELF: usize = 10;
 const LIKED_SONGS_ART: &str = "https://misc.scdn.co/liked-songs/liked-songs-";
 
 /// Flattens music shelves and their directory links into cards in feed order.
 pub(super) async fn landing(session: &Session) -> Result<Vec<Genre>> {
-    let response = session.api().browse().await.map_err(sign_in_error)?;
+    let response = session.call(|api| api.browse()).await?;
     let structure = response
         .structure
         .context("Spotify Browse has no structure")?;
@@ -77,7 +79,7 @@ pub(super) async fn landing(session: &Session) -> Result<Vec<Genre>> {
             let directory = directories.remove(&uri);
             cards.remove(&uri).or_else(|| {
                 Some(Genre {
-                    id: uri.strip_prefix("spotify:genre:")?.to_owned(),
+                    id: uri.strip_prefix(GENRE_PREFIX)?.to_owned(),
                     name: directory?,
                     cover: None,
                 })
@@ -92,7 +94,7 @@ pub(super) async fn landing(session: &Session) -> Result<Vec<Genre>> {
 }
 
 fn music_browse_target(uri: &str) -> bool {
-    uri.starts_with("spotify:genre:") && !SPOKEN_WORD_DIRECTORIES.contains(&uri)
+    uri.starts_with(GENRE_PREFIX) && !SPOKEN_WORD_DIRECTORIES.contains(&uri)
 }
 
 /// Reads a genre page, then loads its ordered sections in one batch.
@@ -106,7 +108,7 @@ pub(super) async fn page(
         mut name,
         sections,
         playlists,
-    } = page_sections(session, id, None).await?;
+    } = page_sections(session, id, None, title.is_none()).await?;
     if name.is_empty()
         && let Some(title) = title
     {
@@ -132,32 +134,27 @@ pub(super) async fn page(
             });
         }
     }
-    let page_uri = format!("spotify:genre:{id}");
-    let mut uris: HashSet<_> = sections
+    let uris = sections
         .iter()
         .flat_map(|(_, items)| items.iter().map(String::as_str))
         .collect();
-    if name.is_empty() {
-        uris.insert(&page_uri);
-    }
     let cards = cards(session, uris, playlists, true).await?;
-    let name = match cards.get(&page_uri) {
-        Some(GenreItem::Genre(genre)) if name.is_empty() => genre.name.clone(),
-        _ => name,
-    };
     Ok(GenreDetail {
         name,
         sections: shelf_cards(sections, &cards),
     })
 }
 
-/// Reads the ordered section references and their cards before metadata is resolved.
+/// Reads the ordered section references and their cards before metadata is resolved. With
+/// `name`, a page that has no title of its own looks its name up beside its sections.
 async fn page_sections(
     session: &Session,
     id: &str,
     media_limit: Option<usize>,
+    name: bool,
 ) -> Result<BrowsePage> {
-    let root = playlists::browse_sections(session, vec![format!("spotify:genre:{id}")], false)
+    let page_uri = format!("{GENRE_PREFIX}{id}");
+    let root = playlists::browse_sections(session, vec![page_uri.clone()], false)
         .await
         .context("cannot read Spotify Browse page")?
         .pop()
@@ -168,11 +165,29 @@ async fn page_sections(
         .map(|(uri, _)| uri)
         .filter(|uri| uri.starts_with("spotify:section:"))
         .collect();
+    let named = async {
+        if !name || !root.title.is_empty() {
+            return Ok(root.title.clone());
+        }
+        let uris = [page_uri];
+        let kind = ExtensionKind::SearchGenreMetadata;
+        let mut cards = collection::project(session, &uris, kind, 1, genre_card).await?;
+        Ok::<_, anyhow::Error>(
+            cards
+                .remove(&uris[0])
+                .map(|genre| genre.name)
+                .unwrap_or_default(),
+        )
+    };
+    let (shelves, name) = tokio::join!(
+        playlists::browse_sections(session, section_uris, true),
+        named
+    );
     let mut page = BrowsePage {
-        name: root.title,
+        name: name?,
         ..Default::default()
     };
-    for mut shelf in playlists::browse_sections(session, section_uris, true).await? {
+    for mut shelf in shelves? {
         page.playlists.extend(std::mem::take(&mut shelf.playlists));
         page.sections.push(section(shelf, media_limit));
     }
@@ -197,16 +212,12 @@ fn shelf_cards(
     sections
         .into_iter()
         .filter_map(|(title, uris)| {
-            let items = resolve_cards(uris, cards);
+            let items: Vec<_> = uris
+                .iter()
+                .filter_map(|uri| cards.get(uri).cloned())
+                .collect();
             (!items.is_empty()).then_some(GenreSection { title, items })
         })
-        .collect()
-}
-
-/// Looks up ordered card references in a shared set of resolved cards.
-fn resolve_cards(uris: Vec<String>, cards: &HashMap<String, GenreItem>) -> Vec<GenreItem> {
-    uris.into_iter()
-        .filter_map(|uri| cards.get(&uri).cloned())
         .collect()
 }
 
@@ -218,7 +229,7 @@ fn section(section: playlists::BrowseSection, media_limit: Option<usize>) -> (St
         .into_iter()
         .filter_map(section_item)
         .filter(|uri| {
-            if uri.starts_with("spotify:genre:") {
+            if uri.starts_with(GENRE_PREFIX) {
                 return true;
             }
             media += 1;
@@ -241,7 +252,7 @@ fn section_item((uri, target): (String, Option<String>)) -> Option<String> {
             Some(
                 target
                     .filter(|target| music_browse_target(target))
-                    .unwrap_or_else(|| format!("spotify:genre:{id}")),
+                    .unwrap_or_else(|| format!("{GENRE_PREFIX}{id}")),
             )
         }
         "album" | "artist" | "playlist" | "track" => Some(uri),
@@ -250,7 +261,7 @@ fn section_item((uri, target): (String, Option<String>)) -> Option<String> {
 }
 
 fn genre_card(uri: &str, data: SearchGenreMetadata) -> Option<Genre> {
-    let id = uri.strip_prefix("spotify:genre:")?;
+    let id = uri.strip_prefix(GENRE_PREFIX)?;
     (!data.name.trim().is_empty()).then(|| Genre {
         id: id.to_owned(),
         name: data.name,
@@ -283,10 +294,10 @@ pub(super) async fn cards(
         }
     }
     // If sign-in could not load the name, try it in the existing catalogue batch.
-    let own = format!("spotify:user:{}", session.username());
+    let own = format!("{USER_PREFIX}{}", session.username());
     if own_display_name
         && session.display_name().is_none()
-        && uris.iter().any(|uri| uri.starts_with("spotify:playlist:"))
+        && uris.iter().any(|uri| uri.starts_with(PLAYLIST_PREFIX))
     {
         catalogue.push((&own, &[ExtensionKind::UserProfile]));
     }
@@ -320,7 +331,7 @@ pub(super) async fn cards(
                 .ok()
                 .map(|track| GenreItem::Track(collection::track_from(&uri, &track))),
             ExtensionKind::ListMetadataV2 => uri
-                .strip_prefix("spotify:playlist:")
+                .strip_prefix(PLAYLIST_PREFIX)
                 .and_then(|id| playlists::playlist_card(id, raw.decode::<Attributes>().ok()?))
                 .map(GenreItem::Playlist),
             _ => None,
@@ -391,7 +402,10 @@ async fn read_home(
             .collect();
         let cards = cards(session, uris, HashMap::new(), true).await?;
         let feed = HomeFeed {
-            listen_again: resolve_cards(shortcuts, &cards),
+            listen_again: shortcuts
+                .iter()
+                .filter_map(|uri| cards.get(uri).cloned())
+                .collect(),
             sections: shelf_cards(sections, &cards),
             quick_picks: None,
         };
@@ -404,7 +418,7 @@ async fn read_home(
     };
     let (main, made) = tokio::join!(
         main,
-        page_sections(session, MADE_FOR_YOU, Some(ITEMS_PER_SHELF))
+        page_sections(session, MADE_FOR_YOU, Some(ITEMS_PER_SHELF), false)
     );
     let (mut feed, mut known, sent, main_error) = match main {
         Ok((feed, known, sent)) => (feed, known, sent, None),
@@ -442,10 +456,8 @@ async fn read_home(
 async fn casita(session: &Session) -> Result<(Vec<String>, Vec<SectionUris>)> {
     let zone = jiff::tz::TimeZone::system();
     let response = session
-        .api()
-        .home(zone.iana_name().unwrap_or("UTC"))
-        .await
-        .map_err(sign_in_error)?;
+        .call(|api| api.home(zone.iana_name().unwrap_or("UTC")))
+        .await?;
     let feed = response.structure.context("Spotify Home has no sections")?;
 
     let mut shortcuts = Vec::new();

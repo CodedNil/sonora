@@ -23,7 +23,7 @@ impl SettingsView {
         let mut cache = Vec::new();
         if capabilities.keeps {
             cache.push(Slot::KeepTracks);
-            if self.playback.read(cx).keep_tracks() && !self.soloist_plays(cx) {
+            if self.playback.read(cx).keep_tracks() {
                 cache.push(Slot::CacheSize);
             }
         }

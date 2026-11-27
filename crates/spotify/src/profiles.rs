@@ -2,14 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use crate::session::Session;
 use anyhow::{Context as _, Result};
+use spotifyapis::id::{PLAYLIST_PREFIX, USER_PREFIX};
 
-use crate::{auth::sign_in_error, collection, wire};
+use crate::{collection, wire};
 use music::{Contributor, Playlist, UserDetail, UserProfile};
 use spotifyapis::proto::extended_metadata::{ExtensionKind, IdentityProfile};
 use spotifyapis::proto::user_profile_view::PublicPlaylist;
 
-const USER_PREFIX: &str = "spotify:user:";
-const PLAYLIST_PREFIX: &str = "spotify:playlist:";
 const PLAYLISTS: u32 = 50;
 const PROFILE_BATCH: usize = 100;
 
@@ -20,10 +19,8 @@ pub(super) fn username(uri: &str) -> &str {
 pub async fn profile(session: &Session, user_id: &str) -> Result<UserDetail> {
     let id = username(user_id);
     let found = session
-        .api()
-        .profile(id, PLAYLISTS)
+        .call(|api| api.profile(id, PLAYLISTS))
         .await
-        .map_err(sign_in_error)
         .with_context(|| format!("cannot read the profile of {id}"))?;
     let playlists = found
         .public_playlists
@@ -32,10 +29,9 @@ pub async fn profile(session: &Session, user_id: &str) -> Result<UserDetail> {
         .collect();
 
     Ok(UserDetail {
-        name: if found.name.is_empty() {
-            id.to_owned()
-        } else {
-            found.name
+        name: match found.name.is_empty() {
+            true => id.to_owned(),
+            false => found.name,
         },
         avatar: (!found.image_url.is_empty()).then_some(found.image_url),
         followers: found.followers_count,
@@ -137,22 +133,15 @@ fn listed(found: PublicPlaylist) -> Option<Playlist> {
     let owner_id = username(&found.owner_uri);
 
     Some(Playlist {
-        revision: None,
         id: id.to_owned(),
         name: found.name,
-        owner: if found.owner_name.is_empty() {
-            owner_id.to_owned()
-        } else {
-            found.owner_name
+        owner: match found.owner_name.is_empty() {
+            true => owner_id.to_owned(),
+            false => found.owner_name,
         },
         owner_id: owner_id.to_owned(),
-        owned: false,
-        collaborative: false,
-        blend: false,
         public: true,
         cover: wire::fetchable(&found.image_url).then_some(found.image_url),
-        track_count: 0,
-        modified_at: None,
-        read_only: false,
+        ..Default::default()
     })
 }

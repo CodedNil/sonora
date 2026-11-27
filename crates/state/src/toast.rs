@@ -29,7 +29,7 @@ pub enum Target {
     Album(SharedString),
     Artist(SharedString),
     Playlist(SharedString),
-    /// The Playback tab of settings, where the Widevine module and Soloist are managed.
+    /// The Playback tab of settings, where the Widevine module is managed.
     PlaybackSettings,
     /// The streaming services page of settings, where a provider is signed in again.
     ProviderSettings,

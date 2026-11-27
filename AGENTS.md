@@ -17,10 +17,11 @@ crates/
               (no GPUI)
   sound/      the real-time sound path: decoders, progressive download, equalizer, analysers,
               paced output queue, output devices (no models, no GPUI)
-  engine/     the one playback engine every provider but Spotify plays through
+  engine/     the one playback engine every provider plays through
   spotify/ youtube/ apple/ tidal/ deezer/ subsonic/ jellyfin/ plex/ local/
               one crate per provider
-  soloist/    Spotify's headless player: its download, pairing and the engine that drives it
+  spotifyapis/ the client for Spotify's own internal APIs: OAuth, spclient, Dealer, access point
+              and the wire types, with no Sonora models in it
   scrobble/   scrobbling to Last.fm, Libre.fm, ListenBrainz, Maloja and teal.fm
   lyrics/     LRC and TTML parsing, romanisation and the ranking of what every source found
   lyric-sources/
@@ -46,8 +47,8 @@ sonora → views → state → logic → lyrics → music → sound
          sonora → lyric-sources → lyrics
          providers, state, views → lyrics
          state → artwork → music
-         spotify → soloist → music
-         state, views → soloist, scrobble → music
+         spotify → spotifyapis
+         state, views → scrobble → music
          state, local → storage
          state → webview
          music → widevine
@@ -57,8 +58,8 @@ sonora → views → state → logic → lyrics → music → sound
 
 - `state` and `views` see only the traits and models of `music`, never a provider crate, so a
   change to a provider rebuilds that provider and `sonora` alone. Only `sonora/src/main.rs` names
-  a concrete provider. Soloist, scrobbling, lyrics and cover lookup are not providers, so `state`
-  and `views` reach them as the `soloist`, `scrobble`, `lyrics` and `artwork` crates.
+  a concrete provider. Scrobbling, lyrics and cover lookup are not providers, so `state` and
+  `views` reach them as the `scrobble`, `lyrics` and `artwork` crates.
 - A provider never depends on another provider. What two of them share goes into `music`, into
   `lyrics` when it reads or ranks lyrics, or into `sound` when it touches the sound path.
 - `music` never depends on `gpui`. `ui` never knows about `music`, `state` or playback. Widgets
@@ -69,8 +70,7 @@ sonora → views → state → logic → lyrics → music → sound
 - `engine` is the one playback engine and `sound::stream` the one progressive download. A
   provider implements `engine::Fetch` and `stream::Body` rather than writing its own. The engine
   applies loudness normalisation, so a provider only reports a track's level through
-  `Fetch::loudness`. Spotify is the one exception, because librespot decodes and normalises
-  inside its own player.
+  `Fetch::loudness`.
 - `sound` and `engine` are built at `opt-level = 3` in debug builds, every other crate at the
   default. Generic code compiles in the crate that names its types, so a provider hands the
   engine a `sound::decode::Decoded` over a `decode::Media`, never a decoder type of its own, and
@@ -85,8 +85,8 @@ sonora → views → state → logic → lyrics → music → sound
   writing a sibling. New elements copy the shape of `ui/src/button.rs`, including the
   `mem::take` and `refine` of caller styles.
 - **Never call the Spotify Web API.** No `reqwest` to `api.spotify.com`, no client secret, no
-  `rspotify`. Spotify data comes from librespot's `spclient`, and auth uses Spotify's own client id
-  in `auth.rs`.
+  `rspotify`. Spotify data comes from Spotify's internal services through `spotifyapis`, and auth
+  uses Spotify's own client id in `spotify/src/auth.rs`.
 - **Never hardcode a color, radius or size.** Read them from `cx.theme()` and `theme.metrics`. A
   literal `px(…)` is allowed only for a local, non-scaling detail declared as a module `const`. A
   new color token goes into `Theme`, every `Theme::*()` constructor, `ThemeOverrides` and
@@ -107,7 +107,7 @@ sonora → views → state → logic → lyrics → music → sound
   tooltip). Keep ids stable across frames and unique within a list: wrap rows in
   `div().id(("kind", stable_id))` with `aria_position_in_set`/`aria_size_of_set`, never a bare
   row index. Extend `crates/ui/tests/a11y_tree.rs` with every new primitive.
-- **Network work runs on tokio.** Anything touching `MusicApi`, librespot or sockets goes inside
+- **Network work runs on tokio.** Anything touching `MusicApi`, `spotifyapis` or sockets goes inside
   `Io::global(cx).spawn`, awaited from `cx.spawn` and applied in `this.update` ending with
   `cx.notify()`. Store the returned `Task` in a field and never detach a data load. Network-backed
   features belong in a `state` entity, not a view. An entity that caches provider data clears on

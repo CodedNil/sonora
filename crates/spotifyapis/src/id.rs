@@ -1,6 +1,10 @@
-//! Spotify track URIs and binary and base62 catalogue IDs.
+//! Spotify URI prefixes, track URIs, and binary and base62 catalogue IDs.
 
 pub const TRACK_PREFIX: &str = "spotify:track:";
+pub const ALBUM_PREFIX: &str = "spotify:album:";
+pub const ARTIST_PREFIX: &str = "spotify:artist:";
+pub const PLAYLIST_PREFIX: &str = "spotify:playlist:";
+pub const USER_PREFIX: &str = "spotify:user:";
 
 /// Returns the ID from a nonempty Spotify track URI.
 pub fn track_id(uri: &str) -> Option<&str> {

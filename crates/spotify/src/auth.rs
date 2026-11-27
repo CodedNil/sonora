@@ -1,10 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex as SyncMutex;
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Context as _, Result};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use ring::rand::{SecureRandom as _, SystemRandom};
 use serde::Deserialize;
 use spotifyapis::access_point::AudioKeyError;
 use spotifyapis::auth::{AuthError, OAuth};
@@ -263,23 +262,9 @@ fn device_id(dir: &Path) -> Result<String> {
         return Ok(id);
     }
 
-    let mut bytes = [0; 16];
-    SystemRandom::new()
-        .fill(&mut bytes)
-        .map_err(|_| anyhow!("cannot generate Spotify device ID"))?;
-    bytes[6] = (bytes[6] & 0x0F) | 0x40;
-    bytes[8] = (bytes[8] & 0x3F) | 0x80;
-    let id = format!("{:032x}", u128::from_be_bytes(bytes));
-    let id = format!(
-        "{}-{}-{}-{}-{}",
-        &id[..8],
-        &id[8..12],
-        &id[12..16],
-        &id[16..20],
-        &id[20..]
-    );
-    if let Err(error) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&file, &id)) {
-        log::warn!("auth: cannot keep the device id: {error}");
+    let id = uuid::Uuid::new_v4().to_string();
+    if let Err(error) = credentials::write(&file, id.as_bytes()) {
+        log::warn!("auth: cannot keep the device id: {error:#}");
     }
     Ok(id)
 }

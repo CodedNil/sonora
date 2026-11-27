@@ -7,7 +7,6 @@ use gpui::{
     AnyElement, App, Div, ElementId, Hsla, PathBuilder, Pixels, SharedString, Stateful, Window,
     canvas, div, point, px, svg,
 };
-use i18n::t;
 use ui::{ActiveTheme as _, Button, OptionCard, Perch, Room, TabBar, Tipped as _};
 
 use super::SettingsView;
@@ -28,8 +27,7 @@ const CHIP_HOVER: f32 = 0.2;
 const CHIP_EDGE: f32 = 0.55;
 
 /// One row of a group: the label at the start and the control at the end. A description waits
-/// behind an info mark after the label, a warning behind a red mark before the control, and
-/// both show their words the moment the pointer reaches them. Only a live status, as the
+/// behind an info mark after the label, and shows its words the moment the pointer reaches it. Only a live status, as the
 /// state of the update check, stays written under the label. It stands at least one list row
 /// tall, with no inset, so labels line up with group headings. The label is text in the
 /// accessibility tree and the marks are images named by their words, but nothing ties them to
@@ -38,7 +36,6 @@ const CHIP_EDGE: f32 = 0.55;
 pub(crate) struct Row {
     title: SharedString,
     detail: Option<SharedString>,
-    warning: Option<SharedString>,
     status: Option<SharedString>,
     control: AnyElement,
     disabled: bool,
@@ -50,7 +47,6 @@ impl Row {
         Self {
             title,
             detail: None,
-            warning: None,
             status: None,
             control,
             disabled: false,
@@ -68,13 +64,6 @@ impl Row {
     /// Puts an explanation of the setting behind an info mark after the label.
     pub(crate) fn detail(mut self, detail: SharedString) -> Self {
         self.detail = Some(detail);
-        self
-    }
-
-    /// Puts a warning about the setting behind a red mark before the control, for a setting
-    /// something else takes out of use.
-    pub(crate) fn warning(mut self, warning: SharedString) -> Self {
-        self.warning = Some(warning);
         self
     }
 
@@ -97,7 +86,6 @@ impl RenderOnce for Row {
         let Self {
             title,
             detail,
-            warning,
             status,
             control,
             disabled,
@@ -110,15 +98,6 @@ impl RenderOnce for Row {
                 "icons/info.svg",
                 theme.muted_foreground,
                 detail,
-                cx,
-            )
-        });
-        let warning = warning.map(|warning| {
-            mark(
-                SharedString::from(format!("settings-row-warning-{title}")),
-                "icons/triangle-alert.svg",
-                theme.status_error,
-                warning,
                 cx,
             )
         });
@@ -175,7 +154,6 @@ impl RenderOnce for Row {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .children(warning)
                     .child(control),
             )
     }
@@ -211,35 +189,6 @@ pub(crate) fn mark(
 }
 
 impl SettingsView {
-    /// Whether Soloist plays Spotify right now, which takes some settings out of use.
-    pub(super) fn soloist_plays(&self, cx: &App) -> bool {
-        self.soloist.read(cx).plays(cx)
-    }
-
-    /// The note under a setting of Sonora's own sound path, which Soloist goes around. While
-    /// Soloist plays Spotify such a setting still reaches local files, so it stays in use and
-    /// says so. `None` while Soloist does not play.
-    pub(super) fn local_only(&self, cx: &App) -> Option<SharedString> {
-        self.soloist_plays(cx)
-            .then(|| t!("settings-soloist-local-only"))
-    }
-
-    /// A row for a setting Soloist takes out of use: muted, with the reason behind a red mark
-    /// before its control, while `unavailable`. The caller disables the control.
-    pub(super) fn soloist_row_for(
-        &self,
-        title: SharedString,
-        control: AnyElement,
-        unavailable: bool,
-    ) -> AnyElement {
-        let row = Row::new(title, control).disabled(unavailable);
-        match unavailable {
-            true => row.warning(t!("settings-soloist-unavailable")),
-            false => row,
-        }
-        .into_any_element()
-    }
-
     /// A plain row: the label and the control.
     pub(super) fn row(&self, title: SharedString, control: AnyElement) -> AnyElement {
         Row::new(title, control).into_any_element()

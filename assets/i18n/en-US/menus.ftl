@@ -136,8 +136,6 @@ confirm-delete-track-files = { $count ->
     }
 confirm-uninstall-widevine-title = Uninstall the Widevine module?
 confirm-uninstall-widevine = Sonora deletes the copy it downloaded from Google. Apple Music tracks stop playing until it is downloaded again.
-confirm-remove-soloist-title = Remove Soloist?
-confirm-remove-soloist = Sonora deletes the Soloist program, your API key and its sign-in. Spotify goes back to the built-in player.
 confirm-remove-downloads-title = Remove all downloads?
 confirm-remove-downloads = Every song you downloaded is deleted from this computer, from every service. They stream again until you download them once more.
 confirm-delete-named = Delete “{ $name }”? This cannot be undone.

@@ -10,8 +10,7 @@ const CONNECT_NAME: &str = "spotify-connect-name";
 
 impl SettingsView {
     /// The device list group, left out while the signed-in provider has no device list: Spotify
-    /// Connect, whose name rows only stand while the device is on, which it never is while
-    /// Soloist plays, Jellyfin's remote control, named by the sign-in, or YouTube's Cast devices,
+    /// Connect, Jellyfin's remote control, named by the sign-in, or YouTube's Cast devices,
     /// which never list Sonora at all.
     pub(super) fn connect_groups(&self, cx: &App) -> Vec<Group> {
         if !Sonora::global(cx).devices.read(cx).supported() {
@@ -26,7 +25,7 @@ impl SettingsView {
 
         let settings = self.settings.read(cx);
         let mut slots = vec![Slot::SpotifyConnect];
-        if settings.spotify_connect() && !self.soloist_plays(cx) {
+        if settings.spotify_connect() {
             slots.push(Slot::SpotifyConnectName);
             if settings.spotify_connect_name() == ConnectName::Custom {
                 slots.push(Slot::SpotifyConnectCustom);
@@ -35,10 +34,8 @@ impl SettingsView {
         vec![Group::new("settings-group-spotify-connect").rows(slots)]
     }
 
-    /// The switch that lists this app on the account's devices. Soloist is the account's
-    /// device while it plays, so the switch is out of use then and shows off.
+    /// The switch that lists this app on the account's devices.
     pub(super) fn spotify_connect_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let unavailable = self.soloist_plays(cx);
         let on = self.settings.read(cx).spotify_connect();
 
         let label = match () {
@@ -46,17 +43,15 @@ impl SettingsView {
             () if youtube(cx) => t!("settings-youtube-cast"),
             () => t!("settings-spotify-connect"),
         };
-        self.soloist_row_for(
+        self.row(
             label.clone(),
-            Switch::new("spotify-connect", on && !unavailable)
+            Switch::new("spotify-connect", on)
                 .name(label)
-                .disabled(unavailable)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.settings
                         .update(cx, |settings, cx| settings.set_spotify_connect(!on, cx));
                 }))
                 .into_any_element(),
-            unavailable,
         )
     }
 

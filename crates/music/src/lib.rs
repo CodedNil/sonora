@@ -739,9 +739,6 @@ pub struct TrackSignal {
     pub rate: u32,
     pub channels: u16,
     pub normalisation: Normalisation,
-    /// Whether the engine plays it to the system's output by itself, as Soloist does. Nothing
-    /// of Sonora's own sound path then touches it: no equalizer, no resampler, no chosen device.
-    pub direct: bool,
 }
 
 /// What loudness normalisation does to a track.
@@ -750,9 +747,6 @@ pub enum Normalisation {
     Off,
     /// A fixed gain in decibels, zero when nothing says how loud the track is.
     Gain(f32),
-    /// Spotify's players, librespot and Soloist, normalise inside themselves with a limiter, so
-    /// the gain is not known and changes with the music.
-    Limited,
 }
 
 /// What a server that converts audio on request is asked to send. Only Subsonic honours it, and
@@ -1432,11 +1426,6 @@ pub trait MusicProvider: Send + Sync {
     /// Whether this provider's tracks need the Widevine module to play. The app fetches the
     /// module once such a provider has an account, and does not go near it otherwise.
     fn protected(&self) -> bool {
-        false
-    }
-    /// Whether this provider can play through Soloist, Spotify's own headless player, on this
-    /// computer. The app offers its setup while such a provider is the current one.
-    fn soloist(&self) -> bool {
         false
     }
     /// Whether the artwork urls this provider hands out can be given to another service. A path

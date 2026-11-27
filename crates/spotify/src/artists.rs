@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::session::Session;
 use anyhow::{Context as _, Result};
 use futures::{StreamExt as _, stream};
+use spotifyapis::id::{ALBUM_PREFIX, ARTIST_PREFIX, TRACK_PREFIX};
 use spotifyapis::proto::extended_metadata::{
     AlbumGroup, AlbumType, Artist as ArtistMessage, Image, RelatedCreators, RelatedEntities,
     Reputation, VisualIdentity,
@@ -14,9 +15,6 @@ use music::{
 };
 use spotifyapis::proto::extended_metadata::{ExtensionKind, MetadataKey, MetadataPayload};
 
-const ARTIST_PREFIX: &str = "spotify:artist:";
-const ALBUM_PREFIX: &str = "spotify:album:";
-const UNKNOWN: &str = "Unknown";
 const OVERVIEW_RELEASES: usize = 24;
 const ARTIST_OVERVIEW: &[ExtensionKind] = &[
     ExtensionKind::ArtistV4,
@@ -184,7 +182,7 @@ async fn ranked_tracks(session: &Session, artist: &ArtistMessage) -> Vec<String>
             .tracks
             .iter()
             .filter_map(|track| spotifyapis::id::base62(track.gid()))
-            .map(|id| format!("spotify:track:{id}"))
+            .map(|id| format!("{TRACK_PREFIX}{id}"))
             .filter(|uri| seen.insert(uri.clone()))
             .collect();
         (!tracks.is_empty()).then_some((group.country(), tracks))
@@ -391,7 +389,7 @@ pub(super) fn artist_card(uri: &str, message: &ArtistMessage) -> Option<SavedArt
         .min_by_key(|image| wire::image_width(image))
         .and_then(|image| wire::image_url(image.file_id()));
     let name = match message.name() {
-        "" => UNKNOWN,
+        "" => wire::UNKNOWN,
         name => name,
     };
     Some(SavedArtist {
@@ -439,16 +437,10 @@ fn plain_text(mut html: &str) -> String {
     }
     text.push_str(html);
 
-    let decoded = text
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">");
-
-    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+    music::escape::unescape(&text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn release_uris(artist: &ArtistMessage) -> Vec<String> {

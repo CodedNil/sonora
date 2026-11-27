@@ -353,15 +353,6 @@ impl Paced {
         self.spares.take(wanted)
     }
 
-    /// A buffer from [`buffer`](Self::buffer) holding `samples` cast to `f32`, for a decoder
-    /// that hands over `f64`, as librespot's does. The cast runs here, in the sound path's
-    /// optimised build, rather than in the provider's.
-    pub fn narrowed(&self, samples: &[f64]) -> Vec<f32> {
-        let mut narrowed = self.buffer(samples.len());
-        narrowed.extend(samples.iter().map(|sample| *sample as f32));
-        narrowed
-    }
-
     /// Queues one packet. A packet the cue refuses is dropped, so a decoder that has been
     /// retired makes no sound while it winds down. This never blocks: a caller with nothing
     /// else to do waits through `drain`, one with commands to answer waits through `full`.
@@ -500,8 +491,7 @@ impl Paced {
 ///
 /// A device that is present is not enough: ALSA always names a default one, and without the
 /// sound server's plugin it never opens. Reporting it anyway would restart the engine every poll,
-/// and dropping librespot's player joins its thread on the main one, so the watch waits until a
-/// stream actually opens.
+/// so the watch waits until a stream actually opens.
 pub fn watch_for_output(notify: UnboundedSender<()>) {
     std::thread::spawn(move || {
         while !notify.is_closed() {

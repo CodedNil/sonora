@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::io::Read as _;
+use std::mem::DropGuard;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -65,7 +66,8 @@ pub struct Request {
 
 /// One socket worker and its ordered stream of events. Dropping it closes the connection.
 pub struct Dealer {
-    task: JoinHandle<()>,
+    /// Aborts the connection task when the Dealer is dropped.
+    _task: DropGuard<JoinHandle<()>, fn(JoinHandle<()>)>,
     events: Receiver<Event>,
 }
 
@@ -122,17 +124,14 @@ impl Dealer {
     pub fn start(session: Arc<Session>) -> Self {
         let (send, events) = channel(EVENT_CAPACITY);
         let task = tokio::spawn(run(session, send));
-        Self { task, events }
+        Self {
+            _task: DropGuard::new(task, |task| task.abort()),
+            events,
+        }
     }
 
     pub async fn next(&mut self) -> Option<Event> {
         self.events.recv().await
-    }
-}
-
-impl Drop for Dealer {
-    fn drop(&mut self) {
-        self.task.abort();
     }
 }
 

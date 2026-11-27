@@ -65,7 +65,7 @@ impl SpotifyProvider {
     async fn session(&self, session: session::Session) -> Result<ProviderSession> {
         let client = SpotifyClient::new(session.clone());
         let profile = client.profile().await?;
-        let playback = Arc::new(Factory::new(session, client.connect_handle()));
+        let playback = Arc::new(Factory::new(session));
         Ok(ProviderSession {
             profile,
             api: Arc::new(client),
@@ -101,10 +101,6 @@ impl MusicProvider for SpotifyProvider {
 
     fn public_art(&self) -> bool {
         true
-    }
-
-    fn soloist(&self) -> bool {
-        soloist::supported()
     }
 
     fn link(&self, link: &str) -> Option<music::link::Linked> {
@@ -149,7 +145,7 @@ impl MusicProvider for SpotifyProvider {
         self.session(session).await
     }
 
-    /// Clears Sonora's Spotify login. Soloist keeps its separately paired login.
+    /// Clears Sonora's Spotify login.
     fn sign_out(&self) {
         self.account.forget();
     }

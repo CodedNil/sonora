@@ -61,12 +61,8 @@ impl Worker {
 
     /// Reads current membership, treating HTTP 404 as no active Jam.
     async fn current_session(session: &Session) -> anyhow::Result<Option<Read>> {
-        match session
-            .api()
-            .current_jam(&session.connection_id())
-            .await
-            .map_err(sign_in_error)
-        {
+        let connection = session.connection_id();
+        match session.call(|api| api.current_jam(&connection)).await {
             Ok(Some(read)) => Ok(Some(read_social(read, session.username()))),
             Ok(None) => Err(anyhow::anyhow!("the jam answer cannot be read")),
             Err(error) if spotifyapis::http_status(&error) == Some(StatusCode::NOT_FOUND) => {
@@ -165,15 +161,15 @@ impl Worker {
         let connection = self.session.connection_id();
         match self
             .session
-            .api()
-            .leave_jam(
-                &read.id,
-                read.jam.owner,
-                self.session.device_id(),
-                &connection,
-            )
+            .call(|api| {
+                api.leave_jam(
+                    &read.id,
+                    read.jam.owner,
+                    self.session.device_id(),
+                    &connection,
+                )
+            })
             .await
-            .map_err(sign_in_error)
         {
             Ok(_) => self.set_jam(None),
             Err(error) => {
@@ -213,10 +209,8 @@ impl Worker {
         let connection = self.session.connection_id();
         let answer = self
             .session
-            .api()
-            .kick_jam_member(id, member, self.session.device_id(), &connection)
-            .await
-            .map_err(sign_in_error);
+            .call(|api| api.kick_jam_member(id, member, self.session.device_id(), &connection))
+            .await;
         match answer {
             Ok(_) => {
                 if let Some(Some(read)) = &mut self.jam {

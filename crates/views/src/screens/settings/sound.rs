@@ -35,18 +35,12 @@ impl SettingsView {
         ]
     }
 
-    /// The device picker, whose "System default" follows whatever the system plays on. While
-    /// Soloist plays Spotify a red mark by the picker says the output settings reach local
-    /// files only.
-    pub(super) fn output_device_row(&self, cx: &App) -> AnyElement {
-        let row = Row::new(
+    /// The device picker, whose "System default" follows whatever the system plays on.
+    pub(super) fn output_device_row(&self) -> AnyElement {
+        Row::new(
             t!("settings-output-device"),
             self.output_picker.clone().into_any_element(),
-        );
-        match self.local_only(cx) {
-            Some(note) => row.warning(note),
-            None => row,
-        }
+        )
         .into_any_element()
     }
 
@@ -224,12 +218,9 @@ impl SettingsView {
 
     /// The way into the equalizer: its name, a picker of every sound it can play, its switch and
     /// a chevron. The row opens the equalizer page, while the picker and the switch work in place.
-    /// While Soloist plays Spotify a line under the name says the equalizer reaches local files
-    /// only.
     pub(super) fn equalizer_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = *cx.theme();
         let on = self.equalizer.read(cx).enabled();
-        let note = self.local_only(cx);
         let sound = sound_picker(SOUND, &self.popovers, &self.equalizer, &self.settings, cx)
             .width(Picker::REGULAR)
             .name(t!("equalizer-sound"));
@@ -247,7 +238,6 @@ impl SettingsView {
             .rounded(theme.radius)
             .cursor_pointer()
             .on_click(|_, _, cx| navigate(Destination::Equalizer, cx))
-            .when_some(note.clone(), |row, note| row.aria_description(note))
             .child(
                 div()
                     .flex_1()
@@ -255,15 +245,6 @@ impl SettingsView {
                     .truncate()
                     .child(t!("settings-equalizer")),
             )
-            .children(note.map(|note| {
-                super::rows::mark(
-                    "settings-equalizer-soloist".into(),
-                    "icons/triangle-alert.svg",
-                    theme.status_error,
-                    note,
-                    cx,
-                )
-            }))
             .child(
                 div()
                     .flex_none()

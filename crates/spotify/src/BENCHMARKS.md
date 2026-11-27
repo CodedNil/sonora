@@ -4,71 +4,67 @@
 
 ## Summary
 
-Values read upstream → rewrite, with 🟩 for reductions of at least 25% and 🟥 for increases.
+Values read upstream → rewrite, with 🟩 for reductions and 🟥 for increases of at least 10%.
 
 | Metric | Upstream | Rewrite | Change |
 | --- | ---: | ---: | ---: |
-| Release executable | 115.69 MB | 111.97 MB | −3.2% |
-| Desktop download | 39.81 MB | 13.41 MB | −66.3% 🟩 |
-| Desktop upload | 651.3 KB | 258.9 KB | −60.2% 🟩 |
-| Provider HTTP calls | 160 | 65 | −59.4% 🟩 |
-| Provider time | 15.88 s | 6.32 s | −60.2% 🟩 |
-| Provider download | 9,924.9 KiB | 2,684.5 KiB | −73.0% 🟩 |
-| Provider upload | 258.7 KiB | 232.0 KiB | −10.3% |
+| Release executable | 126.58 MB | 121.80 MB | −3.8% |
+| Desktop download | 38.63 MB | 12.61 MB | −67.4% 🟩 |
+| Desktop upload | 631.0 KB | 235.0 KB | −62.8% 🟩 |
+| Provider HTTP calls | 160 | 70 | −56.2% 🟩 |
+| Provider time | 13.40 s | 4.28 s | −68.1% 🟩 |
+| Provider download | 10,031.8 KiB | 2,883.6 KiB | −71.3% 🟩 |
+| Provider upload | 259.8 KiB | 246.2 KiB | −5.2% |
 
 ## Desktop browsing
 
-Upstream `d7f40ec0` at 2026-11-23T16:29:18+00:00 → rewrite `47fee585` with local source changes (`a3870339`) at 2026-11-23T16:29:40+00:00
+Upstream `a341a271` at 2026-11-27T00:16:31+00:00 → rewrite `fb5f1317` with local source changes (`73b5d837`) at 2026-11-27T00:16:52+00:00
 
-Fresh-cache browsing, including artwork and background traffic. Pass duration was 26.46 → 22.13 seconds.
+Each build starts with an empty cache. Settled is the time from the action to the last change on screen, followed by a second with no change on screen and no network traffic; — means it never settled within the stage's budget. The screen is sampled about every 50 ms. Search preview is timed from the last keystroke of the query, after the rest of it was typed and settled. Traffic counts everything the app sent and received during the stage, artwork included.
 
-| Stage | First change (s) | Settled (s) | Download (KiB) | Upload (KiB) |
-| --- | ---: | ---: | ---: | ---: |
-| Home startup | 0.68 → 0.68 | 3.35 → 1.71 🟩 | 20,277.5 → 2,606.6 🟩 | 508.6 → 168.8 🟩 |
-| Home scroll | 1.26 → 1.26 | 1.67 → 1.67 | 6,673.0 → 2,584.4 🟩 | 41.1 → 34.4 |
-| Browse landing | 0.04 → 0.04 | 0.66 → 0.87 | 2,590.8 → 1,515.3 🟩 | 10.8 → 6.3 🟩 |
-| Search typing | 1.59 → 1.59 | 3.04 → 2.42 | 1,111.2 → 597.9 🟩 | 11.7 → 9.1 |
-| Search results | 0.04 → 0.04 | 1.07 → 0.67 🟩 | 918.0 → 726.5 | 12.6 → 7.8 🟩 |
-| Playlist | 0.21 → 0.21 | 0.42 → 0.21 | 250.3 → 226.5 | 8.9 → 6.9 |
-| Album | 0.21 → 0.21 | 0.21 → 0.21 | 2,068.5 → 641.8 🟩 | 14.3 → 4.8 🟩 |
-| Artist | 0.21 → 0.21 | 0.84 → 0.84 | 2,024.7 → 1,513.4 🟩 | 16.1 → 7.9 🟩 |
-| Song | 0.21 → 0.22 | 0.42 → 0.22 | 144.8 → 35.5 🟩 | 2.0 → 1.2 🟩 |
-| Profile | 0.21 → 0.21 | 0.63 → 0.63 | 1,506.9 → 1,488.4 | 6.9 → 3.8 🟩 |
-| Library playlists | 0.34 → 0.34 | 0.55 → 0.55 | 1,312.8 → 1,162.5 | 3.1 → 1.7 🟩 |
+| Stage | Settled (s) | Download (KiB) | Upload (KiB) |
+| --- | ---: | ---: | ---: |
+| Home startup | 3.40 → 1.51 🟩 | 20,435.5 → 2,778.8 🟩 | 512.2 → 162.2 🟩 |
+| Home scroll | 0.22 → 0.27 | 4,465.4 → 1,429.8 🟩 | 11.2 → 12.5 🟥 |
+| Browse landing | 0.45 → 0.28 🟩 | 2,607.3 → 1,516.0 🟩 | 11.0 → 6.1 🟩 |
+| Search preview | 1.02 → 0.68 🟩 | 1,524.4 → 818.1 🟩 | 17.0 → 11.6 🟩 |
+| Search results | 1.16 → 0.58 🟩 | 1,193.7 → 789.7 🟩 | 12.5 → 10.1 🟩 |
+| Playlist | 0.35 → 0.17 🟩 | 295.8 → 271.2 | 9.3 → 6.9 🟩 |
+| Album | 0.23 → 0.17 | 2,068.3 → 641.5 🟩 | 14.3 → 4.5 🟩 |
+| Artist | 0.64 → 0.29 🟩 | 2,204.9 → 1,609.9 🟩 | 16.6 → 9.3 🟩 |
+| Song | 0.33 → 0.17 🟩 | 145.0 → 41.3 🟩 | 2.1 → 1.4 🟩 |
+| Profile | 0.34 → 0.23 🟩 | 1,523.6 → 1,504.9 | 6.9 → 3.7 🟩 |
+| Library playlists | 0.64 → 0.23 🟩 | 1,264.3 → 915.7 🟩 | 3.1 → 1.3 🟩 |
 
 ## Spotify API
 
-Upstream `d7f40ec0` at 2026-11-23T16:05:42+00:00 → rewrite `47fee585` with local source changes (`91d0ecd2`) at 2026-11-23T16:16:28+00:00
+Upstream `a341a271` at 2026-11-26T23:54:43+00:00 → rewrite `fb5f1317` with local source changes (`bbb4a97d`) at 2026-11-26T23:54:49+00:00
 
-Totals cover 31 matched reads. Time sums provider calls and excludes rendering. Home uses the app’s provider feed, including concurrent shelf reads. Home refresh explicitly rereads that feed.
+Each read calls the provider the way its build's app does. Time sums the reads in a row and excludes rendering; totals cover 31 reads both builds completed. Browse page is opening the Browse tab. Browse categories opens Pop and Made For You from their Browse cards; the rewrite shows a preview before the rest arrives, upstream shows the page once.
+
+First content on the rewrite arrived after 357 ms for Home, 197 ms for Pop and 190 ms for Made For You.
 
 | Workflow | HTTP calls | Time (ms) | Download (KiB) | Upload (KiB) |
 | --- | ---: | ---: | ---: | ---: |
-| Session and profiles | 6 → 5 | 1,371 → 618 🟩 | 39.2 → 17.5 🟩 | 5.6 → 3.5 🟩 |
-| Home | 5 → 4 | 1,380 → 556 🟩 | 5,000.4 → 189.8 🟩 | 5.0 → 9.9 🟥 |
-| Home refresh | 2 → 4 🟥 | 1,078 → 512 🟩 | 192.1 → 45.3 🟩 | 1.8 → 11.3 🟥 |
-| Browse | 3 → 8 🟥 | 937 → 1,729 🟥 | 214.6 → 193.1 | 2.7 → 11.1 🟥 |
-| Search | 5 → 5 | 1,697 → 383 🟩 | 408.7 → 15.9 🟩 | 4.6 → 3.5 |
-| Playlists and library | 82 → 11 🟩 | 2,197 → 758 🟩 | 452.3 → 62.1 🟩 | 49.2 → 10.0 🟩 |
-| Album and artist pages | 19 → 10 🟩 | 3,377 → 596 🟩 | 1,154.6 → 540.7 🟩 | 55.4 → 35.2 🟩 |
-| Song details and radio | 5 → 3 🟩 | 457 → 187 🟩 | 127.5 → 37.2 🟩 | 5.0 → 4.5 |
-| Lyrics | 9 → 7 | 1,346 → 471 🟩 | 82.4 → 8.2 🟩 | 8.9 → 2.8 🟩 |
-| Saved tracks and albums | 24 → 8 🟩 | 2,036 → 510 🟩 | 2,253.0 → 1,574.6 🟩 | 120.6 → 140.2 🟥 |
-
-First provider result on the rewrite was 556 ms for Home and 265 ms for Liked Songs.
+| Session and profiles | 6 → 5 🟩 | 1,081 → 368 🟩 | 39.4 → 17.6 🟩 | 5.6 → 3.5 🟩 |
+| Home | 5 → 4 🟩 | 1,291 → 357 🟩 | 5,025.7 → 147.7 🟩 | 4.8 → 9.8 🟥 |
+| Home refresh | 2 → 4 🟥 | 665 → 323 🟩 | 274.5 → 147.9 🟩 | 1.8 → 9.9 🟥 |
+| Browse page | 1 → 2 🟥 | 334 → 234 🟩 | 30.4 → 3.0 🟩 | 0.8 → 2.1 🟥 |
+| Browse categories | 2 → 5 🟥 | 656 → 469 🟩 | 183.4 → 192.6 | 1.9 → 8.5 🟥 |
+| Search | 5 → 5 | 740 → 210 🟩 | 407.0 → 15.3 🟩 | 4.6 → 3.5 🟩 |
+| Playlists and library | 82 → 14 🟩 | 2,153 → 664 🟩 | 453.2 → 142.9 🟩 | 49.7 → 18.3 🟩 |
+| Album and artist pages | 19 → 15 🟩 | 2,683 → 774 🟩 | 1,153.2 → 598.5 🟩 | 55.5 → 43.1 🟩 |
+| Song details and radio | 5 → 3 🟩 | 494 → 177 🟩 | 127.5 → 36.1 🟩 | 5.1 → 4.5 🟩 |
+| Lyrics | 9 → 5 🟩 | 1,092 → 260 🟩 | 82.1 → 6.1 🟩 | 8.8 → 2.4 🟩 |
+| Saved tracks and albums | 24 → 8 🟩 | 2,216 → 446 🟩 | 2,255.3 → 1,575.9 🟩 | 121.1 → 140.6 🟥 |
 
 ## Reproduce
 
-Enter the Sonora build environment with Python 3.12 or later and a C compiler. For desktop runs, use Niri with XWayland and the X11 and XTest libraries.
+Use Python 3.12 or later and a C compiler, for example under `nix shell nixpkgs#python3`. Desktop runs need Niri with XWayland and the X11 and XTest libraries; on NixOS, add libXtst to the dev shell's library path rather than replacing it, as in `LD_LIBRARY_PATH=$(nix build --no-link --print-out-paths nixpkgs#xorg.libXtst)/lib:$LD_LIBRARY_PATH`.
 
 ```sh
-python3 crates/music/src/spotify/benchmark/run.py target/spotify-api-run \
-  --side both --workload api \
-  --before-account /path/to/upstream/spotify --after-account /path/to/candidate/spotify
+python3 crates/spotify/src/benchmark/run.py target/spotify-bench \
+  --workload api --before-account /path/to/upstream/spotify --after-account /path/to/rewrite/spotify
 ```
 
-Choose `--side before`, `after`, or `both` and `--workload api`, `desktop`, or `both`. Point `--before-account` at the folder containing `credentials.json` for upstream and `--after-account` at the folder containing `spotify-oauth.json` for the rewrite. Use the same machine and Spotify account for both builds.
-
-Add `--working-tree` to measure local changes to the rewrite.
-
-Find the report in `results/benchmark.md` under the output directory. Use `--report` to save it somewhere else too. Keep the output directory private.
+`--side` picks `before`, `after` or `both`, and `--workload` picks `api`, `desktop` or `both`. The upstream account folder holds `credentials.json` and the rewrite's holds `session.json`; use the same machine and account for both. `--working-tree` measures uncommitted changes to the rewrite. The report is written to `results/benchmark.md` under the output folder, which should be kept private.

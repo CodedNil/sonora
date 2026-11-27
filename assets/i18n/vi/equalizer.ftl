@@ -105,7 +105,6 @@ equalizer-status-separator = {", "}
 equalizer-status-equalized = EQ
 equalizer-status-volume = Âm lượng
 equalizer-status-normalized = Đã chuẩn hóa
-equalizer-status-direct = Phát qua Soloist, bỏ qua Sonora
 equalizer-status-rate = { $from } → { $to } kHz
 equalizer-status-bits = { $from } → { $to } bit
 equalizer-status-float = Float → { $to } bit

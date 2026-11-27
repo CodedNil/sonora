@@ -1,6 +1,7 @@
 /// The fragments a failure carries when the host was never reached. They come from the
 /// transports the providers actually use: reqwest and hyper build the first few, the resolver
-/// and libc the middle ones, and librespot the last.
+/// and libc the middle ones, and Sonora's own errors, such as a provider that could not be
+/// reached, the last.
 const LOST: &[&str] = &[
     "error sending request",
     "error trying to connect",

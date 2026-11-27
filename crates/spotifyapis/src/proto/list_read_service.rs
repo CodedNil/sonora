@@ -288,11 +288,19 @@ pub struct ListQuery {
 }
 
 impl ListQuery {
+    /// The whole list at `uri`, from its first entry.
+    pub fn new(uri: String) -> Self {
+        Self {
+            uri,
+            page: None,
+            offset: 0,
+        }
+    }
+
     pub fn playlist(id: &str, page: Option<i32>) -> Self {
         Self {
-            uri: format!("spotify:playlist:{id}"),
             page,
-            offset: 0,
+            ..Self::new(format!("{}{id}", crate::id::PLAYLIST_PREFIX))
         }
     }
 }

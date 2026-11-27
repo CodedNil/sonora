@@ -10,7 +10,6 @@ use ui::{Button, Dismiss, FORM_CONTEXT, Modal, Submit};
 pub(crate) enum Kind {
     DeleteTrackFiles(usize),
     Widevine,
-    Soloist,
     /// Every download, of every provider.
     Downloads,
     /// An equalizer profile, by its stored name.
@@ -22,7 +21,6 @@ impl Kind {
         match self {
             Self::DeleteTrackFiles(_) => t!("confirm-delete-track-files-title"),
             Self::Widevine => t!("confirm-uninstall-widevine-title"),
-            Self::Soloist => t!("confirm-remove-soloist-title"),
             Self::Downloads => t!("confirm-remove-downloads-title"),
             Self::EqualizerProfile(_) => t!("equalizer-delete"),
         }
@@ -32,7 +30,6 @@ impl Kind {
         match *self {
             Self::DeleteTrackFiles(count) => t!("confirm-delete-track-files", count = count),
             Self::Widevine => t!("confirm-uninstall-widevine"),
-            Self::Soloist => t!("confirm-remove-soloist"),
             Self::Downloads => t!("confirm-remove-downloads"),
             Self::EqualizerProfile(ref name) => {
                 let name = equalizer_profile_label(name);
@@ -44,7 +41,6 @@ impl Kind {
     fn action(&self) -> gpui::SharedString {
         match self {
             Self::Widevine => t!("settings-widevine-uninstall"),
-            Self::Soloist => t!("settings-soloist-remove"),
             Self::Downloads => t!("settings-downloads-remove"),
             Self::DeleteTrackFiles(_) | Self::EqualizerProfile(_) => t!("common-delete"),
         }

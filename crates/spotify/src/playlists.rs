@@ -5,6 +5,7 @@ use crate::session::Session;
 use anyhow::{Context as _, Result, anyhow};
 use bytes::Bytes;
 use futures::StreamExt as _;
+use spotifyapis::id::{PLAYLIST_PREFIX, TRACK_PREFIX, USER_PREFIX};
 use spotifyapis::proto::extended_metadata::ExtensionKind;
 use spotifyapis::proto::list_read_service::{
     AttributeKind, Attributes, ListEntity, ListProjection, ListQuery,
@@ -12,13 +13,11 @@ use spotifyapis::proto::list_read_service::{
 use spotifyapis::proto::playlist_v2::{self, ListChanges, Op, RegisterPlaylistImageRequest};
 use tokio::sync::mpsc;
 
-use crate::{auth::sign_in_error, collection, profiles, wire};
+use crate::{collection, profiles, wire};
 use music::cover::{self, CoverLimits};
 use music::order;
 use music::{Contributor, Playlist, PlaylistDetail, PlaylistPreview, Track};
 
-const TRACK_PREFIX: &str = "spotify:track:";
-const PLAYLIST_PREFIX: &str = "spotify:playlist:";
 const COVER_SLACK: usize = 4;
 /// Use smaller batches for full membership reads than for cover previews.
 const MEMBERSHIP_BATCH: usize = 8;
@@ -30,24 +29,16 @@ const COVER_LIMITS: CoverLimits = CoverLimits {
 
 pub async fn create(session: &Session, name: &str) -> Result<String> {
     let body = playlist_v2::changes(None, [playlist_v2::rename(name)]);
+    let connection = session.connection_id();
     let reply = session
-        .api()
-        .create_playlist(&body, &session.connection_id())
+        .call(|api| api.create_playlist(&body, &connection))
         .await
-        .map_err(sign_in_error)
         .context("cannot create the playlist")?;
 
-    let id = reply
-        .uri
-        .strip_prefix(PLAYLIST_PREFIX)
-        .filter(|id| !id.is_empty())
-        .map(str::to_owned)
+    let id = wire::id_after(&reply.uri, PLAYLIST_PREFIX)
         .ok_or_else(|| anyhow!("cannot read the created playlist id"))?;
-
     rename(session, &id, name).await?;
-
     add_to_library(session, &id).await?;
-
     Ok(id)
 }
 
@@ -77,20 +68,14 @@ pub async fn edit_appearance(
         Some(image) => {
             let jpeg = cover::square_jpeg(image, COVER_LIMITS)?;
             let upload_token = session
-                .api()
-                .upload_playlist_image(jpeg.into())
+                .call(|api| api.upload_playlist_image(jpeg.into()))
                 .await
-                .map_err(sign_in_error)
                 .context("cannot upload the cover")?;
+            let request = RegisterPlaylistImageRequest { upload_token };
+            let connection = session.connection_id();
             let registered = session
-                .api()
-                .register_playlist_image(
-                    playlist_id,
-                    &RegisterPlaylistImageRequest { upload_token },
-                    &session.connection_id(),
-                )
+                .call(|api| api.register_playlist_image(playlist_id, &request, &connection))
                 .await
-                .map_err(sign_in_error)
                 .context("cannot register the cover")?;
             anyhow::ensure!(
                 !registered.picture.is_empty(),
@@ -229,9 +214,8 @@ pub(super) async fn library(session: &Session) -> Result<Vec<Playlist>> {
     const ATTEMPTS: usize = 3;
     let username = session.username();
     let mut query = ListQuery {
-        uri: format!("spotify:user:{username}:rootlist"),
         page: Some(PAGE_SIZE),
-        offset: 0,
+        ..ListQuery::new(format!("{USER_PREFIX}{username}:rootlist"))
     };
     let projection = ListProjection {
         items: &[AttributeKind::Uri, AttributeKind::PublishedToProfile],
@@ -245,10 +229,8 @@ pub(super) async fn library(session: &Session) -> Result<Vec<Playlist>> {
         let mut revision = None;
         loop {
             let (mut page, version) = session
-                .api()
-                .get_list(&query, projection)
+                .call(|api| api.get_list(&query, projection))
                 .await
-                .map_err(sign_in_error)
                 .context("cannot read the playlist library")?;
             if revision.as_ref().is_some_and(|first| first != &version) {
                 continue 'attempt;
@@ -256,7 +238,7 @@ pub(super) async fn library(session: &Session) -> Result<Vec<Playlist>> {
             revision = Some(version);
             let length = page.items.len() as i32;
             for entry in page.items.into_iter().filter_map(|item| item.attributes) {
-                let Some(id) = entry.uri.strip_prefix("spotify:playlist:") else {
+                let Some(id) = entry.uri.strip_prefix(PLAYLIST_PREFIX) else {
                     continue;
                 };
                 if !seen.insert(id.to_owned()) {
@@ -298,10 +280,8 @@ pub(super) async fn summaries(session: &Session, mut ids: Vec<String>) -> Vec<Pl
             .map(|id| ListQuery::playlist(id, Some(0)))
             .collect();
         let replies = match session
-            .api()
-            .get_lists(&queries, projection)
+            .call(|api| api.get_lists(&queries, projection))
             .await
-            .map_err(sign_in_error)
         {
             Ok(replies) => replies,
             Err(error) => {
@@ -362,7 +342,7 @@ async fn hydrate_tracks(
     }
     let profile_uris: Vec<_> = ids
         .into_iter()
-        .map(|id| format!("spotify:user:{id}"))
+        .map(|id| format!("{USER_PREFIX}{id}"))
         .collect();
     let mut pending = HashSet::new();
     let mut requests: Vec<_> = profile_uris
@@ -583,11 +563,10 @@ async fn snapshot(
         items: DETAIL_ITEMS,
         ..Default::default()
     };
+    let query = ListQuery::playlist(playlist_id, None);
     session
-        .api()
-        .get_list(&ListQuery::playlist(playlist_id, None), projection)
+        .call(|api| api.get_list(&query, projection))
         .await
-        .map_err(sign_in_error)
         .context("cannot read the playlist")
 }
 
@@ -598,18 +577,10 @@ async fn edit_snapshot(session: &Session, playlist_id: &str) -> Result<Snapshot>
 
 /// Keeps each list slot aligned with its index in the returned revision.
 async fn projected_snapshot(session: &Session, uri: String) -> Result<Snapshot> {
+    let query = ListQuery::new(uri);
     let (entity, revision) = session
-        .api()
-        .get_list(
-            &ListQuery {
-                uri,
-                page: None,
-                offset: 0,
-            },
-            ITEM_FIELDS,
-        )
-        .await
-        .map_err(sign_in_error)?;
+        .call(|api| api.get_list(&query, ITEM_FIELDS))
+        .await?;
     let snapshot = Snapshot::from_read(entity, revision);
     anyhow::ensure!(
         !snapshot.revision.is_empty(),
@@ -623,11 +594,10 @@ async fn projected_snapshot(session: &Session, uri: String) -> Result<Snapshot> 
 }
 
 async fn edit(session: &Session, playlist_id: &str, body: &ListChanges) -> Result<()> {
+    let connection = session.connection_id();
     session
-        .api()
-        .edit_playlist(playlist_id, body, &session.connection_id())
+        .call(|api| api.edit_playlist(playlist_id, body, &connection))
         .await
-        .map_err(sign_in_error)
 }
 
 /// Writes an edit against the rootlist entry's position and revision from the same read.
@@ -639,7 +609,7 @@ async fn edit_rootlist_entry(
     let uri = format!("{PLAYLIST_PREFIX}{id}");
     let rootlist = projected_snapshot(
         session,
-        format!("spotify:user:{}:rootlist", session.username()),
+        format!("{USER_PREFIX}{}:rootlist", session.username()),
     )
     .await?;
     let index = position(&rootlist, &uri).context("cannot find the playlist in the rootlist")?;
@@ -651,11 +621,10 @@ async fn edit_rootlist_entry(
 }
 
 async fn rootlist_edit(session: &Session, body: &ListChanges) -> Result<()> {
+    let connection = session.connection_id();
     session
-        .api()
-        .edit_rootlist(body, &session.connection_id())
+        .call(|api| api.edit_rootlist(body, &connection))
         .await
-        .map_err(sign_in_error)
 }
 
 /// Maps visible track moves to Spotify's indices before each move.
@@ -727,10 +696,8 @@ impl Snapshot {
 /// Reads ordered item URIs for several playlists, with independent page windows.
 async fn items(session: &Session, queries: &[ListQuery]) -> Vec<Result<Snapshot>> {
     let replies = match session
-        .api()
-        .get_lists(queries, ITEM_FIELDS)
+        .call(|api| api.get_lists(queries, ITEM_FIELDS))
         .await
-        .map_err(sign_in_error)
     {
         Ok(replies) => replies,
         Err(error) => {
@@ -768,14 +735,7 @@ pub(super) async fn browse_sections(
     if uris.is_empty() {
         return Ok(Vec::new());
     }
-    let queries: Vec<_> = uris
-        .into_iter()
-        .map(|uri| ListQuery {
-            uri,
-            page: None,
-            offset: 0,
-        })
-        .collect();
+    let queries: Vec<_> = uris.into_iter().map(ListQuery::new).collect();
     let projection = ListProjection {
         list: &[AttributeKind::Name],
         items: if with_cards {
@@ -786,10 +746,8 @@ pub(super) async fn browse_sections(
         referenced: if with_cards { &BROWSE_CARD_FIELDS } else { &[] },
     };
     session
-        .api()
-        .get_lists(&queries, projection)
-        .await
-        .map_err(sign_in_error)?
+        .call(|api| api.get_lists(&queries, projection))
+        .await?
         .into_iter()
         .map(|reply| {
             let (entity, _) = reply?;

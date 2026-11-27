@@ -19,6 +19,16 @@ const ORIGINAL: &str = "82c1";
 const BLEND: &str = "blend";
 const BY_SIZE: [&str; 4] = ["xlarge", "large", "default", "small"];
 
+/// Treats an empty string from Spotify as absent.
+pub(super) fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| !value.is_empty())
+}
+
+/// The nonempty ID after `prefix` in a Spotify URI.
+pub(super) fn id_after(uri: &str, prefix: &str) -> Option<String> {
+    non_empty(uri.strip_prefix(prefix)).map(str::to_owned)
+}
+
 pub fn image_url(file_id: &[u8]) -> Option<String> {
     if file_id.is_empty() {
         return None;
@@ -52,11 +62,7 @@ pub(super) fn playlist_image(address: &str) -> Option<String> {
     if let Some(ids) = address.strip_prefix("spotify:mosaic:") {
         let mut ids = ids.split(':');
         let images = [ids.next()?, ids.next()?, ids.next()?, ids.next()?];
-        if ids.next().is_some()
-            || !images
-                .iter()
-                .all(|id| id.len() == 40 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        {
+        if ids.next().is_some() || !images.iter().all(|id| hex(id, 40)) {
             return None;
         }
         let prefix = "https://mosaic.scdn.co/640/";
@@ -68,8 +74,7 @@ pub(super) fn playlist_image(address: &str) -> Option<String> {
         return Some(url);
     }
     if let Some(id) = address.strip_prefix("spotify:image:") {
-        return (id.len() == 40 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .then(|| format!("{IMAGE_CDN}{id}"));
+        return hex(id, 40).then(|| format!("{IMAGE_CDN}{id}"));
     }
     fetchable(address).then(|| address.to_owned())
 }
@@ -111,10 +116,12 @@ fn sized_image_id<'a>(url: &'a str, kind: &str) -> Option<(&'a str, &'a str)> {
         .iter()
         .find_map(|prefix| url.strip_prefix(*prefix))?
         .strip_prefix(kind)?;
-    if id.len() != 28 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
-    }
-    Some(id.split_at(4))
+    hex(id, 28).then(|| id.split_at(4))
+}
+
+/// Whether `id` is `len` hexadecimal digits, the form of Spotify image hashes.
+fn hex(id: &str, len: usize) -> bool {
+    id.len() == len && id.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Uses the size class when the image has no explicit width.
@@ -210,11 +217,7 @@ pub(super) fn playlist_summary(
 }
 
 fn playlist_label(name: &str) -> String {
-    if name.is_empty() {
-        UNKNOWN.to_owned()
-    } else {
-        name.to_owned()
-    }
+    non_empty(Some(name)).unwrap_or(UNKNOWN).to_owned()
 }
 
 /// Adds the recording or work copyright symbol when missing.

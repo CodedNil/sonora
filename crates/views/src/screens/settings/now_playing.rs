@@ -88,9 +88,7 @@ impl SettingsView {
 
     /// How the spectrum is drawn behind the fullscreen artwork, off included, as a picker,
     /// which keeps the row narrow enough to stand beside the preview in every language. The
-    /// preview beside it shows the style chosen. While Soloist plays Spotify a red warning
-    /// stands before the picker, saying the moment the pointer reaches it that the visualizer
-    /// follows local files only, since Soloist's sound never passes through Sonora.
+    /// preview beside it shows the style chosen.
     pub(super) fn visualizer_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let chosen = self.settings.read(cx).visualizer_style();
 
@@ -107,14 +105,10 @@ impl SettingsView {
                     }))
             }));
 
-        let row = Row::new(
+        Row::new(
             t!("settings-visualizer"),
             picker.name(t!("settings-visualizer")).into_any_element(),
-        );
-        match self.local_only(cx) {
-            Some(note) => row.warning(note),
-            None => row,
-        }
+        )
         .into_any_element()
     }
 

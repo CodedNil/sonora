@@ -14,15 +14,16 @@ use base64::engine::general_purpose::STANDARD;
 use http::HeaderMap;
 use rodio::Source as _;
 use serde::{Deserialize, Serialize};
+use sound::decode::{self, Decoded};
 use spotifyapis::access_point::AudioKeyError;
+use spotifyapis::id::TRACK_PREFIX;
 use spotifyapis::proto::extended_metadata::Track as TrackMessage;
 use spotifyapis::proto::extended_metadata::{ExtensionKind, MetadataPayload};
 
 use engine::{self, Fetch, Loudness};
 use music::Quality;
 use music::vault::{Recording, Shelf};
-use music::{Encoding, Fraction, PlaybackConfig, PlaybackEvents, PlaybackFactory, Player};
-use sound::decode::{Decoded, Media as Decodable};
+use music::{Encoding, PlaybackConfig, PlaybackEvents, PlaybackFactory, Player};
 use sound::ranged::{self, Address, Reach, Resuming, Span};
 use sound::stream::{Body, Source, Stream};
 
@@ -163,7 +164,6 @@ impl Fetch for Audio {
         let mut media = resolve_media(session, id, self.quality).await?;
         let (response, address) = open_file(session, &media.facts.file_id).await?;
         media.fetch_key(session).await?;
-        soloist::granted();
         let facts = media.facts;
         let total = response.total();
         let reach = facts.key.map(|key| {
@@ -211,11 +211,7 @@ impl Fetch for Audio {
     }
 
     fn refused(&self, error: &anyhow::Error) -> bool {
-        if error.downcast_ref::<AudioKeyError>() == Some(&AudioKeyError::Denied) {
-            soloist::denied();
-            return true;
-        }
-        false
+        error.downcast_ref::<AudioKeyError>() == Some(&AudioKeyError::Denied)
     }
 
     fn open(&self, id: &str, loaded: &Loaded, at: Duration) -> Option<Decoded> {
@@ -235,7 +231,7 @@ impl Fetch for Audio {
         media.seek(SeekFrom::Start(0)).ok()?;
         let mut builder = rodio::Decoder::builder()
             .with_symphonia_decoder::<sound::aac::Aac>()
-            .with_data(Decodable::new(BufReader::new(media)))
+            .with_data(decode::Media::new(BufReader::new(media)))
             .with_seekable(len.is_some())
             .with_gapless(true);
         if let Some(len) = len {
@@ -411,45 +407,6 @@ impl Seek for Media {
     }
 }
 
-/// Fetches Spotify media directly and seals it in the existing download format.
-pub(super) async fn download(
-    session: &Session,
-    shelf: &Shelf,
-    id: &str,
-    quality: Quality,
-    progress: Fraction,
-) -> Result<()> {
-    shelf.settle().await;
-    if shelf.holds(id) || shelf.pin_cached(id, variant(quality)).await {
-        progress.set(1.0);
-        return Ok(());
-    }
-
-    let mut media = resolve_media(session, id, quality).await?;
-    media.fetch_key(session).await?;
-    let (mut response, _) = open_file(session, &media.facts.file_id).await?;
-    let total = response
-        .total()
-        .context("Spotify CDN did not say how long the file is")?;
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        bytes.extend_from_slice(&chunk);
-        progress.set((bytes.len() as f32 / total as f32).min(0.99));
-    }
-    anyhow::ensure!(
-        bytes.len() > VORBIS_HEADER_LEN as usize && bytes.len() as u64 == total,
-        "Spotify download is incomplete"
-    );
-    let facts = serde_json::to_vec(&media.facts)?;
-    let shelf = shelf.clone();
-    let id = id.to_owned();
-    tokio::task::spawn_blocking(move || shelf.pin(&id, facts, &bytes))
-        .await
-        .context("the download stopped")??;
-    progress.set(1.0);
-    Ok(())
-}
-
 /// The selected file and the identity needed to request its authorized audio key.
 struct ResolvedMedia {
     track: [u8; 16],
@@ -472,7 +429,7 @@ impl ResolvedMedia {
 
 /// Resolves the track and its playable file for playback or saving.
 async fn resolve_media(session: &Session, id: &str, quality: Quality) -> Result<ResolvedMedia> {
-    let requested = format!("spotify:track:{id}");
+    let requested = format!("{TRACK_PREFIX}{id}");
     let (track, wire) = metadata(session, &[requested])
         .await?
         .into_iter()
@@ -485,7 +442,7 @@ async fn resolve_media(session: &Session, id: &str, quality: Quality) -> Result<
                 .alternative
                 .iter()
                 .filter_map(|track| spotifyapis::id::base62(track.gid()))
-                .map(|id| format!("spotify:track:{id}"))
+                .map(|id| format!("{TRACK_PREFIX}{id}"))
                 .collect();
             metadata(session, &alternatives)
                 .await?
@@ -519,12 +476,7 @@ async fn open_file(session: &Session, file_id: &str) -> Result<(Resuming, Addres
         session: session.clone(),
         file_id: file_id.to_owned(),
     });
-    for url in session
-        .api()
-        .audio_urls(file_id)
-        .await
-        .map_err(sign_in_error)?
-    {
+    for url in session.call(|api| api.audio_urls(file_id)).await? {
         let address = Address::new("spotify", http.clone(), url)
             .capped(MAX_RANGE)
             .renewed(renewal.clone());
@@ -610,10 +562,8 @@ impl ranged::Renew for Renewal {
     async fn url(&self) -> Result<(String, HeaderMap)> {
         let urls = self
             .session
-            .api()
-            .audio_urls(&self.file_id)
-            .await
-            .map_err(sign_in_error)?;
+            .call(|api| api.audio_urls(&self.file_id))
+            .await?;
         let url = urls.into_iter().next().context("Spotify gave no CDN url")?;
         Ok((url, HeaderMap::new()))
     }

@@ -58,18 +58,7 @@ impl SessionsButton {
         let devices = self.devices.clone();
 
         let mut items = Vec::new();
-        if let Some(local) = state.local_device() {
-            let id = local.id.clone();
-            items.push(
-                MenuItem::new("device-here", local.name.clone())
-                    .icon(icon(local.kind))
-                    .selected(elsewhere.is_none_or(|remote| remote.device.id == id))
-                    .on_click({
-                        let devices = devices.clone();
-                        move |_, _, cx| devices.update(cx, |devices, cx| devices.transfer(&id, cx))
-                    }),
-            );
-        } else if state.can_transfer_here() {
+        if state.can_transfer_here() {
             items.push(
                 MenuItem::new("device-here", t!("devices-this-computer"))
                     .icon(icon(DeviceKind::Computer))

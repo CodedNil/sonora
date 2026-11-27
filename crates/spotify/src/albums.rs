@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::session::Session;
 use anyhow::{Context as _, Result};
+use spotifyapis::id::{ALBUM_PREFIX, TRACK_PREFIX};
 use spotifyapis::proto::extended_metadata::Album as AlbumMessage;
 use spotifyapis::proto::extended_metadata::AlbumType;
 use spotifyapis::proto::extended_metadata::CopyrightType;
@@ -9,10 +10,6 @@ use spotifyapis::proto::{collection::CollectionItem, extended_metadata::Extensio
 
 use crate::{collection, wire};
 use music::{Album, AlbumDetail, ReleaseType};
-
-pub(super) const ALBUM_PREFIX: &str = "spotify:album:";
-const TRACK_PREFIX: &str = "spotify:track:";
-const UNKNOWN: &str = "Unknown";
 
 /// Hydrates saved albums in collection order and applies their saved dates.
 pub(super) async fn hydrate_saved_albums(
@@ -92,8 +89,8 @@ pub(super) fn album_from(uri: &str, album: &AlbumMessage) -> Album {
 
     Album {
         id: uri.strip_prefix(ALBUM_PREFIX).unwrap_or(uri).to_owned(),
-        name: non_empty(album.name.as_deref())
-            .unwrap_or(UNKNOWN)
+        name: wire::non_empty(album.name.as_deref())
+            .unwrap_or(wire::UNKNOWN)
             .to_owned(),
         artists,
         artist_refs,
@@ -113,7 +110,7 @@ pub(super) fn album_from(uri: &str, album: &AlbumMessage) -> Album {
             .copyright
             .iter()
             .filter_map(|copyright| {
-                let text = non_empty(copyright.text.as_deref())?;
+                let text = wire::non_empty(copyright.text.as_deref())?;
                 Some(wire::copyright(
                     copyright.r#type() == CopyrightType::P,
                     text,
@@ -166,8 +163,4 @@ fn cover(album: &AlbumMessage, large: bool) -> Option<String> {
         false => images.min_by_key(|image| image.width()),
     }?;
     wire::image_url(image.file_id())
-}
-
-fn non_empty(value: Option<&str>) -> Option<&str> {
-    value.filter(|value| !value.is_empty())
 }

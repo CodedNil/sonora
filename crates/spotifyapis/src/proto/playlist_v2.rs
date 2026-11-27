@@ -56,8 +56,8 @@ pub struct PictureSize {
 pub struct ListAttributes {
     #[prost(string, optional, tag = "1")]
     pub name: Option<String>,
-    #[prost(string, optional, tag = "2")]
-    pub description: Option<String>,
+    // #[prost(string, optional, tag = "2")]
+    // pub description: Option<String>,
     #[prost(bytes = "bytes", optional, tag = "3")]
     pub picture: Option<Bytes>,
     #[prost(bool, optional, tag = "4")]
@@ -246,12 +246,12 @@ pub struct ChangeInfo {
     pub timestamp: Option<i64>,
     // #[prost(bool, optional, tag = "3")]
     // pub admin: Option<bool>,
-    #[prost(bool, optional, tag = "4")]
-    pub undo: Option<bool>,
-    #[prost(bool, optional, tag = "5")]
-    pub redo: Option<bool>,
-    #[prost(bool, optional, tag = "6")]
-    pub merge: Option<bool>,
+    // #[prost(bool, optional, tag = "4")]
+    // pub undo: Option<bool>,
+    // #[prost(bool, optional, tag = "5")]
+    // pub redo: Option<bool>,
+    // #[prost(bool, optional, tag = "6")]
+    // pub merge: Option<bool>,
     #[prost(bool, optional, tag = "7")]
     pub compressed: Option<bool>,
     // #[prost(bool, optional, tag = "8")]
@@ -270,8 +270,8 @@ pub struct ChangeInfo {
 pub struct SourceInfo {
     #[prost(int32, optional, tag = "1")]
     pub client: Option<i32>,
-    #[prost(string, optional, tag = "3")]
-    pub app: Option<String>,
+    // #[prost(string, optional, tag = "3")]
+    // pub app: Option<String>,
     #[prost(string, optional, tag = "4")]
     pub source: Option<String>,
     #[prost(string, optional, tag = "5")]

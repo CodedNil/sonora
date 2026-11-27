@@ -128,4 +128,3 @@ equalizer-graph-detail = { $count ->
    *[other] { $count } filtre
     }, ön kazanç { $db } dB
 equalizer-rule-device = Cihaz
-equalizer-status-direct = Sonora devreye girmeden Soloist tarafından çalınıyor

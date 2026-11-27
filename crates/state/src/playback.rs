@@ -735,12 +735,11 @@ impl Playback {
         equalizer: &Entity<Equalizer>,
         cx: &mut Context<Self>,
     ) -> Self {
-        // An engine can run a program of its own, as Soloist does. Letting go of the engine
-        // stops it, and the app waits for that before it is gone.
+        // Letting go of the engine stops it, and the app waits for that before it is gone.
         cx.on_app_quit(|this, _| {
             this.task = None;
             this.engine = None;
-            soloist::stopped()
+            std::future::ready(())
         })
         .detach();
         cx.subscribe(&session, |this, session, event, cx| match event {
@@ -1003,21 +1002,6 @@ impl Playback {
         true
     }
 
-    /// Sends a transport command to Soloist even while it has no active device to steer.
-    fn control_soloist(&self, command: Command, cx: &mut Context<Self>) -> bool {
-        if self.local || self.local_active() {
-            return false;
-        }
-        let Some(devices) = self.devices.as_ref().and_then(|devices| devices.upgrade()) else {
-            return false;
-        };
-        if !devices.read(cx).controls_local_device() {
-            return false;
-        }
-        devices.update(cx, |devices, _| devices.control_local_device(command));
-        true
-    }
-
     /// Plays or pauses the other device that has playback, if one does, and says whether it did.
     /// The device shows the new state at once rather than once it reports it.
     fn steer_playing(&self, playing: bool, cx: &mut Context<Self>) -> bool {
@@ -1084,7 +1068,7 @@ impl Playback {
         )
     }
 
-    /// Sends one start to the active device, or to the paired player when the account is idle.
+    /// Sends one start to the device that has playback, and says whether there was one.
     fn start_elsewhere(&self, state: connect::Snapshot, cx: &mut Context<Self>) -> bool {
         let Some(devices) = self
             .devices
@@ -1101,13 +1085,10 @@ impl Playback {
                 ..Default::default()
             })
         };
-        if let Some(remote) = devices.read(cx).steered() {
-            devices.read(cx).control(&remote.device.id, command());
-        } else if devices.read(cx).controls_local_device() {
-            devices.update(cx, |devices, _| devices.control_local_device(command()));
-        } else {
+        let Some(remote) = devices.read(cx).steered() else {
             return false;
-        }
+        };
+        devices.read(cx).control(&remote.device.id, command());
         true
     }
 
@@ -2029,10 +2010,6 @@ impl Playback {
     /// rather than repeated. Shows Loading only when nothing plays yet, so a failure
     /// mid-playback is logged rather than shown.
     fn gather(&mut self, origin: Origin, shuffled: bool, cx: &mut Context<Self>) {
-        if self.start_remote_collection(&origin, shuffled, cx) {
-            self.sought = None;
-            return;
-        }
         let Some(client) = self.client_for(&origin.id, cx) else {
             return;
         };
@@ -2055,36 +2032,6 @@ impl Playback {
         });
         self.sought = Some((origin, shuffled));
         cx.notify();
-    }
-
-    /// Lets the external player fetch and start the context without loading all its tracks here.
-    fn start_remote_collection(
-        &self,
-        origin: &Origin,
-        shuffled: bool,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if music::is_local_id(&origin.id) {
-            return false;
-        }
-        let Some(context @ (connect::Collection::Album(_) | connect::Collection::Playlist(_))) =
-            collection_of(origin)
-        else {
-            return false;
-        };
-        self.devices
-            .as_ref()
-            .and_then(|devices| devices.upgrade())
-            .is_some_and(|devices| devices.read(cx).controls_local_device())
-            && self.start_elsewhere(
-                connect::Snapshot {
-                    context: Some(context),
-                    playing: true,
-                    shuffle: shuffled.then_some(true),
-                    ..Default::default()
-                },
-                cx,
-            )
     }
 
     /// Skips to the next playable track.
@@ -2630,7 +2577,7 @@ impl Playback {
     /// Plays on. A restored track the engine does not hold yet, or one paused for longer than
     /// `STALE_PAUSE`, is loaded afresh at its position.
     pub fn resume(&mut self, cx: &mut Context<Self>) {
-        if self.steer_playing(true, cx) || self.control_soloist(Command::Play, cx) {
+        if self.steer_playing(true, cx) {
             return;
         }
         if self.can_restart_queue(cx) {
@@ -2724,17 +2671,6 @@ impl Playback {
             return;
         };
 
-        // Soloist reports its queue through Connect. A saved streaming track would send a
-        // new paused Play to the daemon and replace that queue as soon as it registers.
-        if session.soloist_account().is_some_and(soloist::ready_for)
-            && !resume
-                .current
-                .as_ref()
-                .is_some_and(|track| music::is_local_id(&track.id))
-        {
-            return;
-        }
-
         let at = Duration::from_secs_f32(resume.position.max(0.));
         let Some(track) = self.queue.update(cx, |queue, cx| queue.revive(resume, cx)) else {
             return;
@@ -2761,7 +2697,7 @@ impl Playback {
     }
 
     pub fn pause(&mut self, cx: &mut Context<Self>) {
-        if self.steer_playing(false, cx) || self.control_soloist(Command::Pause, cx) {
+        if self.steer_playing(false, cx) {
             return;
         }
         self.intent = Intent::Pause;
@@ -2777,14 +2713,7 @@ impl Playback {
             self.steer_playing(!remote.state.playing, cx);
             return;
         }
-        let playing = self
-            .devices
-            .as_ref()
-            .and_then(|devices| devices.upgrade())
-            .filter(|_| !self.local && !self.local_active())
-            .and_then(|devices| devices.read(cx).local_playing_intent())
-            .unwrap_or_else(|| self.wants_playing());
-        match playing {
+        match self.wants_playing() {
             true => self.pause(cx),
             false => self.resume(cx),
         }
@@ -3404,23 +3333,6 @@ impl Playback {
     fn restart_engine(&mut self, cx: &mut Context<Self>) {
         self.restart_output(false, None, cx);
         cx.notify();
-    }
-
-    /// Rebuilds the streaming engine after the provider changed which engine it plays through,
-    /// and lifts a refusal the old one ran into.
-    pub(crate) fn switch_engine(&mut self, handing_off: bool, cx: &mut Context<Self>) {
-        self.refused = None;
-        self.failures = 0;
-        if handing_off {
-            self.task = None;
-            retire(self.engine.take());
-            if let Some(playback) = self.session.read(cx).playback() {
-                self.start_engine(playback, cx);
-            }
-            cx.notify();
-            return;
-        }
-        self.restart_engine(cx);
     }
 
     /// Rebuilds every running engine on the audio device it should play on now, as when the
@@ -4051,9 +3963,8 @@ impl Playback {
         cx.notify();
     }
 
-    /// Records that Spotify denied an audio key, or that Soloist can no longer sign in, and
-    /// stops for the rest of the session. Where Soloist runs, the toast leads to its setup, which
-    /// is the way past either. Elsewhere it explains the refusal.
+    /// Records that Spotify denied an audio key and stops for the rest of the session, with a
+    /// toast that explains the refusal.
     fn refuse(&mut self, cx: &mut Context<Self>) {
         let first = self.refused.is_none();
         self.refused = Some(Refusal::Keys);
@@ -4069,30 +3980,10 @@ impl Playback {
                  this session"
             );
         }
-        let note = match self
-            .session
-            .read(cx)
-            .soloist_account()
-            .is_some_and(soloist::ready_for)
-        {
-            true => "toast-soloist-refused",
-            false => "toast-keys-refused",
-        };
-        let toast = Toast::new(Outcome::Failed, "toast-keys-error").note(note);
-        let toast = match soloist::supported() {
-            true => toast.lead("soloist-setup-title", Target::PlaybackSettings, |cx| {
-                let soloist = Sonora::global(cx).soloist.clone();
-                soloist.update(cx, |soloist, cx| soloist.begin(cx));
-            }),
-            false => toast.visit("toast-why", KEYS_FAQ),
-        };
+        let toast = Toast::new(Outcome::Failed, "toast-keys-error")
+            .note("toast-keys-refused")
+            .visit("toast-why", KEYS_FAQ);
         Toasts::post(toast, cx);
-        if let Some(soloist) = cx
-            .try_global::<Sonora>()
-            .map(|sonora| sonora.soloist.clone())
-        {
-            soloist.update(cx, |soloist, cx| soloist.refused(cx));
-        }
         cx.notify();
     }
 }

@@ -122,6 +122,4 @@ confirm-uninstall-widevine-title = Widevine modülü kaldırılsın mı?
 confirm-uninstall-widevine = Sonora, Google'dan indirdiği kopyayı siler. Apple Music parçaları, modül yeniden indirilene kadar çalmaz.
 confirm-remove-downloads-title = Tüm indirmeler kaldırılsın mı?
 confirm-remove-downloads = İndirdiğin her şarkı, her servisten, bu bilgisayardan silinir. Yeniden indirene kadar internetten çalınırlar.
-confirm-remove-soloist-title = Soloist kaldırılsın mı?
-confirm-remove-soloist = Sonora, Soloist uygulamasını, API anahtarını ve Soloist oturumunu siler. Spotify yeniden yerleşik oynatıcıyı kullanır.
 confirm-delete-named = “{ $name }” silinsin mi? Bu işlem geri alınamaz.

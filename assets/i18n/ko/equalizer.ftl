@@ -109,7 +109,6 @@ equalizer-status-separator = {", "}
 equalizer-status-equalized = EQ
 equalizer-status-volume = 볼륨
 equalizer-status-normalized = 음량 평준화
-equalizer-status-direct = Sonora를 거치지 않고 Soloist에서 직접 재생됨
 equalizer-status-rate = { $from } → { $to } kHz
 equalizer-status-bits = { $from } → { $to } bit
 equalizer-status-float = Float → { $to } bit

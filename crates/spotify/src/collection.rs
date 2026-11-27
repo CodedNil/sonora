@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::session::Session;
 use anyhow::{Context as _, Result};
 use futures::{Stream, StreamExt as _, TryStreamExt as _, stream};
-use spotifyapis::id::{base62, raw_id};
+use spotifyapis::id::{ALBUM_PREFIX, ARTIST_PREFIX, PLAYLIST_PREFIX, TRACK_PREFIX, base62, raw_id};
 use spotifyapis::proto::extended_metadata::ImageSize;
 use spotifyapis::proto::extended_metadata::{
     Album as AlbumMessage, Artist as ArtistMessage, Track as TrackMessage,
@@ -13,8 +13,8 @@ use spotifyapis::proto::extended_metadata::{
 use spotifyapis::proto::extended_metadata::{MetadataMessage, MetadataPayload};
 use tokio::sync::mpsc;
 
-use super::albums::{ALBUM_PREFIX, hydrate_saved_albums};
-use crate::{auth::sign_in_error, feeds, wire};
+use super::albums::hydrate_saved_albums;
+use crate::{feeds, wire};
 use music::{
     ArtistRef, Credit, GenreItem, Page, PinTarget, PinTargetKind, SavedCollectionPages, Track,
 };
@@ -24,8 +24,6 @@ use spotifyapis::proto::extended_metadata::{
 };
 
 const LIKED_TRACKS: &str = "spotify:collection:tracks";
-pub(super) use spotifyapis::id::TRACK_PREFIX;
-const UNKNOWN: &str = "Unknown";
 pub(super) const BATCH: usize = 500;
 pub(super) const TRACK_DETAILS: &[ExtensionKind] = &[
     ExtensionKind::TrackV4,
@@ -190,7 +188,7 @@ pub(super) fn take_track(
     let mut track = track_from(uri, &take(data, ExtensionKind::TrackV4, uri)?);
     if let Some(descriptors) = take::<TrackDescriptors>(data, ExtensionKind::TrackDescriptor, uri) {
         for descriptor in descriptors.descriptors {
-            let label = non_empty(Some(&descriptor.localized_term))
+            let label = wire::non_empty(Some(&descriptor.localized_term))
                 .unwrap_or(&descriptor.text)
                 .trim();
             for (category, values) in [(1, &mut track.genres), (2, &mut track.moods)] {
@@ -302,10 +300,8 @@ pub(super) async fn read<M: MetadataMessage>(
     kind: ExtensionKind,
 ) -> Result<Option<M>> {
     let mut data = session
-        .api()
-        .extended_metadata([(uri, kind)])
-        .await
-        .map_err(sign_in_error)?;
+        .call(|api| api.extended_metadata([(uri, kind)]))
+        .await?;
     Ok(take(&mut data, kind, uri))
 }
 
@@ -326,11 +322,7 @@ pub(super) fn metadata_batches<'a>(
                 .iter()
                 .flat_map(|&(uri, kinds)| kinds.iter().map(move |&kind| (uri, kind)))
                 .collect();
-            let response = session
-                .api()
-                .extended_metadata(queries)
-                .await
-                .map_err(sign_in_error)?;
+            let response = session.call(|api| api.extended_metadata(queries)).await?;
             Ok((batch, response))
         })
         .buffered(2)
@@ -352,15 +344,15 @@ pub(super) fn track_from(uri: &str, track: &TrackMessage) -> Track {
     Track {
         id: uri.strip_prefix(TRACK_PREFIX).map(str::to_owned),
         playable: !track.file.is_empty() || !track.alternative.is_empty(),
-        name: non_empty(track.name.as_deref())
-            .unwrap_or(UNKNOWN)
+        name: wire::non_empty(track.name.as_deref())
+            .unwrap_or(wire::UNKNOWN)
             .to_owned(),
         artists,
         artist_refs,
         album: track
             .album
             .as_ref()
-            .and_then(|album| non_empty(album.name.as_deref()))
+            .and_then(|album| wire::non_empty(album.name.as_deref()))
             .unwrap_or_default()
             .to_owned(),
         album_artist: wire::join_names(
@@ -368,7 +360,7 @@ pub(super) fn track_from(uri: &str, track: &TrackMessage) -> Track {
                 .album
                 .iter()
                 .flat_map(|album| &album.artist)
-                .filter_map(|artist| non_empty(artist.name.as_deref())),
+                .filter_map(|artist| wire::non_empty(artist.name.as_deref())),
         ),
         album_id: track.album.as_ref().and_then(|album| base62(album.gid())),
         cover: track.album.as_ref().and_then(cover_url),
@@ -389,7 +381,7 @@ pub(super) fn track_from(uri: &str, track: &TrackMessage) -> Track {
             .external_id
             .iter()
             .filter(|external| external.kind().eq_ignore_ascii_case("isrc"))
-            .find_map(|external| non_empty(external.id.as_deref()).map(str::to_owned)),
+            .find_map(|external| wire::non_empty(external.id.as_deref()).map(str::to_owned)),
         genres: Vec::new(),
         tags: Vec::new(),
         moods: Vec::new(),
@@ -399,7 +391,7 @@ pub(super) fn track_from(uri: &str, track: &TrackMessage) -> Track {
             .artist_with_role
             .iter()
             .filter_map(|credit| {
-                let name = non_empty(credit.artist_name.as_deref())?.to_owned();
+                let name = wire::non_empty(credit.artist_name.as_deref())?.to_owned();
                 let role = match credit.role {
                     Some(1) => "Main artist",
                     Some(2) => "Featured artist",
@@ -424,7 +416,7 @@ pub(crate) fn artists_from(artists: &[ArtistMessage]) -> (String, Vec<ArtistRef>
     let refs: Vec<_> = artists
         .iter()
         .filter_map(|artist| {
-            let name = non_empty(artist.name.as_deref())?.to_owned();
+            let name = wire::non_empty(artist.name.as_deref())?.to_owned();
             Some(ArtistRef {
                 name,
                 id: base62(artist.gid()),
@@ -433,14 +425,10 @@ pub(crate) fn artists_from(artists: &[ArtistMessage]) -> (String, Vec<ArtistRef>
         })
         .collect();
     let names = match refs.is_empty() {
-        true => UNKNOWN.to_owned(),
+        true => wire::UNKNOWN.to_owned(),
         false => wire::join_names(refs.iter().map(|artist| artist.name.as_str())),
     };
     (names, refs)
-}
-
-fn non_empty(value: Option<&str>) -> Option<&str> {
-    value.filter(|value| !value.is_empty())
 }
 
 fn cover_url(album: &AlbumMessage) -> Option<String> {
@@ -495,11 +483,10 @@ pub(super) async fn set_saved(session: &Session, set: &str, uri: &str, saved: bo
             std::process::id()
         ),
     };
+    let connection = session.connection_id();
     session
-        .api()
-        .update_collection(&request, &session.connection_id())
+        .call(|api| api.update_collection(&request, &connection))
         .await
-        .map_err(sign_in_error)
         .context("cannot update the saved collection")?;
     Ok(())
 }
@@ -523,10 +510,8 @@ pub(crate) async fn saved_items(
     };
     loop {
         let page = session
-            .api()
-            .collection_page(&request)
+            .call(|api| api.collection_page(&request))
             .await
-            .map_err(sign_in_error)
             .context("cannot read the saved collection")?;
 
         found.extend(
@@ -546,9 +531,9 @@ pub(crate) async fn saved_items(
 pub(super) fn pin_uri(kind: PinTargetKind, id: &str) -> Option<String> {
     let prefix = match kind {
         PinTargetKind::LikedSongs => return Some(LIKED_TRACKS.to_owned()),
-        PinTargetKind::Playlist => "spotify:playlist:",
-        PinTargetKind::Album => "spotify:album:",
-        PinTargetKind::Artist => "spotify:artist:",
+        PinTargetKind::Playlist => PLAYLIST_PREFIX,
+        PinTargetKind::Album => ALBUM_PREFIX,
+        PinTargetKind::Artist => ARTIST_PREFIX,
         _ => return None,
     };
     raw_id(id)?;
@@ -597,11 +582,9 @@ pub(super) async fn pins(session: &Session) -> Result<Vec<PinTarget>> {
             "spotify:collection" | LIKED_TRACKS => {
                 Some((PinTargetKind::LikedSongs, LIKED_TRACKS.to_owned()))
             }
-            uri if uri.starts_with("spotify:playlist:") => {
-                Some((PinTargetKind::Playlist, item.uri))
-            }
-            uri if uri.starts_with("spotify:album:") => Some((PinTargetKind::Album, item.uri)),
-            uri if uri.starts_with("spotify:artist:") => Some((PinTargetKind::Artist, item.uri)),
+            uri if uri.starts_with(PLAYLIST_PREFIX) => Some((PinTargetKind::Playlist, item.uri)),
+            uri if uri.starts_with(ALBUM_PREFIX) => Some((PinTargetKind::Album, item.uri)),
+            uri if uri.starts_with(ARTIST_PREFIX) => Some((PinTargetKind::Artist, item.uri)),
             _ => None,
         })
         .filter(|(_, uri)| seen.insert(uri.clone()))

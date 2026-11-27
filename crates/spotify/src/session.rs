@@ -29,7 +29,7 @@ impl Session {
             audio_keys: AudioKeys::new(api.clone(), device_id.clone()),
             api,
             device_id,
-            session_id: format!("{:032x}", fastrand::u128(..)),
+            session_id: uuid::Uuid::new_v4().simple().to_string(),
             connection_id: RwLock::default(),
             display_name: OnceCell::new(),
             rootlist_revision: SyncMutex::default(),
@@ -102,5 +102,18 @@ impl Session {
 
     pub(super) fn api(&self) -> &Arc<spotifyapis::Session> {
         &self.0.api
+    }
+
+    /// Sends a spotifyapis request and reports a rejected sign-in the way the app expects.
+    pub(super) async fn call<'a, T, F>(
+        &'a self,
+        request: impl FnOnce(&'a spotifyapis::Session) -> F,
+    ) -> anyhow::Result<T>
+    where
+        F: Future<Output = anyhow::Result<T>> + 'a,
+    {
+        request(self.api())
+            .await
+            .map_err(crate::auth::sign_in_error)
     }
 }

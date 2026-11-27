@@ -168,7 +168,7 @@ impl ConnectDevice<'_> {
             &json!({
                 "command": command,
                 "connection_type": "wlan",
-                "intent_id": format!("{:032x}", fastrand::u128(..)),
+                "intent_id": uuid::Uuid::new_v4().simple().to_string(),
             }),
         )?;
         let mut headers = dealer_headers(self.connection)?;

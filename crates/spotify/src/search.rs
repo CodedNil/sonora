@@ -1,8 +1,9 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use spotifyapis::id::{ALBUM_PREFIX, ARTIST_PREFIX, PLAYLIST_PREFIX, TRACK_PREFIX};
 
-use super::{auth::sign_in_error, collection, session::Session, wire};
+use super::{collection, session::Session, wire};
 use music::{
     Album, ArtistRef, CoverSize, Found, Playlist, ReleaseType, SavedArtist, SearchPart, Track,
 };
@@ -22,11 +23,7 @@ async fn hits<T>(
         return Ok(Vec::new());
     }
 
-    let response = session
-        .api()
-        .search(term, kind, LIMIT)
-        .await
-        .map_err(sign_in_error)?;
+    let response = session.call(|api| api.search(term, kind, LIMIT)).await?;
     Ok(response
         .hits
         .into_iter()
@@ -38,7 +35,7 @@ async fn hits<T>(
 /// Hydrates ranked track URIs with core catalogue metadata in one batch.
 pub(super) async fn tracks(session: &Session, term: &str) -> Result<Vec<Track>> {
     let uris = hits(session, term, SearchKind::Track, |hit| {
-        hit.uri.starts_with("spotify:track:").then_some(hit.uri)
+        hit.uri.starts_with(TRACK_PREFIX).then_some(hit.uri)
     })
     .await?;
     collection::ordered_tracks(
@@ -59,7 +56,7 @@ pub(super) async fn lyric_tracks(session: &Session, term: &str) -> Result<Vec<Tr
             (nanos < 1_000_000_000).then(|| Duration::new(seconds, nanos))
         });
         Some(Track {
-            id: Some(id(&hit.uri, "spotify:track:")?),
+            id: Some(wire::id_after(&hit.uri, TRACK_PREFIX)?),
             name: hit.name,
             artists: wire::join_names(
                 track
@@ -85,7 +82,7 @@ pub(super) async fn albums(session: &Session, term: &str) -> Result<Vec<Album>> 
 pub(super) async fn artists(session: &Session, term: &str) -> Result<Vec<SavedArtist>> {
     hits(session, term, SearchKind::Artist, |hit| {
         Some(SavedArtist {
-            id: id(&hit.uri, "spotify:artist:")?,
+            id: wire::id_after(&hit.uri, ARTIST_PREFIX)?,
             name: hit.name,
             cover: wire::playlist_image(&hit.image_uri),
             added_at: None,
@@ -157,14 +154,14 @@ fn album(hit: Entity) -> Option<Album> {
         .as_deref()
         .and_then(|cover| wire::cover_at(cover, CoverSize::Large));
     Some(Album {
-        id: id(&hit.uri, "spotify:album:")?,
+        id: wire::id_after(&hit.uri, ALBUM_PREFIX)?,
         name: hit.name,
         artists: album.artist_names,
         artist_refs: album
             .album_artists
             .into_iter()
             .map(|artist| ArtistRef {
-                id: id(&artist.uri, "spotify:artist:"),
+                id: wire::id_after(&artist.uri, ARTIST_PREFIX),
                 name: artist.name,
                 channel: false,
             })
@@ -181,7 +178,7 @@ fn album(hit: Entity) -> Option<Album> {
 fn playlist(hit: Entity) -> Option<Playlist> {
     let playlist = hit.playlist?;
     Some(Playlist {
-        id: id(&hit.uri, "spotify:playlist:")?,
+        id: wire::id_after(&hit.uri, PLAYLIST_PREFIX)?,
         name: hit.name,
         owner: playlist.owner_name,
         public: true,
@@ -189,10 +186,4 @@ fn playlist(hit: Entity) -> Option<Playlist> {
         track_count: playlist.number_of_tracks.try_into().unwrap_or_default(),
         ..Default::default()
     })
-}
-
-fn id(uri: &str, prefix: &str) -> Option<String> {
-    uri.strip_prefix(prefix)
-        .filter(|id| !id.is_empty())
-        .map(str::to_owned)
 }

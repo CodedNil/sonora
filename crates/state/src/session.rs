@@ -231,14 +231,6 @@ impl Session {
         &self.state
     }
 
-    /// The signed-in account that can use a matching Soloist pairing.
-    pub(crate) fn soloist_account(&self) -> Option<&str> {
-        match &self.state {
-            SessionState::SignedIn(profile) if self.offers_soloist() => Some(&profile.id),
-            _ => None,
-        }
-    }
-
     pub fn client(&self) -> Option<Arc<dyn MusicApi>> {
         self.client.clone()
     }
@@ -388,16 +380,6 @@ impl Session {
         };
         let provider = &self.providers[index];
         provider.protected() && provider.stored()
-    }
-
-    /// Whether the current provider can play through Soloist on this computer and has an
-    /// account, which is when the app offers its setup.
-    pub fn offers_soloist(&self) -> bool {
-        let Some(index) = self.active else {
-            return false;
-        };
-        let provider = &self.providers[index];
-        provider.soloist() && provider.stored()
     }
 
     /// Whether a browser window matters right now: the current provider signs in through one,

@@ -209,10 +209,7 @@ impl Worker {
             Request::Leave => {
                 self.shared.out.send(Event::LeaveFailed).ok();
             }
-            Request::Rename(_)
-            | Request::Kick(_)
-            | Request::ControlLocal(_)
-            | Request::Jump { .. } => {}
+            Request::Rename(_) | Request::Kick(_) | Request::Jump { .. } => {}
         }
         Ok(())
     }
@@ -737,11 +734,7 @@ fn report(shared: &Shared) {
                 device: device(cast),
                 state: Arc::new(state),
             });
-        Roster {
-            local: None,
-            devices,
-            elsewhere,
-        }
+        Roster { devices, elsewhere }
     };
     shared.out.send(Event::Roster(roster)).ok();
 }

@@ -30,7 +30,6 @@ use crate::shared::confirm::Confirm;
 use crate::shared::playlist_editor::PlaylistEditor;
 use crate::shared::powerbar::{Powerbar, PowerbarEvent};
 use crate::shared::smart_playlist::SmartPlaylistEditor;
-use crate::shared::soloist::SoloistSetup;
 use crate::shared::tag_editor::TagEditor;
 use crate::shared::tracks::{LIBRARY_COLUMNS, album_columns};
 use crate::shared::transport::{Backdrops, CoverAway, CoverFade, CoverRoom, ShellSwap};
@@ -92,7 +91,6 @@ struct Dialogs {
     tag_editor: Entity<TagEditor>,
     confirm: Entity<Confirm>,
     widevine: Entity<WidevinePrompt>,
-    soloist: Entity<SoloistSetup>,
     jam_join: Entity<JamJoin>,
     jam_code: Entity<JamCode>,
     session_join: Entity<SessionJoin>,
@@ -107,7 +105,6 @@ impl Dialogs {
             tag_editor: TagEditor::entity(cx),
             confirm: Confirm::entity(cx),
             widevine: cx.new(WidevinePrompt::new),
-            soloist: cx.new(SoloistSetup::new),
             jam_join: cx.new(JamJoin::new),
             jam_code: cx.new(JamCode::new),
             session_join: cx.new(SessionJoin::new),
@@ -115,14 +112,13 @@ impl Dialogs {
         }
     }
 
-    fn views(&self) -> [AnyView; 10] {
+    fn views(&self) -> [AnyView; 9] {
         [
             self.playlist_editor.clone().into(),
             self.smart_playlist_editor.clone().into(),
             self.tag_editor.clone().into(),
             self.confirm.clone().into(),
             self.widevine.clone().into(),
-            self.soloist.clone().into(),
             self.jam_join.clone().into(),
             self.jam_code.clone().into(),
             self.session_join.clone().into(),

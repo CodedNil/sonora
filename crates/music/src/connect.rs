@@ -216,8 +216,6 @@ pub struct Elsewhere {
 /// Available devices and the playback Sonora is observing.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Roster {
-    /// A local player that registers independently of Sonora.
-    pub local: Option<Device>,
     pub devices: Vec<Device>,
     pub elsewhere: Option<Elsewhere>,
 }
@@ -288,12 +286,11 @@ pub enum Event {
     LeaveFailed,
 }
 
-/// Whether the app joins the device list or only follows the account's playback.
+/// Whether the app is listed as a device on the provider's network.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub enum Mode {
     #[default]
     Off,
-    Observe,
     Publish,
 }
 
@@ -305,8 +302,6 @@ pub enum Request {
     Publish(Option<std::sync::Arc<Snapshot>>),
     Transfer(String),
     Control(String, Command),
-    /// Controls the separately registered player on this computer.
-    ControlLocal(Command),
     /// Advances within the remote queue to a specific occurrence.
     Jump {
         device: String,

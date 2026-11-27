@@ -223,16 +223,7 @@ impl Session {
             SearchKind::Playlist => "playlist",
         };
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
-        let id = (fastrand::u128(..) & !0x00000000_0000_f000_c000_000000000000)
-            | 0x00000000_0000_4000_8000_000000000000;
-        let request_id = format!(
-            "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
-            id >> 96,
-            (id >> 80) as u16,
-            (id >> 64) as u16,
-            (id >> 48) as u16,
-            id & 0xffff_ffff_ffff,
-        );
+        let request_id = uuid::Uuid::new_v4().to_string();
         let query = component(query);
         let path = format!(
             "{}?query={query}&entity_types={kind}&limit={limit}&timestamp={timestamp}&request_id={request_id}",

@@ -109,7 +109,6 @@ equalizer-status-separator = {", "}
 equalizer-status-equalized = EQ
 equalizer-status-volume = Volume
 equalizer-status-normalized = Normalizado
-equalizer-status-direct = Reproduzido pelo Soloist, sem passar pelo Sonora
 equalizer-status-rate = { $from } → { $to } kHz
 equalizer-status-bits = { $from } → { $to } bits
 equalizer-status-float = Float → { $to } bits

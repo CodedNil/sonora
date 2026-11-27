@@ -7278,27 +7278,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "soloist"
-version = "0.50.3"
-dependencies = [
- "anyhow",
- "async-trait",
- "dirs 7.0.0",
- "flate2",
- "futures",
- "libc",
- "log",
- "music",
- "percent-encoding",
- "reqwest 0.13.5",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-tungstenite",
-]
-
-[[package]]
 name = "sonora"
 version = "0.50.3"
 dependencies = [
@@ -7441,6 +7420,7 @@ dependencies = [
  "dirs 7.0.0",
  "engine",
  "fastrand",
+ "flate2",
  "futures",
  "gethostname",
  "http",
@@ -7456,10 +7436,10 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1 0.11.0",
- "soloist",
  "sound",
  "spotifyapis",
  "tokio",
+ "uuid 1.29.1",
 ]
 
 [[package]]
@@ -7488,6 +7468,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
+ "uuid 1.29.1",
 ]
 
 [[package]]
@@ -7541,7 +7522,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
- "soloist",
  "souvlaki",
  "storage",
  "tempfile",
@@ -8812,7 +8792,6 @@ dependencies = [
  "open",
  "router",
  "scrobble",
- "soloist",
  "state",
  "ui",
  "unicode-bidi",

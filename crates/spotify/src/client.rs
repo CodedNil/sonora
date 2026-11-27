@@ -6,6 +6,7 @@ use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use music::connect::Connect;
 use music::{MediaKind, MusicApi, escape};
+use spotifyapis::id::{ALBUM_PREFIX, ARTIST_PREFIX, TRACK_PREFIX};
 
 use crate::{albums, artists, collection, connect::sequence, playlists, profiles, search, wire};
 use music::{
@@ -24,16 +25,12 @@ impl SpotifyClient {
         let connect = Arc::new(crate::connect::open(session.clone()));
         Self { session, connect }
     }
-
-    pub(super) fn connect_handle(&self) -> Arc<Connect> {
-        self.connect.clone()
-    }
 }
 
 #[async_trait]
 impl MusicApi for SpotifyClient {
     fn connect(&self) -> Option<Arc<Connect>> {
-        Some(self.connect_handle())
+        Some(self.connect.clone())
     }
 
     fn cover_at(&self, cover: &str, size: CoverSize) -> Option<String> {
@@ -91,12 +88,8 @@ impl MusicApi for SpotifyClient {
     }
 
     async fn saved_tracks(&self) -> Result<Vec<Track>> {
-        let items = collection::saved_items(
-            &self.session,
-            collection::COLLECTION,
-            collection::TRACK_PREFIX,
-        )
-        .await?;
+        let items =
+            collection::saved_items(&self.session, collection::COLLECTION, TRACK_PREFIX).await?;
         collection::hydrate_saved_tracks(&self.session, &items).await
     }
 
@@ -108,14 +101,14 @@ impl MusicApi for SpotifyClient {
         collection::set_saved(
             &self.session,
             collection::COLLECTION,
-            &format!("spotify:track:{track_id}"),
+            &format!("{TRACK_PREFIX}{track_id}"),
             saved,
         )
         .await
     }
 
     async fn track(&self, track_id: &str) -> Result<Track> {
-        let uri = format!("{}{track_id}", collection::TRACK_PREFIX);
+        let uri = format!("{TRACK_PREFIX}{track_id}");
         collection::metadata(&self.session, std::slice::from_ref(&uri))
             .await?
             .remove(&uri)
@@ -128,8 +121,7 @@ impl MusicApi for SpotifyClient {
 
     async fn saved_albums(&self) -> Result<Vec<Album>> {
         let items =
-            collection::saved_items(&self.session, collection::COLLECTION, albums::ALBUM_PREFIX)
-                .await?;
+            collection::saved_items(&self.session, collection::COLLECTION, ALBUM_PREFIX).await?;
         albums::hydrate_saved_albums(&self.session, items).await
     }
 
@@ -137,7 +129,7 @@ impl MusicApi for SpotifyClient {
         collection::set_saved(
             &self.session,
             collection::COLLECTION,
-            &format!("spotify:album:{album_id}"),
+            &format!("{ALBUM_PREFIX}{album_id}"),
             saved,
         )
         .await
@@ -151,7 +143,7 @@ impl MusicApi for SpotifyClient {
         collection::set_saved(
             &self.session,
             collection::ARTISTS,
-            &format!("spotify:artist:{artist_id}"),
+            &format!("{ARTIST_PREFIX}{artist_id}"),
             saved,
         )
         .await

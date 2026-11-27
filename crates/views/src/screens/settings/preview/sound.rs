@@ -104,13 +104,6 @@ pub(in crate::screens::settings) fn preview(
         .map(|provider| provider.name())
         .or_else(|| session.provider_name());
 
-    // Soloist plays Spotify to the system itself, so the path ends with it rather than with
-    // Sonora's equalizer, resampler and device
-    let direct = match &track {
-        Some(track) => track.direct,
-        None => view.soloist_plays(cx),
-    };
-
     let mut steps = Vec::new();
     steps.push(Step {
         icon: slug.map_or("icons/music.svg", provider_logo),
@@ -124,7 +117,6 @@ pub(in crate::screens::settings) fn preview(
     let normalised = match track.as_ref().map(|track| track.normalisation) {
         Some(Normalisation::Off) => None,
         Some(Normalisation::Gain(db)) => Some(Some(db)),
-        Some(Normalisation::Limited) => Some(None),
         None => view.settings.read(cx).normalisation().then_some(None),
     };
     if let Some(gain) = normalised {
@@ -135,15 +127,7 @@ pub(in crate::screens::settings) fn preview(
             detail: gain.map(|db| t!("unit-db", value = signed(db))),
         });
     }
-    if direct {
-        steps.push(Step {
-            icon: "icons/headphones.svg",
-            tint: None,
-            label: t!("settings-signal-soloist"),
-            detail: None,
-        });
-    }
-    if view.equalizer.read(cx).enabled() && !direct {
+    if view.equalizer.read(cx).enabled() {
         steps.push(Step {
             icon: "icons/sliders-horizontal.svg",
             tint: None,
@@ -160,7 +144,7 @@ pub(in crate::screens::settings) fn preview(
         });
     }
     let outputs = view.outputs.read(cx);
-    let device = outputs.current().filter(|_| !direct);
+    let device = outputs.current();
     steps.push(Step {
         icon: "icons/speaker.svg",
         tint: None,

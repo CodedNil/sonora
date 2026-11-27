@@ -43,31 +43,6 @@
           fn pkgs
         );
 
-      # Soloist needs the Nix loader and audio libraries in both builds.
-      soloistRuntime =
-        pkgs:
-        lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-          SONORA_SOLOIST_LAUNCHER = pkgs.writeShellScript "sonora-soloist" ''
-            # Supply client.conf for Soloist's preflight when there are no host overrides.
-            if [[ $HOME && ! -v PIPEWIRE_CONFIG_DIR && ! -v PIPEWIRE_CONFIG_PREFIX && ! -v PIPEWIRE_CONFIG_NAME ]]; then
-              for config in "''${XDG_CONFIG_HOME:-$HOME/.config}"/pipewire/{client.conf,client.conf.d/*.conf} \
-                "$HOME"/.config/pipewire/{client.conf,client.conf.d/*.conf} \
-                /{etc,usr/share}/pipewire/{client.conf,client.conf.d/*.conf}; do
-                [[ -r $config ]] && break
-              done
-              [[ -r $config ]] || export PIPEWIRE_CONFIG_DIR=${pkgs.pipewire}/share/pipewire
-            fi
-            exec ${pkgs.stdenv.cc.bintools.dynamicLinker} \
-              --library-path ${
-                lib.makeLibraryPath [
-                  pkgs.stdenv.cc.cc.lib
-                  pkgs.pipewire
-                  pkgs.libpulseaudio
-                ]
-              } --argv0 "$1" "$@"
-          '';
-        };
-
       # Copies only what cargo reads out of a source tree. The result depends on file contents
       # alone, so a commit that touches only docs, CI or this file keeps the cached build.
       cargoSource =
@@ -275,8 +250,7 @@
               nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.installShellFiles ];
 
               env =
-                soloistRuntime pkgs
-                // lib.optionalAttrs (nightly ? version) {
+                lib.optionalAttrs (nightly ? version) {
                   SONORA_VERSION = nightly.version;
                   SONORA_CHANNEL = "nightly";
                 }
@@ -412,8 +386,6 @@
               ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.mold ];
 
             buildInputs = runtimeLibraries;
-
-            env = soloistRuntime pkgs;
 
             LD_LIBRARY_PATH = lib.makeLibraryPath runtimeLibraries;
 

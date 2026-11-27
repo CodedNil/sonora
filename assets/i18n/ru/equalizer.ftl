@@ -97,7 +97,6 @@ equalizer-status-separator = {", "}
 equalizer-status-equalized = EQ
 equalizer-status-volume = Громкость
 equalizer-status-normalized = Нормализация
-equalizer-status-direct = Играет Soloist, мимо Sonora
 equalizer-status-rate = { $from } → { $to } кГц
 equalizer-status-bits = { $from } → { $to } бит
 equalizer-status-float = Float → { $to } бит

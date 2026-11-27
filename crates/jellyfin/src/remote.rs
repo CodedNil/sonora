@@ -111,7 +111,7 @@ impl Worker {
             }
             Request::Transfer(device) => self.transfer(&device).await?,
             Request::Control(device, command) => control(&self.client, &device, command).await?,
-            Request::Jump { .. } | Request::ControlLocal(_) => {}
+            Request::Jump { .. } => {}
             Request::Peek(_) => {
                 self.out.send(Event::Invite(None::<Invite>)).ok();
             }
@@ -632,11 +632,7 @@ fn roster(sessions: &[Session]) -> Roster {
         device: session.device(),
         state: Arc::new(state),
     });
-    Roster {
-        devices,
-        elsewhere,
-        local: None,
-    }
+    Roster { devices, elsewhere }
 }
 
 /// The controllable session whose song a transfer takes over, with what it plays. One that

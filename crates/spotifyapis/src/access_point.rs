@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::mem::DropGuard;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{fmt, io};
@@ -126,7 +127,8 @@ struct AccessPoint(Arc<Inner>);
 struct Inner {
     requests: mpsc::Sender<Request>,
     account: watch::Receiver<Option<bool>>,
-    task: JoinHandle<()>,
+    /// Aborts the connection task when the last handle is dropped.
+    _task: DropGuard<JoinHandle<()>, fn(JoinHandle<()>)>,
 }
 
 struct Request {
@@ -184,7 +186,7 @@ impl AccessPoint {
         let point = Self(Arc::new(Inner {
             requests: write,
             account: latest.clone(),
-            task,
+            _task: DropGuard::new(task, |task| task.abort()),
         }));
         match timeout(PRODUCT_WAIT, latest.wait_for(|state| state.is_some())).await {
             Ok(Ok(account)) if *account == Some(false) => Err(AudioKeyError::Premium.into()),
@@ -221,16 +223,10 @@ impl AccessPoint {
     }
 }
 
-impl Drop for Inner {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
 /// Reads the canonical account ID from an authenticated access-point welcome.
 pub(crate) async fn account_username(token: &str) -> Result<String> {
     let endpoints = crate::http::discover().await?;
-    let device = format!("{:032x}", fastrand::u128(..));
+    let device = uuid::Uuid::new_v4().simple().to_string();
     let (_, username) = open_session(&endpoints.accesspoint, token, &device).await?;
     anyhow::ensure!(!username.is_empty(), "Spotify omitted the account username");
     Ok(username)
@@ -242,7 +238,7 @@ pub(crate) async fn account_market(
     token: &str,
     username: &str,
 ) -> Result<String> {
-    let device = format!("{:032x}", fastrand::u128(..));
+    let device = uuid::Uuid::new_v4().simple().to_string();
     let (mut socket, canonical) = open_session(addresses, token, &device).await?;
     anyhow::ensure!(
         canonical.eq_ignore_ascii_case(username),

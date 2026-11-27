@@ -100,7 +100,6 @@ spotify:
   - changed-files:
       - any-glob-to-any-file:
           - crates/spotify/**
-          - crates/soloist/**
 
 youtube:
   - changed-files:

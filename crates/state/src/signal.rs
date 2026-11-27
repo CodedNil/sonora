@@ -73,13 +73,8 @@ pub enum Change {
     Rounded {
         from: u8,
     },
-    /// The engine plays the track to the system's output by itself, as Soloist does, so what
-    /// happens to the sound after it is not Sonora's to tell.
-    Direct,
     /// A fixed normalisation gain, in decibels.
     Normalised(f32),
-    /// librespot's normaliser, whose gain follows the music.
-    Limited,
     /// Sonora's resampler, for a track at another rate than the stream.
     Resampled {
         from: u32,
@@ -104,9 +99,6 @@ impl SignalPath {
     /// Everything that keeps what leaves Sonora from being the decoded track bit for bit, in
     /// the order it happens. Empty means bit-perfect from Sonora.
     pub fn changes(&self) -> Vec<Change> {
-        if self.direct() {
-            return vec![Change::Direct];
-        }
         let mut changes = Vec::new();
         let bits = self
             .track
@@ -117,7 +109,6 @@ impl SignalPath {
         }
         match self.track.as_ref().map(|track| track.normalisation) {
             Some(Normalisation::Gain(db)) if db != 0. => changes.push(Change::Normalised(db)),
-            Some(Normalisation::Limited) => changes.push(Change::Limited),
             _ => {}
         }
         if let Some((from, to)) = self.resampled() {
@@ -149,12 +140,6 @@ impl SignalPath {
             }
         }
         changes
-    }
-
-    /// Whether the engine plays the track past Sonora's own sound path, straight to the system.
-    /// The equalizer and the stream are left out of such a path.
-    pub fn direct(&self) -> bool {
-        self.track.as_ref().is_some_and(|track| track.direct)
     }
 
     /// The track's rate and the stream's, when Sonora resamples one to the other.
@@ -267,10 +252,8 @@ impl Signal {
         let outputs = self.outputs.read(cx);
         let eq = self.equalizer.read(cx);
         let path = playback.track_signal().map(|track| {
-            // a track its engine plays to the system itself never reaches the stream
-            let direct = track.is_some_and(|track| track.direct);
-            let stream = outputs.current().filter(|_| !direct).cloned();
-            let equalizer = (eq.enabled() && !direct).then(|| Equalizing {
+            let stream = outputs.current().cloned();
+            let equalizer = eq.enabled().then(|| Equalizing {
                 preamp_db: eq.preamp_db(),
                 passes_through: stream
                     .as_ref()

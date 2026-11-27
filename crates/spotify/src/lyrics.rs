@@ -63,17 +63,16 @@ impl LyricsProvider for SpotifyLyrics {
             })
         }))
         .await;
-        let mut hits = Vec::new();
         let mut failure = None;
-        for result in results {
-            match result {
-                Ok(Some(hit)) => hits.push(hit),
-                Ok(None) => {}
-                Err(error) => {
+        let hits: Vec<_> = results
+            .into_iter()
+            .filter_map(|result| {
+                result.unwrap_or_else(|error| {
                     failure.get_or_insert(error);
-                }
-            }
-        }
+                    None
+                })
+            })
+            .collect();
         if hits.is_empty()
             && let Some(error) = failure
         {
@@ -85,10 +84,8 @@ impl LyricsProvider for SpotifyLyrics {
 
 pub async fn lyrics(session: &Session, track_id: &str) -> Result<Option<Lyrics>> {
     let answer = session
-        .api()
-        .lyrics(track_id)
+        .call(|api| api.lyrics(track_id))
         .await
-        .map_err(auth::sign_in_error)
         .context("cannot fetch Spotify lyrics")?;
     Ok(answer.and_then(|answer| answer.lyrics).and_then(sheet))
 }

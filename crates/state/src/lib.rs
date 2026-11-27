@@ -35,7 +35,6 @@ mod settings;
 mod sheets;
 mod signal;
 mod snapshot;
-mod soloist;
 mod song;
 mod sponsorblock;
 mod tags;
@@ -93,7 +92,6 @@ pub use settings::{
     remember_window, window_placement,
 };
 pub use signal::{Change, Equalizing, FLOAT_BITS, Following, Signal, SignalPath};
-pub use soloist::{Soloist, SoloistProblem, SoloistState, SoloistStep, SoloistSwitched};
 pub use song::SongDetail;
 pub use sponsorblock::SponsorBlock;
 pub use tags::{TagState, Tags};
@@ -232,7 +230,6 @@ pub struct Sonora {
     pub devices: Entity<Devices>,
     pub downloads: Entity<Downloads>,
     pub drm: Entity<Drm>,
-    pub soloist: Entity<Soloist>,
     pub equalizer: Entity<Equalizer>,
     pub library: Entity<Library>,
     pub links: Entity<Links>,
@@ -370,7 +367,6 @@ pub fn init(
     });
     let cover = cx.new(|cx| Cover::new(session.clone(), playback.clone(), io.clone(), cx));
     let drm = cx.new(|cx| Drm::new(session.clone(), io.clone(), cx));
-    let soloist = cx.new(|cx| Soloist::new(session.clone(), io.clone(), cx));
     let updates = cx.new(|cx| Updates::new(settings.clone(), io.clone(), cx));
     let requirements = cx.new(|cx| {
         Requirements::new(
@@ -407,23 +403,6 @@ pub fn init(
             cx,
         )
     });
-    // Soloist lists itself as the local device. Sonora keeps following the other devices.
-    cx.subscribe(&soloist, {
-        let playback = playback.clone();
-        let devices = devices.clone();
-        move |_, _: &SoloistSwitched, cx| {
-            let handoff = devices.read(cx).local_device_playback();
-            devices.update(cx, |devices, cx| devices.apply(cx));
-            let handoff = handoff.filter(|_| !devices.read(cx).controls_local_device());
-            playback.update(cx, |playback, cx| {
-                playback.switch_engine(handoff.is_some(), cx)
-            });
-            if let Some(start) = handoff {
-                devices.update(cx, |devices, cx| devices.start(start, cx));
-            }
-        }
-    })
-    .detach();
     let links = cx.new(|cx| Links::new(session.clone(), devices.clone(), settings.clone(), cx));
     let control = cx.new(|cx| Control::new(session.clone(), playback.clone(), library.clone(), cx));
     discord::attach(
@@ -444,7 +423,6 @@ pub fn init(
         devices,
         downloads,
         drm,
-        soloist,
         equalizer,
         library,
         links,

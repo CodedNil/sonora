@@ -25,9 +25,8 @@ pub struct SocialSession {
     #[prost(string, tag = "2")]
     #[serde(alias = "session_id", deserialize_with = "null_default")]
     pub session_id: String,
-    #[prost(string, tag = "3")]
-    #[serde(skip)]
-    pub join_session_token: String,
+    // #[prost(string, tag = "3")]
+    // pub join_session_token: String,
     #[prost(string, tag = "4")]
     #[serde(alias = "join_session_url", deserialize_with = "null_default")]
     pub join_session_url: String,
@@ -37,33 +36,26 @@ pub struct SocialSession {
     #[prost(message, repeated, tag = "6")]
     #[serde(alias = "session_members", deserialize_with = "null_default")]
     pub session_members: Vec<SessionMember>,
-    #[prost(string, tag = "7")]
-    #[serde(skip)]
-    pub join_session_uri: String,
+    // #[prost(string, tag = "7")]
+    // pub join_session_uri: String,
     #[prost(bool, tag = "9")]
     #[serde(alias = "is_session_owner", deserialize_with = "null_default")]
     pub is_session_owner: bool,
-    #[prost(bool, tag = "10")]
-    #[serde(skip)]
-    pub is_listening: bool,
-    #[prost(bool, tag = "11")]
-    #[serde(skip)]
-    pub is_controlling: bool,
-    #[prost(bool, tag = "12")]
-    #[serde(skip)]
-    pub is_discoverable: bool,
-    #[prost(int32, tag = "13")]
-    #[serde(skip)]
-    pub initial_session_type: i32,
-    #[prost(string, optional, tag = "14")]
-    #[serde(skip)]
-    pub host_active_device_id: Option<String>,
+    // #[prost(bool, tag = "10")]
+    // pub is_listening: bool,
+    // #[prost(bool, tag = "11")]
+    // pub is_controlling: bool,
+    // #[prost(bool, tag = "12")]
+    // pub is_discoverable: bool,
+    // #[prost(int32, tag = "13")]
+    // pub initial_session_type: i32,
+    // #[prost(string, optional, tag = "14")]
+    // pub host_active_device_id: Option<String>,
     #[prost(bool, tag = "17")]
     #[serde(skip)]
     pub active: bool,
-    #[prost(bool, tag = "25")]
-    #[serde(skip)]
-    pub redirect_commands: bool,
+    // #[prost(bool, tag = "25")]
+    // pub redirect_commands: bool,
 }
 
 #[derive(prost::Message, Deserialize)]
@@ -87,15 +79,12 @@ pub struct SessionMember {
     #[prost(string, tag = "6")]
     #[serde(alias = "large_image_url", deserialize_with = "null_default")]
     pub large_image_url: String,
-    #[prost(bool, tag = "7")]
-    #[serde(skip)]
-    pub is_listening: bool,
-    #[prost(bool, tag = "8")]
-    #[serde(skip)]
-    pub is_controlling: bool,
-    #[prost(bool, tag = "10")]
-    #[serde(skip)]
-    pub is_current_user: bool,
+    // #[prost(bool, tag = "7")]
+    // pub is_listening: bool,
+    // #[prost(bool, tag = "8")]
+    // pub is_controlling: bool,
+    // #[prost(bool, tag = "10")]
+    // pub is_current_user: bool,
 }
 
 /// Dealer's JSON notification for a change to a Jam.

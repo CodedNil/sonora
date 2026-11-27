@@ -14,6 +14,7 @@ ctr.workspace = true
 dirs.workspace = true
 engine.workspace = true
 fastrand.workspace = true
+flate2.workspace = true
 futures.workspace = true
 gethostname.workspace = true
 http.workspace = true
@@ -28,10 +29,10 @@ rodio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha1.workspace = true
-soloist.workspace = true
 sound.workspace = true
 spotifyapis.workspace = true
 tokio.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 rustls.workspace = true
